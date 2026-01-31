@@ -1,0 +1,236 @@
+//! CLI argument definitions using clap derive
+
+use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+/// Minotaur - Secure AI Agent Sandbox Wrapper
+///
+/// Wraps any command in OrbStack + Podman rootless containers with
+/// temporary cloud credentials and SSH agent forwarding.
+#[derive(Parser, Debug)]
+#[command(name = "minotaur")]
+#[command(author, version, about, long_about = None)]
+#[command(propagate_version = true)]
+pub struct Cli {
+    /// Subcommand to execute
+    #[command(subcommand)]
+    pub command: Commands,
+
+    /// Enable verbose output
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+
+    /// Configuration file path
+    #[arg(short, long, global = true, env = "MINOTAUR_CONFIG")]
+    pub config: Option<PathBuf>,
+}
+
+/// Available commands
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Start a sandboxed session
+    Run(RunArgs),
+
+    /// List active sessions
+    List(ListArgs),
+
+    /// Stop a running session
+    Stop(StopArgs),
+
+    /// View session logs
+    Logs(LogsArgs),
+
+    /// Check system health and dependencies
+    Status,
+
+    /// Show or edit configuration
+    Config(ConfigArgs),
+}
+
+/// Arguments for the run command
+#[derive(Parser, Debug)]
+pub struct RunArgs {
+    /// Session name (auto-generated if not provided)
+    #[arg(short, long)]
+    pub name: Option<String>,
+
+    /// Project directory to mount (defaults to current directory)
+    #[arg(short, long)]
+    pub project: Option<PathBuf>,
+
+    /// Include AWS credentials
+    #[arg(long)]
+    pub aws: bool,
+
+    /// Include GCP credentials
+    #[arg(long)]
+    pub gcp: bool,
+
+    /// Include Azure credentials
+    #[arg(long)]
+    pub azure: bool,
+
+    /// Include all cloud credentials
+    #[arg(long, conflicts_with_all = ["aws", "gcp", "azure"])]
+    pub all_clouds: bool,
+
+    /// Forward SSH agent
+    #[arg(long, default_value = "true")]
+    pub ssh_agent: bool,
+
+    /// Include GitHub token
+    #[arg(long, default_value = "true")]
+    pub github: bool,
+
+    /// Container image to use
+    #[arg(long)]
+    pub image: Option<String>,
+
+    /// Additional environment variables (KEY=VALUE)
+    #[arg(short, long, value_parser = parse_env_var)]
+    pub env: Vec<(String, String)>,
+
+    /// Additional volume mounts (host:container)
+    #[arg(long)]
+    pub volume: Vec<String>,
+
+    /// Run in detached mode
+    #[arg(short, long)]
+    pub detach: bool,
+
+    /// Command and arguments to run (defaults to shell)
+    #[arg(last = true)]
+    pub command: Vec<String>,
+}
+
+/// Arguments for the list command
+#[derive(Parser, Debug)]
+pub struct ListArgs {
+    /// Show all sessions including stopped
+    #[arg(short, long)]
+    pub all: bool,
+
+    /// Output format
+    #[arg(short, long, default_value = "table")]
+    pub format: OutputFormat,
+}
+
+/// Arguments for the stop command
+#[derive(Parser, Debug)]
+pub struct StopArgs {
+    /// Session name or ID
+    pub session: String,
+
+    /// Force stop without cleanup
+    #[arg(short, long)]
+    pub force: bool,
+}
+
+/// Arguments for the logs command
+#[derive(Parser, Debug)]
+pub struct LogsArgs {
+    /// Session name or ID
+    pub session: String,
+
+    /// Follow log output
+    #[arg(short, long)]
+    pub follow: bool,
+
+    /// Number of lines to show (0 = all)
+    #[arg(short, long, default_value = "100")]
+    pub lines: u32,
+}
+
+/// Arguments for the config command
+#[derive(Parser, Debug)]
+pub struct ConfigArgs {
+    /// Subcommand for config
+    #[command(subcommand)]
+    pub action: Option<ConfigAction>,
+}
+
+/// Config subcommands
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Show current configuration
+    Show,
+
+    /// Show configuration file path
+    Path,
+
+    /// Initialize default configuration
+    Init {
+        /// Overwrite existing configuration
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Set a configuration value
+    Set {
+        /// Configuration key (e.g., vm.name)
+        key: String,
+        /// Value to set
+        value: String,
+    },
+}
+
+/// Output format for list command
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum OutputFormat {
+    /// Human-readable table
+    Table,
+    /// JSON output
+    Json,
+    /// Simple text (one per line)
+    Plain,
+}
+
+/// Parse environment variable in KEY=VALUE format
+fn parse_env_var(s: &str) -> Result<(String, String), String> {
+    let pos = s
+        .find('=')
+        .ok_or_else(|| format!("invalid KEY=VALUE format: no '=' found in '{s}'"))?;
+    Ok((s[..pos].to_string(), s[pos + 1..].to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_env_var_valid() {
+        let (k, v) = parse_env_var("FOO=bar").unwrap();
+        assert_eq!(k, "FOO");
+        assert_eq!(v, "bar");
+    }
+
+    #[test]
+    fn parse_env_var_with_equals() {
+        let (k, v) = parse_env_var("FOO=bar=baz").unwrap();
+        assert_eq!(k, "FOO");
+        assert_eq!(v, "bar=baz");
+    }
+
+    #[test]
+    fn parse_env_var_invalid() {
+        assert!(parse_env_var("FOO").is_err());
+    }
+
+    #[test]
+    fn cli_parses_run() {
+        let cli = Cli::parse_from(["minotaur", "run", "--aws", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(args.aws);
+                assert_eq!(args.command, vec!["bash"]);
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_status() {
+        let cli = Cli::parse_from(["minotaur", "status"]);
+        assert!(matches!(cli.command, Commands::Status));
+    }
+}
