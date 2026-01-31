@@ -20,6 +20,7 @@ AI coding agents are powerful but require significant system access. Minotaur pr
 - **Rootless Containers**: Podman containers inside OrbStack VMs - no root required
 - **Temporary Credentials**: Generates short-lived AWS/GCP/Azure tokens (1-12 hours)
 - **SSH Agent Forwarding**: Git authentication without exposing private keys
+- **Persistent Caching**: Content-addressed dependency caches survive session crashes
 - **Multi-Session**: Run multiple isolated sandboxes in parallel
 - **Zero Config**: Works out of the box with sensible defaults
 
@@ -105,6 +106,8 @@ minotaur run [OPTIONS] [-- COMMAND...]
 | `-e, --env <KEY=VALUE>` | Additional environment variable |
 | `-V, --volume <HOST:CONTAINER>` | Additional volume mount |
 | `-d, --detach` | Run in background |
+| `--no-cache` | Disable dependency caching |
+| `--cache-fresh` | Force fresh cache (ignore existing) |
 
 #### `minotaur list`
 
@@ -151,6 +154,21 @@ Check system health and dependencies.
 ```bash
 minotaur status
 ```
+
+#### `minotaur cache`
+
+Manage dependency caches.
+
+```bash
+minotaur cache <SUBCOMMAND>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list [-f FORMAT]` | List all cache volumes |
+| `info [-p PATH]` | Show cache info for current/specified project |
+| `gc [--days N] [--dry-run]` | Remove caches older than N days |
+| `clear --all [-y]` | Clear all caches (requires confirmation) |
 
 #### `minotaur config`
 
@@ -211,6 +229,11 @@ host = "github.com"    # For GitHub Enterprise
 [session]
 shell = "/bin/bash"
 # default_project_dir = "/path/to/default/project"
+
+[cache]
+enabled = true           # Enable dependency caching
+gc_days = 30             # Auto-remove caches older than N days
+max_total_gb = 50        # Max total cache size before GC
 ```
 
 ### Configuration Keys
@@ -235,6 +258,66 @@ credentials.gcp.project
 credentials.azure.subscription
 credentials.azure.tenant
 session.shell
+cache.enabled
+cache.gc_days
+cache.max_total_gb
+```
+
+## Dependency Caching
+
+Minotaur automatically caches package manager dependencies using content-addressed volumes. If a session crashes, the cache persists and is reused on the next run.
+
+### How It Works
+
+1. **Lockfile Detection**: On `minotaur run`, scans for lockfiles:
+   - `package-lock.json` / `npm-shrinkwrap.json` → npm
+   - `yarn.lock` → yarn
+   - `pnpm-lock.yaml` → pnpm
+   - `Cargo.lock` → cargo
+   - `requirements.txt` / `Pipfile.lock` → pip
+   - `poetry.lock` → poetry
+   - `go.sum` → go
+
+2. **Cache Key**: `sha256(lockfile_contents)[:12]` - same lockfile = same cache
+
+3. **Cache States**:
+   | State | Mount | When |
+   |-------|-------|------|
+   | Miss | read-write | No cache exists, creating new |
+   | Building | read-write | In progress or crashed (retryable) |
+   | Complete | read-only | Finalized, immutable |
+
+4. **Environment Variables**: Automatically configured:
+   ```
+   npm_config_cache=/cache/npm
+   CARGO_HOME=/cache/cargo
+   PIP_CACHE_DIR=/cache/pip
+   XDG_CACHE_HOME=/cache/xdg
+   ```
+
+### Security
+
+- **Tamper-proof**: Complete caches are mounted read-only
+- **Content-addressed**: Changing dependencies = new hash = new cache
+- **Isolated**: Each unique lockfile gets its own cache volume
+
+### Cache Management
+
+```bash
+# View caches for current project
+minotaur cache info
+
+# List all cache volumes
+minotaur cache list
+
+# Remove old caches (default: 30 days)
+minotaur cache gc
+
+# Remove caches older than 7 days
+minotaur cache gc --days 7
+
+# Clear everything
+minotaur cache clear --all
 ```
 
 ## Architecture
