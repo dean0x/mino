@@ -7,30 +7,24 @@ class Minotaur < Formula
   on_macos do
     on_intel do
       url "https://github.com/dean0x/minotaur/releases/download/v#{version}/minotaur-x86_64-apple-darwin.tar.gz"
-      # PLACEHOLDER: Update SHA256 after first release
-      # Run: curl -sL <url> | shasum -a 256
-      sha256 "PLACEHOLDER_INTEL_SHA256"
+      sha256 "83ef56a7f0aafb282c1b1b124b147780b92751739ebc3370f0d68e6cf843c428"
     end
 
     on_arm do
       url "https://github.com/dean0x/minotaur/releases/download/v#{version}/minotaur-aarch64-apple-darwin.tar.gz"
-      # PLACEHOLDER: Update SHA256 after first release
-      # Run: curl -sL <url> | shasum -a 256
-      sha256 "PLACEHOLDER_ARM_SHA256"
+      sha256 "59f08bbc32aec7d4bcd2365b6b8354ccdd23e7f9b46ceb00dbd4a1e5e1b35b01"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/dean0x/minotaur/releases/download/v#{version}/minotaur-x86_64-unknown-linux-gnu.tar.gz"
-      # PLACEHOLDER: Update SHA256 after first release
-      sha256 "PLACEHOLDER_LINUX_INTEL_SHA256"
+      sha256 "adc6765a8d883ed571483f18abfb016962ad68e7cf818d0af7ef8485d99d8d47"
     end
 
     on_arm do
       url "https://github.com/dean0x/minotaur/releases/download/v#{version}/minotaur-aarch64-unknown-linux-gnu.tar.gz"
-      # PLACEHOLDER: Update SHA256 after first release
-      sha256 "PLACEHOLDER_LINUX_ARM_SHA256"
+      sha256 "97c64473225c29ad09dfe8adf99b25c1bc727364701f88673a5be8d65689dcdb"
     end
   end
 
