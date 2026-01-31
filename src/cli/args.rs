@@ -45,6 +45,9 @@ pub enum Commands {
 
     /// Show or edit configuration
     Config(ConfigArgs),
+
+    /// Manage dependency caches
+    Cache(CacheArgs),
 }
 
 /// Arguments for the run command
@@ -97,6 +100,14 @@ pub struct RunArgs {
     /// Run in detached mode
     #[arg(short, long)]
     pub detach: bool,
+
+    /// Disable dependency caching for this session
+    #[arg(long)]
+    pub no_cache: bool,
+
+    /// Force fresh cache (ignore existing caches)
+    #[arg(long, conflicts_with = "no_cache")]
+    pub cache_fresh: bool,
 
     /// Command and arguments to run (defaults to shell)
     #[arg(last = true)]
@@ -183,6 +194,54 @@ pub enum OutputFormat {
     Json,
     /// Simple text (one per line)
     Plain,
+}
+
+/// Arguments for the cache command
+#[derive(Parser, Debug)]
+pub struct CacheArgs {
+    /// Subcommand for cache
+    #[command(subcommand)]
+    pub action: CacheAction,
+}
+
+/// Cache subcommands
+#[derive(Subcommand, Debug)]
+pub enum CacheAction {
+    /// List all cache volumes
+    List {
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
+
+    /// Show cache info for current project
+    Info {
+        /// Project directory (defaults to current directory)
+        #[arg(short, long)]
+        project: Option<PathBuf>,
+    },
+
+    /// Remove orphaned and old caches
+    Gc {
+        /// Remove caches older than N days (default: from config)
+        #[arg(long)]
+        days: Option<u32>,
+
+        /// Dry run - show what would be removed
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Clear caches
+    Clear {
+        /// Clear all caches (required)
+        #[arg(long, required = true)]
+        all: bool,
+
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 /// Parse environment variable in KEY=VALUE format

@@ -72,5 +72,8 @@ async fn run() -> MinotaurResult<()> {
         Commands::Config(args) => {
             minotaur::cli::commands::config(args, &config).await
         }
+        Commands::Cache(args) => {
+            minotaur::cli::commands::cache(args, &config).await
+        }
     }
 }

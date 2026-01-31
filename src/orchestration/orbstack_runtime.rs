@@ -6,8 +6,9 @@ use crate::config::schema::VmConfig;
 use crate::error::{MinotaurError, MinotaurResult};
 use crate::orchestration::orbstack::OrbStack;
 use crate::orchestration::podman::ContainerConfig;
-use crate::orchestration::runtime::ContainerRuntime;
+use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use async_trait::async_trait;
+use std::collections::HashMap;
 use tracing::{debug, info};
 
 /// Container runtime using OrbStack VM + Podman (for macOS)
@@ -265,6 +266,187 @@ impl ContainerRuntime for OrbStackRuntime {
 
     fn runtime_name(&self) -> &'static str {
         "OrbStack + Podman"
+    }
+
+    async fn volume_create(
+        &self,
+        name: &str,
+        labels: &HashMap<String, String>,
+    ) -> MinotaurResult<()> {
+        debug!("Creating volume: {}", name);
+
+        let mut args = vec!["podman", "volume", "create"];
+
+        // Build label arguments
+        let label_strings: Vec<String> = labels
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+
+        for label in &label_strings {
+            args.push("--label");
+            args.push(label);
+        }
+
+        args.push(name);
+
+        let output = self.orbstack.exec(&args).await?;
+
+        if output.status.success() {
+            info!("Volume created: {}", name);
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(MinotaurError::command_exec("podman volume create", stderr))
+        }
+    }
+
+    async fn volume_exists(&self, name: &str) -> MinotaurResult<bool> {
+        let output = self
+            .orbstack
+            .exec(&["podman", "volume", "exists", name])
+            .await?;
+        Ok(output.status.success())
+    }
+
+    async fn volume_remove(&self, name: &str) -> MinotaurResult<()> {
+        debug!("Removing volume: {}", name);
+
+        let output = self
+            .orbstack
+            .exec(&["podman", "volume", "rm", "-f", name])
+            .await?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Ignore "no such volume" errors
+            if stderr.contains("no such volume") {
+                Ok(())
+            } else {
+                Err(MinotaurError::command_exec("podman volume rm", stderr))
+            }
+        }
+    }
+
+    async fn volume_list(&self, prefix: &str) -> MinotaurResult<Vec<VolumeInfo>> {
+        // Use JSON format for reliable parsing
+        let output = self
+            .orbstack
+            .exec(&["podman", "volume", "ls", "--format", "json"])
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(MinotaurError::command_exec("podman volume ls", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Parse JSON array of volumes
+        let volumes: Vec<serde_json::Value> =
+            serde_json::from_str(&stdout).map_err(|e| MinotaurError::Internal(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for vol in volumes {
+            let name = vol["Name"].as_str().unwrap_or_default();
+
+            // Filter by prefix
+            if !name.starts_with(prefix) {
+                continue;
+            }
+
+            // Parse labels
+            let labels: HashMap<String, String> = vol["Labels"]
+                .as_object()
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            result.push(VolumeInfo {
+                name: name.to_string(),
+                labels,
+                mountpoint: vol["Mountpoint"].as_str().map(String::from),
+                created_at: vol["CreatedAt"].as_str().map(String::from),
+                size_bytes: None,
+            });
+        }
+
+        Ok(result)
+    }
+
+    async fn volume_inspect(&self, name: &str) -> MinotaurResult<Option<VolumeInfo>> {
+        let output = self
+            .orbstack
+            .exec(&["podman", "volume", "inspect", name, "--format", "json"])
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("no such volume") {
+                return Ok(None);
+            }
+            return Err(MinotaurError::command_exec("podman volume inspect", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // Parse JSON array (inspect returns array even for single volume)
+        let volumes: Vec<serde_json::Value> =
+            serde_json::from_str(&stdout).map_err(|e| MinotaurError::Internal(e.to_string()))?;
+
+        let vol = match volumes.first() {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        // Parse labels
+        let labels: HashMap<String, String> = vol["Labels"]
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Some(VolumeInfo {
+            name: name.to_string(),
+            labels,
+            mountpoint: vol["Mountpoint"].as_str().map(String::from),
+            created_at: vol["CreatedAt"].as_str().map(String::from),
+            size_bytes: None,
+        }))
+    }
+
+    async fn volume_update_labels(
+        &self,
+        name: &str,
+        labels: &HashMap<String, String>,
+    ) -> MinotaurResult<()> {
+        debug!("Updating volume labels: {} (recreating)", name);
+
+        // First check if volume exists
+        let existing = self.volume_inspect(name).await?;
+        if existing.is_none() {
+            return Err(MinotaurError::Internal(format!(
+                "Volume not found: {}",
+                name
+            )));
+        }
+
+        // Remove old volume
+        self.volume_remove(name).await?;
+
+        // Create with new labels
+        self.volume_create(name, labels).await
     }
 }
 

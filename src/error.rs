@@ -105,6 +105,16 @@ pub enum MinotaurError {
     #[error("VM command failed: {0}")]
     VmCommand(String),
 
+    // Cache errors
+    #[error("Failed to create cache volume {name}: {reason}")]
+    CacheVolumeCreate { name: String, reason: String },
+
+    #[error("Cache volume not found: {0}")]
+    CacheVolumeNotFound(String),
+
+    #[error("Failed to read lockfile {path}: {reason}")]
+    CacheLockfileRead { path: String, reason: String },
+
     // IO errors
     #[error("IO error: {context}")]
     Io {

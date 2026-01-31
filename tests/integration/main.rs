@@ -14,7 +14,7 @@ mod cli_tests {
             .arg("--help")
             .assert()
             .success()
-            .stdout(predicate::str::contains("Secure AI agent sandbox wrapper"));
+            .stdout(predicate::str::contains("Secure AI agent sandbox"));
     }
 
     #[test]

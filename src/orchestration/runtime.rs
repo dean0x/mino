@@ -6,6 +6,22 @@
 use crate::error::MinotaurResult;
 use crate::orchestration::podman::ContainerConfig;
 use async_trait::async_trait;
+use std::collections::HashMap;
+
+/// Information about a container volume
+#[derive(Debug, Clone)]
+pub struct VolumeInfo {
+    /// Volume name
+    pub name: String,
+    /// Volume labels
+    pub labels: HashMap<String, String>,
+    /// Mount point path (inside container runtime)
+    pub mountpoint: Option<String>,
+    /// Creation timestamp (RFC3339)
+    pub created_at: Option<String>,
+    /// Size in bytes (if available)
+    pub size_bytes: Option<u64>,
+}
 
 /// Abstract container runtime interface
 ///
@@ -43,4 +59,34 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Get the human-readable runtime name for display
     fn runtime_name(&self) -> &'static str;
+
+    // Volume operations for persistent caching
+
+    /// Create a new volume with the given name and labels
+    async fn volume_create(
+        &self,
+        name: &str,
+        labels: &HashMap<String, String>,
+    ) -> MinotaurResult<()>;
+
+    /// Check if a volume exists
+    async fn volume_exists(&self, name: &str) -> MinotaurResult<bool>;
+
+    /// Remove a volume
+    async fn volume_remove(&self, name: &str) -> MinotaurResult<()>;
+
+    /// List volumes matching a name prefix
+    async fn volume_list(&self, prefix: &str) -> MinotaurResult<Vec<VolumeInfo>>;
+
+    /// Get detailed info about a specific volume
+    async fn volume_inspect(&self, name: &str) -> MinotaurResult<Option<VolumeInfo>>;
+
+    /// Update labels on an existing volume
+    /// Note: Podman doesn't support label updates directly, so this removes and recreates
+    /// the volume. Only use for state transitions, not for volumes with data.
+    async fn volume_update_labels(
+        &self,
+        name: &str,
+        labels: &HashMap<String, String>,
+    ) -> MinotaurResult<()>;
 }

@@ -24,6 +24,9 @@ pub struct Config {
 
     /// Session defaults
     pub session: SessionConfig,
+
+    /// Cache settings
+    pub cache: CacheConfig,
 }
 
 
@@ -233,6 +236,30 @@ impl Default for SessionConfig {
             auto_cleanup_hours: 24,
             max_sessions: 10,
             default_project_dir: None,
+        }
+    }
+}
+
+/// Cache configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    /// Enable dependency caching (default: true)
+    pub enabled: bool,
+
+    /// Auto-remove caches older than N days (0 = disabled)
+    pub gc_days: u32,
+
+    /// Maximum total cache size in GB before triggering gc
+    pub max_total_gb: u32,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            gc_days: 30,
+            max_total_gb: 50,
         }
     }
 }

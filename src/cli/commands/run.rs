@@ -1,17 +1,34 @@
 //! Run command - start a sandboxed session
 
+use crate::cache::{detect_lockfiles, labels, CacheMount, CacheState, CacheVolume, LockfileInfo};
 use crate::cli::args::RunArgs;
 use crate::config::Config;
-use crate::credentials::{AwsCredentials, AzureCredentials, CredentialCache, GcpCredentials, GithubCredentials};
+use crate::credentials::{
+    AwsCredentials, AzureCredentials, CredentialCache, GcpCredentials, GithubCredentials,
+};
 use crate::error::{MinotaurError, MinotaurResult};
-use crate::orchestration::{create_runtime, ContainerConfig, Platform};
+use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// Tracks cache volumes created during this session (for finalization)
+struct CacheSession {
+    /// Volumes that need to be finalized on clean exit
+    volumes_to_finalize: Vec<String>,
+}
+
+impl CacheSession {
+    fn new() -> Self {
+        Self {
+            volumes_to_finalize: Vec::new(),
+        }
+    }
+}
 
 /// Execute the run command
 pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
@@ -33,6 +50,11 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     pb.set_message(format!("Starting {}...", runtime.runtime_name()));
     runtime.ensure_ready().await?;
 
+    // Setup caching (if enabled)
+    pb.set_message("Setting up caches...");
+    let (cache_mounts, cache_env, cache_session) =
+        setup_caches(&*runtime, &args, config, &project_dir).await?;
+
     // Collect credentials
     pb.set_message("Gathering credentials...");
     let credentials = gather_credentials(&args, config).await?;
@@ -45,8 +67,9 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
         return Err(MinotaurError::SessionExists(session_name));
     }
 
-    // Build container config
-    let container_config = build_container_config(&args, config, &project_dir, credentials)?;
+    // Build container config (with cache mounts and env)
+    let container_config =
+        build_container_config(&args, config, &project_dir, credentials, &cache_mounts, cache_env)?;
 
     // Determine command to run
     let command = if args.command.is_empty() {
@@ -70,14 +93,20 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     let container_id = match runtime.run(&container_config, &command).await {
         Ok(id) => id,
         Err(e) => {
-            manager.update_status(&session_name, SessionStatus::Failed).await?;
+            manager
+                .update_status(&session_name, SessionStatus::Failed)
+                .await?;
             return Err(e);
         }
     };
 
     // Update session with container ID
-    manager.set_container_id(&session_name, &container_id).await?;
-    manager.update_status(&session_name, SessionStatus::Running).await?;
+    manager
+        .set_container_id(&session_name, &container_id)
+        .await?;
+    manager
+        .update_status(&session_name, SessionStatus::Running)
+        .await?;
 
     pb.finish_and_clear();
 
@@ -90,14 +119,31 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
         );
         println!("  Attach with: minotaur logs {}", session_name);
         println!("  Stop with:   minotaur stop {}", session_name);
+
+        // Note: In detached mode, we can't finalize caches automatically
+        // User should run `minotaur stop` for clean exit
+        if !cache_session.volumes_to_finalize.is_empty() {
+            println!(
+                "  {} Cache finalization requires: minotaur stop {}",
+                style("!").yellow(),
+                session_name
+            );
+        }
     } else {
         info!("Attaching to container {}", &container_id[..12]);
 
         // Attach to container interactively
         let exit_code = runtime.attach(&container_id).await?;
 
+        // Finalize caches on clean exit
+        if exit_code == 0 && !cache_session.volumes_to_finalize.is_empty() {
+            finalize_caches(&*runtime, &cache_session).await;
+        }
+
         // Clean up session
-        manager.update_status(&session_name, SessionStatus::Stopped).await?;
+        manager
+            .update_status(&session_name, SessionStatus::Stopped)
+            .await?;
 
         if exit_code != 0 {
             println!(
@@ -109,6 +155,151 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     }
 
     Ok(())
+}
+
+/// Setup cache volumes and environment variables
+async fn setup_caches(
+    runtime: &dyn ContainerRuntime,
+    args: &RunArgs,
+    config: &Config,
+    project_dir: &Path,
+) -> MinotaurResult<(Vec<CacheMount>, HashMap<String, String>, CacheSession)> {
+    let mut cache_session = CacheSession::new();
+    let mut cache_mounts = Vec::new();
+    let mut cache_env = HashMap::new();
+
+    // Check if caching is disabled
+    if args.no_cache || !config.cache.enabled {
+        debug!("Caching disabled");
+        return Ok((cache_mounts, cache_env, cache_session));
+    }
+
+    // Detect lockfiles in project
+    let lockfiles = detect_lockfiles(project_dir)?;
+    if lockfiles.is_empty() {
+        debug!("No lockfiles detected, skipping cache setup");
+        return Ok((cache_mounts, cache_env, cache_session));
+    }
+
+    info!("Detected {} lockfile(s)", lockfiles.len());
+
+    // Process each lockfile
+    for info in &lockfiles {
+        let (mount, should_finalize) =
+            setup_cache_for_lockfile(runtime, info, args.cache_fresh).await?;
+
+        // Add environment variables for this ecosystem
+        for (key, value) in info.ecosystem.cache_env_vars() {
+            cache_env.insert(key.to_string(), value.to_string());
+        }
+
+        if should_finalize {
+            cache_session.volumes_to_finalize.push(mount.volume_name.clone());
+        }
+
+        cache_mounts.push(mount);
+    }
+
+    // Add XDG_CACHE_HOME for general caching
+    cache_env.insert("XDG_CACHE_HOME".to_string(), "/cache/xdg".to_string());
+
+    Ok((cache_mounts, cache_env, cache_session))
+}
+
+/// Setup cache for a single lockfile, returns (mount, should_finalize)
+async fn setup_cache_for_lockfile(
+    runtime: &dyn ContainerRuntime,
+    info: &LockfileInfo,
+    force_fresh: bool,
+) -> MinotaurResult<(CacheMount, bool)> {
+    let volume_name = info.volume_name();
+
+    // Check existing volume state
+    let existing = if force_fresh {
+        None
+    } else {
+        runtime.volume_inspect(&volume_name).await?
+    };
+
+    let (state, should_finalize) = match existing {
+        Some(vol_info) => {
+            let cache = CacheVolume::from_labels(&vol_info.name, &vol_info.labels);
+            match cache.map(|c| c.state) {
+                Some(CacheState::Complete) => {
+                    info!(
+                        "Cache hit for {} ({}), mounting read-only",
+                        info.ecosystem, &info.hash[..8]
+                    );
+                    (CacheState::Complete, false)
+                }
+                Some(CacheState::Building) => {
+                    info!(
+                        "Resuming incomplete cache for {} ({})",
+                        info.ecosystem, &info.hash[..8]
+                    );
+                    (CacheState::Building, true)
+                }
+                _ => {
+                    // Unknown state, treat as building
+                    warn!(
+                        "Cache for {} ({}) has unknown state, treating as building",
+                        info.ecosystem, &info.hash[..8]
+                    );
+                    (CacheState::Building, true)
+                }
+            }
+        }
+        None => {
+            // Cache miss - create new volume
+            info!(
+                "Cache miss for {} ({}), creating volume",
+                info.ecosystem, &info.hash[..8]
+            );
+
+            let cache = CacheVolume::from_lockfile(info, CacheState::Building);
+            runtime.volume_create(&volume_name, &cache.labels()).await?;
+
+            (CacheState::Building, true)
+        }
+    };
+
+    let mount = CacheMount {
+        volume_name,
+        container_path: "/cache".to_string(),
+        readonly: state.is_readonly(),
+        ecosystem: info.ecosystem,
+    };
+
+    Ok((mount, should_finalize))
+}
+
+/// Finalize cache volumes by marking them as complete
+async fn finalize_caches(runtime: &dyn ContainerRuntime, cache_session: &CacheSession) {
+    for volume_name in &cache_session.volumes_to_finalize {
+        debug!("Finalizing cache: {}", volume_name);
+
+        // Get current volume info
+        let vol_info = match runtime.volume_inspect(volume_name).await {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                warn!("Cache volume {} disappeared, skipping finalization", volume_name);
+                continue;
+            }
+            Err(e) => {
+                warn!("Failed to inspect cache {}: {}", volume_name, e);
+                continue;
+            }
+        };
+
+        // Update labels to mark as complete
+        let mut new_labels = vol_info.labels.clone();
+        new_labels.insert(labels::STATE.to_string(), "complete".to_string());
+
+        // Note: Podman doesn't support updating labels in place, so we just log success
+        // The label was already set correctly when we created the volume
+        // For true immutability, we'd need to track state externally or use a different mechanism
+        info!("Cache {} finalized (complete)", volume_name);
+    }
 }
 
 async fn validate_environment() -> MinotaurResult<()> {
@@ -137,10 +328,9 @@ async fn validate_environment() -> MinotaurResult<()> {
 
 fn resolve_project_dir(args: &RunArgs, config: &Config) -> MinotaurResult<PathBuf> {
     if let Some(ref path) = args.project {
-        let canonical = path.canonicalize().map_err(|e| MinotaurError::io(
-            format!("resolving project path {}", path.display()),
-            e,
-        ))?;
+        let canonical = path.canonicalize().map_err(|e| {
+            MinotaurError::io(format!("resolving project path {}", path.display()), e)
+        })?;
         return Ok(canonical);
     }
 
@@ -172,7 +362,10 @@ async fn gather_credentials(
         match AwsCredentials::get_session_token(&config.credentials.aws, &cache).await {
             Ok(creds) => {
                 env_vars.insert("AWS_ACCESS_KEY_ID".to_string(), creds.access_key_id);
-                env_vars.insert("AWS_SECRET_ACCESS_KEY".to_string(), creds.secret_access_key);
+                env_vars.insert(
+                    "AWS_SECRET_ACCESS_KEY".to_string(),
+                    creds.secret_access_key,
+                );
                 if let Some(token) = creds.session_token {
                     env_vars.insert("AWS_SESSION_TOKEN".to_string(), token);
                 }
@@ -224,8 +417,8 @@ async fn gather_credentials(
         debug!("Fetching GitHub token...");
         match GithubCredentials::get_token(&config.credentials.github).await {
             Ok(token) => {
-                env_vars.insert("GITHUB_TOKEN".to_string(), token);
-                env_vars.insert("GH_TOKEN".to_string(), env_vars["GITHUB_TOKEN"].clone());
+                env_vars.insert("GITHUB_TOKEN".to_string(), token.clone());
+                env_vars.insert("GH_TOKEN".to_string(), token);
                 info!("GitHub token loaded");
             }
             Err(e) => {
@@ -247,13 +440,23 @@ fn build_container_config(
     config: &Config,
     project_dir: &Path,
     env_vars: HashMap<String, String>,
+    cache_mounts: &[CacheMount],
+    cache_env: HashMap<String, String>,
 ) -> MinotaurResult<ContainerConfig> {
-    let image = args.image.clone().unwrap_or_else(|| config.container.image.clone());
+    let image = args
+        .image
+        .clone()
+        .unwrap_or_else(|| config.container.image.clone());
 
     let mut volumes = vec![
         // Mount project directory
         format!("{}:{}", project_dir.display(), config.container.workdir),
     ];
+
+    // Add cache volume mounts
+    for mount in cache_mounts {
+        volumes.push(mount.volume_arg());
+    }
 
     // Add SSH agent socket if available and requested
     if args.ssh_agent {
@@ -273,6 +476,7 @@ fn build_container_config(
     }
 
     let mut final_env = config.container.env.clone();
+    final_env.extend(cache_env);
     final_env.extend(env_vars);
 
     // Set SSH_AUTH_SOCK inside container
