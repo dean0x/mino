@@ -1,7 +1,7 @@
 {
   "name": "@dean0x/minotaur",
   "version": "0.1.0",
-  "description": "Secure AI agent sandbox wrapper using Podman rootless containers",
+  "description": "Secure AI agent sandbox using rootless containers",
   "license": "MIT",
   "repository": {
     "type": "git",

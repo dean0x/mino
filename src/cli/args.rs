@@ -3,10 +3,10 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-/// Minotaur - Secure AI Agent Sandbox Wrapper
+/// Minotaur - Secure AI Agent Sandbox
 ///
-/// Wraps any command in OrbStack + Podman rootless containers with
-/// temporary cloud credentials and SSH agent forwarding.
+/// Wraps any command in rootless containers with temporary cloud
+/// credentials and SSH agent forwarding.
 #[derive(Parser, Debug)]
 #[command(name = "minotaur")]
 #[command(author, version, about, long_about = None)]

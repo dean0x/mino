@@ -1,7 +1,7 @@
-//! Minotaur - Secure AI Agent Sandbox Wrapper
+//! Minotaur - Secure AI Agent Sandbox
 //!
-//! Wraps any command in OrbStack + Podman rootless containers with
-//! temporary cloud credentials and SSH agent forwarding.
+//! Wraps any command in rootless containers with temporary cloud
+//! credentials and SSH agent forwarding.
 
 pub mod cli;
 pub mod config;
