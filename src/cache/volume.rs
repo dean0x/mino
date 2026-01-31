@@ -9,6 +9,64 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
+/// Format bytes as human-readable size (e.g., "1.5 GB")
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Convert GB to bytes
+pub fn gb_to_bytes(gb: u32) -> u64 {
+    u64::from(gb) * 1024 * 1024 * 1024
+}
+
+/// Cache size status relative to configured limit
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheSizeStatus {
+    /// Under 80% of limit
+    Ok,
+    /// Between 80% and 100% of limit
+    Warning,
+    /// At or over the limit
+    Exceeded,
+}
+
+impl CacheSizeStatus {
+    /// Determine status based on current size and limit
+    pub fn from_usage(current_bytes: u64, limit_bytes: u64) -> Self {
+        if limit_bytes == 0 {
+            return Self::Ok;
+        }
+        let percent = (current_bytes as f64 / limit_bytes as f64) * 100.0;
+        if percent >= 100.0 {
+            Self::Exceeded
+        } else if percent >= 80.0 {
+            Self::Warning
+        } else {
+            Self::Ok
+        }
+    }
+
+    /// Get percentage of limit used
+    pub fn percentage(current_bytes: u64, limit_bytes: u64) -> f64 {
+        if limit_bytes == 0 {
+            return 0.0;
+        }
+        (current_bytes as f64 / limit_bytes as f64) * 100.0
+    }
+}
+
 /// Volume label keys used to track cache metadata
 pub mod labels {
     /// Marks volume as a minotaur cache

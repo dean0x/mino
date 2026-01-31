@@ -89,4 +89,8 @@ pub trait ContainerRuntime: Send + Sync {
         name: &str,
         labels: &HashMap<String, String>,
     ) -> MinotaurResult<()>;
+
+    /// Get disk usage for volumes matching a prefix
+    /// Returns a map of volume name -> size in bytes
+    async fn volume_disk_usage(&self, prefix: &str) -> MinotaurResult<HashMap<String, u64>>;
 }

@@ -1,6 +1,9 @@
 //! Run command - start a sandboxed session
 
-use crate::cache::{detect_lockfiles, labels, CacheMount, CacheState, CacheVolume, LockfileInfo};
+use crate::cache::{
+    detect_lockfiles, format_bytes, gb_to_bytes, labels, CacheMount, CacheSizeStatus, CacheState,
+    CacheVolume, LockfileInfo,
+};
 use crate::cli::args::RunArgs;
 use crate::config::Config;
 use crate::credentials::{
@@ -54,6 +57,11 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     pb.set_message("Setting up caches...");
     let (cache_mounts, cache_env, cache_session) =
         setup_caches(&*runtime, &args, config, &project_dir).await?;
+
+    // Check cache size and warn if approaching limit
+    if !args.no_cache && config.cache.enabled {
+        check_cache_size_warning(&*runtime, config).await;
+    }
 
     // Collect credentials
     pb.set_message("Gathering credentials...");
@@ -299,6 +307,46 @@ async fn finalize_caches(runtime: &dyn ContainerRuntime, cache_session: &CacheSe
         // The label was already set correctly when we created the volume
         // For true immutability, we'd need to track state externally or use a different mechanism
         info!("Cache {} finalized (complete)", volume_name);
+    }
+}
+
+/// Check cache size and print warning if approaching or exceeding limit
+async fn check_cache_size_warning(runtime: &dyn ContainerRuntime, config: &Config) {
+    let sizes = match runtime.volume_disk_usage("minotaur-cache-").await {
+        Ok(s) => s,
+        Err(_) => return, // Silently skip if we can't get sizes
+    };
+
+    let total_size: u64 = sizes.values().sum();
+    let limit_bytes = gb_to_bytes(config.cache.max_total_gb);
+
+    if limit_bytes == 0 {
+        return;
+    }
+
+    let status = CacheSizeStatus::from_usage(total_size, limit_bytes);
+    let percent = CacheSizeStatus::percentage(total_size, limit_bytes);
+
+    match status {
+        CacheSizeStatus::Ok => {}
+        CacheSizeStatus::Warning => {
+            eprintln!(
+                "{} Cache usage at {:.0}% ({} / {}). Consider running: minotaur cache gc",
+                style("!").yellow(),
+                percent,
+                format_bytes(total_size),
+                format_bytes(limit_bytes)
+            );
+        }
+        CacheSizeStatus::Exceeded => {
+            eprintln!(
+                "{} Cache limit exceeded! {:.0}% ({} / {}). Run: minotaur cache gc",
+                style("!").red().bold(),
+                percent,
+                format_bytes(total_size),
+                format_bytes(limit_bytes)
+            );
+        }
     }
 }
 

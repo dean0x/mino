@@ -438,6 +438,47 @@ impl ContainerRuntime for NativePodmanRuntime {
         // Create with new labels
         self.volume_create(name, labels).await
     }
+
+    async fn volume_disk_usage(&self, prefix: &str) -> MinotaurResult<HashMap<String, u64>> {
+        // Use podman system df -v to get volume sizes
+        let output = self
+            .exec(&["system", "df", "-v", "--format", "json"])
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(MinotaurError::command_exec("podman system df", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim().is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Parse JSON - structure is { "Volumes": [...] }
+        let df: serde_json::Value =
+            serde_json::from_str(&stdout).map_err(|e| MinotaurError::Internal(e.to_string()))?;
+
+        let mut sizes = HashMap::new();
+
+        if let Some(volumes) = df.get("Volumes").and_then(|v| v.as_array()) {
+            for vol in volumes {
+                let name = vol["VolumeName"].as_str().unwrap_or_default();
+
+                // Filter by prefix
+                if !name.starts_with(prefix) {
+                    continue;
+                }
+
+                // Size is in bytes
+                if let Some(size) = vol["Size"].as_u64() {
+                    sizes.insert(name.to_string(), size);
+                }
+            }
+        }
+
+        Ok(sizes)
+    }
 }
 
 #[cfg(test)]

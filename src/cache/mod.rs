@@ -22,4 +22,7 @@ pub mod lockfile;
 pub mod volume;
 
 pub use lockfile::{detect_lockfiles, Ecosystem, LockfileInfo};
-pub use volume::{labels, plan_cache_mounts, CacheMount, CacheState, CacheVolume};
+pub use volume::{
+    format_bytes, gb_to_bytes, labels, plan_cache_mounts, CacheMount, CacheSizeStatus, CacheState,
+    CacheVolume,
+};
