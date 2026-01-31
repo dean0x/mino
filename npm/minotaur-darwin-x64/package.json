@@ -1,0 +1,14 @@
+{
+  "name": "@dean0x/minotaur-darwin-x64",
+  "version": "0.1.0",
+  "description": "Minotaur binary for macOS x64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dean0x/minotaur"
+  },
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["bin"],
+  "preferUnplugged": true
+}

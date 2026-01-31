@@ -1,0 +1,14 @@
+{
+  "name": "@dean0x/minotaur-linux-x64",
+  "version": "0.1.0",
+  "description": "Minotaur binary for Linux x64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dean0x/minotaur"
+  },
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["bin"],
+  "preferUnplugged": true
+}

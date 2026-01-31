@@ -90,3 +90,91 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Prepare platform packages
+        run: |
+          # Extract binaries and copy to npm package directories
+
+          # darwin-x64
+          tar xzf artifacts/minotaur-x86_64-apple-darwin.tar.gz
+          cp minotaur npm/minotaur-darwin-x64/bin/
+          rm minotaur
+
+          # darwin-arm64
+          tar xzf artifacts/minotaur-aarch64-apple-darwin.tar.gz
+          cp minotaur npm/minotaur-darwin-arm64/bin/
+          rm minotaur
+
+          # linux-x64
+          tar xzf artifacts/minotaur-x86_64-unknown-linux-gnu.tar.gz
+          cp minotaur npm/minotaur-linux-x64/bin/
+          rm minotaur
+
+          # linux-arm64
+          tar xzf artifacts/minotaur-aarch64-unknown-linux-gnu.tar.gz
+          cp minotaur npm/minotaur-linux-arm64/bin/
+          rm minotaur
+
+      - name: Update package versions
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+
+          # Update all package.json files with the release version
+          for pkg in minotaur minotaur-darwin-x64 minotaur-darwin-arm64 minotaur-linux-x64 minotaur-linux-arm64; do
+            jq --arg v "$VERSION" '.version = $v' npm/$pkg/package.json > tmp.json && mv tmp.json npm/$pkg/package.json
+          done
+
+          # Update optionalDependencies versions in main package
+          jq --arg v "$VERSION" '.optionalDependencies = (.optionalDependencies | to_entries | map(.value = $v) | from_entries)' npm/minotaur/package.json > tmp.json && mv tmp.json npm/minotaur/package.json
+
+      - name: Publish platform packages
+        run: |
+          for pkg in minotaur-darwin-x64 minotaur-darwin-arm64 minotaur-linux-x64 minotaur-linux-arm64; do
+            echo "Publishing @dean0x/$pkg..."
+            cd npm/$pkg
+            npm publish --access public
+            cd ../..
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
+        run: |
+          echo "Publishing @dean0x/minotaur..."
+          cd npm/minotaur
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

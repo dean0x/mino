@@ -1,0 +1,42 @@
+{
+  "name": "@dean0x/minotaur",
+  "version": "0.1.0",
+  "description": "Secure AI agent sandbox wrapper using Podman rootless containers",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dean0x/minotaur"
+  },
+  "homepage": "https://github.com/dean0x/minotaur#readme",
+  "bugs": {
+    "url": "https://github.com/dean0x/minotaur/issues"
+  },
+  "keywords": [
+    "sandbox",
+    "container",
+    "podman",
+    "security",
+    "ai",
+    "agent",
+    "cli"
+  ],
+  "bin": {
+    "minotaur": "./bin/minotaur.js"
+  },
+  "files": [
+    "bin",
+    "install.js"
+  ],
+  "optionalDependencies": {
+    "@dean0x/minotaur-darwin-x64": "0.1.0",
+    "@dean0x/minotaur-darwin-arm64": "0.1.0",
+    "@dean0x/minotaur-linux-x64": "0.1.0",
+    "@dean0x/minotaur-linux-arm64": "0.1.0"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

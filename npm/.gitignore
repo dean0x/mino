@@ -1,0 +1,10 @@
+# Binaries are injected during CI release, not committed
+*/bin/minotaur
+*/bin/minotaur.exe
+
+# Fallback binary directory
+minotaur/.binary/
+
+# npm artifacts
+*.tgz
+node_modules/
