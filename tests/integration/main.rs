@@ -78,4 +78,23 @@ mod cli_tests {
             .failure()
             .stderr(predicate::str::contains("Session not found"));
     }
+
+    #[test]
+    fn setup_check_runs() {
+        // Setup check should run without error (may report issues but shouldn't panic)
+        minotaur()
+            .args(["setup", "--check"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Minotaur Setup"));
+    }
+
+    #[test]
+    fn setup_help() {
+        minotaur()
+            .args(["setup", "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Interactive setup wizard"));
+    }
 }

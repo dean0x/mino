@@ -69,6 +69,9 @@ async fn run() -> MinotaurResult<()> {
         Commands::Status => {
             minotaur::cli::commands::status(&config).await
         }
+        Commands::Setup(args) => {
+            minotaur::cli::commands::setup(args, &config).await
+        }
         Commands::Config(args) => {
             minotaur::cli::commands::config(args, &config).await
         }

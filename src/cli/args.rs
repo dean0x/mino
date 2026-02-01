@@ -43,11 +43,26 @@ pub enum Commands {
     /// Check system health and dependencies
     Status,
 
+    /// Interactive setup wizard - install prerequisites
+    Setup(SetupArgs),
+
     /// Show or edit configuration
     Config(ConfigArgs),
 
     /// Manage dependency caches
     Cache(CacheArgs),
+}
+
+/// Arguments for the setup command
+#[derive(Parser, Debug)]
+pub struct SetupArgs {
+    /// Auto-approve all installation prompts
+    #[arg(short, long)]
+    pub yes: bool,
+
+    /// Check prerequisites only, don't install
+    #[arg(long)]
+    pub check: bool,
 }
 
 /// Arguments for the run command
@@ -291,5 +306,29 @@ mod tests {
     fn cli_parses_status() {
         let cli = Cli::parse_from(["minotaur", "status"]);
         assert!(matches!(cli.command, Commands::Status));
+    }
+
+    #[test]
+    fn cli_parses_setup() {
+        let cli = Cli::parse_from(["minotaur", "setup"]);
+        match cli.command {
+            Commands::Setup(args) => {
+                assert!(!args.yes);
+                assert!(!args.check);
+            }
+            _ => panic!("expected Setup command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_setup_with_flags() {
+        let cli = Cli::parse_from(["minotaur", "setup", "--yes", "--check"]);
+        match cli.command {
+            Commands::Setup(args) => {
+                assert!(args.yes);
+                assert!(args.check);
+            }
+            _ => panic!("expected Setup command"),
+        }
     }
 }
