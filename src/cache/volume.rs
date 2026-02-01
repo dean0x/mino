@@ -170,10 +170,7 @@ impl CacheVolume {
         labels.insert(labels::ECOSYSTEM.to_string(), self.ecosystem.to_string());
         labels.insert(labels::HASH.to_string(), self.hash.clone());
         labels.insert(labels::STATE.to_string(), self.state.as_label().to_string());
-        labels.insert(
-            labels::CREATED_AT.to_string(),
-            self.created_at.to_rfc3339(),
-        );
+        labels.insert(labels::CREATED_AT.to_string(), self.created_at.to_rfc3339());
         labels
     }
 
@@ -300,7 +297,11 @@ mod tests {
 
     #[test]
     fn cache_volume_new() {
-        let vol = CacheVolume::new(Ecosystem::Npm, "abc123def456".to_string(), CacheState::Building);
+        let vol = CacheVolume::new(
+            Ecosystem::Npm,
+            "abc123def456".to_string(),
+            CacheState::Building,
+        );
 
         assert_eq!(vol.name, "minotaur-cache-npm-abc123def456");
         assert_eq!(vol.ecosystem, Ecosystem::Npm);
@@ -326,7 +327,10 @@ mod tests {
         let vol = CacheVolume::new(Ecosystem::Npm, "abc123".to_string(), CacheState::Building);
         let labels = vol.labels();
 
-        assert_eq!(labels.get(labels::MINOTAUR_CACHE), Some(&"true".to_string()));
+        assert_eq!(
+            labels.get(labels::MINOTAUR_CACHE),
+            Some(&"true".to_string())
+        );
         assert_eq!(labels.get(labels::ECOSYSTEM), Some(&"npm".to_string()));
         assert_eq!(labels.get(labels::HASH), Some(&"abc123".to_string()));
         assert_eq!(labels.get(labels::STATE), Some(&"building".to_string()));

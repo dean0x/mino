@@ -278,10 +278,8 @@ impl ContainerRuntime for OrbStackRuntime {
         let mut args = vec!["podman", "volume", "create"];
 
         // Build label arguments
-        let label_strings: Vec<String> = labels
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
+        let label_strings: Vec<String> =
+            labels.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
 
         for label in &label_strings {
             args.push("--label");

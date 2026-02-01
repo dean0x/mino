@@ -1,7 +1,7 @@
 //! Interactive prompts with CI/non-interactive fallback
 
-use crate::error::MinotaurResult;
 use super::context::UiContext;
+use crate::error::MinotaurResult;
 use std::io::{self, Write};
 
 /// Prompt for confirmation, returns default if non-interactive or auto-yes
@@ -60,8 +60,14 @@ pub async fn select<T: Clone + Send + Eq + 'static>(
 
     match result {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(e)) => Err(crate::error::MinotaurError::User(format!("Select failed: {}", e))),
-        Err(e) => Err(crate::error::MinotaurError::User(format!("Select task failed: {}", e))),
+        Ok(Err(e)) => Err(crate::error::MinotaurError::User(format!(
+            "Select failed: {}",
+            e
+        ))),
+        Err(e) => Err(crate::error::MinotaurError::User(format!(
+            "Select task failed: {}",
+            e
+        ))),
     }
 }
 

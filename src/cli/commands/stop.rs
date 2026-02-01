@@ -39,7 +39,10 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinotaurResult<()> {
         let runtime = create_runtime(config)?;
 
         let mut spinner = TaskSpinner::new(&ctx);
-        spinner.start(&format!("Stopping session {}...", style(&args.session).cyan()));
+        spinner.start(&format!(
+            "Stopping session {}...",
+            style(&args.session).cyan()
+        ));
 
         if args.force {
             runtime.kill(container_id).await?;
@@ -50,12 +53,12 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinotaurResult<()> {
         // Remove container
         runtime.remove(container_id).await?;
 
-        spinner.stop(&format!(
-            "Session {} stopped",
-            style(&args.session).cyan()
-        ));
+        spinner.stop(&format!("Session {} stopped", style(&args.session).cyan()));
     } else {
-        ui::step_ok(&ctx, &format!("Session {} stopped", style(&args.session).cyan()));
+        ui::step_ok(
+            &ctx,
+            &format!("Session {} stopped", style(&args.session).cyan()),
+        );
     }
 
     // Update session status

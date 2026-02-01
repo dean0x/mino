@@ -152,11 +152,7 @@ pub fn detect_lockfiles(project_dir: &Path) -> MinotaurResult<Vec<LockfileInfo>>
         for pattern in ecosystem.lockfile_patterns() {
             let lockfile_path = project_dir.join(pattern);
             if lockfile_path.exists() && lockfile_path.is_file() {
-                debug!(
-                    "Found {} lockfile: {}",
-                    ecosystem,
-                    lockfile_path.display()
-                );
+                debug!("Found {} lockfile: {}", ecosystem, lockfile_path.display());
 
                 let hash = hash_file_contents(&lockfile_path)?;
                 lockfiles.push(LockfileInfo {

@@ -88,9 +88,7 @@ async fn set_value(
         ["credentials", "aws", "profile"] => {
             config.credentials.aws.profile = Some(value.to_string())
         }
-        ["credentials", "aws", "region"] => {
-            config.credentials.aws.region = Some(value.to_string())
-        }
+        ["credentials", "aws", "region"] => config.credentials.aws.region = Some(value.to_string()),
 
         ["credentials", "gcp", "project"] => {
             config.credentials.gcp.project = Some(value.to_string())

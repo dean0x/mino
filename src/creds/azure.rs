@@ -68,8 +68,9 @@ impl AzureCredentials {
             return Err(MinotaurError::AzureCredential(stderr.to_string()));
         }
 
-        let response: AzureTokenResponse = serde_json::from_slice(&output.stdout)
-            .map_err(|e| MinotaurError::AzureCredential(format!("Failed to parse response: {}", e)))?;
+        let response: AzureTokenResponse = serde_json::from_slice(&output.stdout).map_err(|e| {
+            MinotaurError::AzureCredential(format!("Failed to parse response: {}", e))
+        })?;
 
         let expires_at = DateTime::parse_from_rfc3339(&response.expires_on)
             .map(|dt| dt.with_timezone(&Utc))

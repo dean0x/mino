@@ -29,18 +29,14 @@ mod cli_tests {
     #[test]
     fn status_runs() {
         // Status may fail if OrbStack isn't installed, but should not panic
-        minotaur()
-            .arg("status")
-            .assert();
+        minotaur().arg("status").assert();
     }
 
     #[test]
     fn list_empty() {
-        minotaur()
-            .args(["list"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("No active sessions").or(predicate::str::contains("NAME")));
+        minotaur().args(["list"]).assert().success().stdout(
+            predicate::str::contains("No active sessions").or(predicate::str::contains("NAME")),
+        );
     }
 
     #[test]

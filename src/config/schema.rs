@@ -29,7 +29,6 @@ pub struct Config {
     pub cache: CacheConfig,
 }
 
-
 /// General application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -109,11 +108,7 @@ impl Default for ContainerConfig {
     fn default() -> Self {
         Self {
             image: "fedora:41".to_string(),
-            packages: vec![
-                "git".to_string(),
-                "curl".to_string(),
-                "which".to_string(),
-            ],
+            packages: vec!["git".to_string(), "curl".to_string(), "which".to_string()],
             env: HashMap::new(),
             volumes: vec![],
             network: "host".to_string(),
@@ -138,7 +133,6 @@ pub struct CredentialsConfig {
     /// GitHub settings
     pub github: GithubConfig,
 }
-
 
 /// AWS credential settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,7 +177,6 @@ pub struct GcpConfig {
     pub service_account: Option<String>,
 }
 
-
 /// Azure credential settings
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -194,7 +187,6 @@ pub struct AzureConfig {
     /// Azure tenant ID
     pub tenant: Option<String>,
 }
-
 
 /// GitHub credential settings
 #[derive(Debug, Clone, Serialize, Deserialize)]

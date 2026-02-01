@@ -85,9 +85,12 @@ impl ConfigManager {
         self.ensure_config_dir().await?;
 
         let content = toml::to_string_pretty(config)?;
-        fs::write(&self.config_path, content)
-            .await
-            .map_err(|e| MinotaurError::io(format!("writing config to {}", self.config_path.display()), e))?;
+        fs::write(&self.config_path, content).await.map_err(|e| {
+            MinotaurError::io(
+                format!("writing config to {}", self.config_path.display()),
+                e,
+            )
+        })?;
 
         info!("Configuration saved to {}", self.config_path.display());
         Ok(())
@@ -96,22 +99,28 @@ impl ConfigManager {
     /// Ensure the config directory exists
     async fn ensure_config_dir(&self) -> MinotaurResult<()> {
         if let Some(parent) = self.config_path.parent() {
-            fs::create_dir_all(parent).await.map_err(|e| MinotaurError::ConfigDirCreate {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| MinotaurError::ConfigDirCreate {
+                    path: parent.to_path_buf(),
+                    source: e,
+                })?;
         }
         Ok(())
     }
 
     /// Ensure all state directories exist
     pub async fn ensure_state_dirs() -> MinotaurResult<()> {
-        let dirs = [Self::state_dir(), Self::sessions_dir(), Self::credentials_dir()];
+        let dirs = [
+            Self::state_dir(),
+            Self::sessions_dir(),
+            Self::credentials_dir(),
+        ];
 
         for dir in &dirs {
-            fs::create_dir_all(dir)
-                .await
-                .map_err(|e| MinotaurError::io(format!("creating directory {}", dir.display()), e))?;
+            fs::create_dir_all(dir).await.map_err(|e| {
+                MinotaurError::io(format!("creating directory {}", dir.display()), e)
+            })?;
         }
 
         // Set restrictive permissions on credentials directory

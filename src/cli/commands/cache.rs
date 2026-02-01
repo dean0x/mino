@@ -358,7 +358,14 @@ async fn gc_caches(
 
     let bytes_to_free: u64 = to_remove.iter().map(|(_, s)| s).sum();
 
-    ui::section(&ctx, &format!("Found {} cache(s) to remove ({})", to_remove.len(), format_bytes(bytes_to_free)));
+    ui::section(
+        &ctx,
+        &format!(
+            "Found {} cache(s) to remove ({})",
+            to_remove.len(),
+            format_bytes(bytes_to_free)
+        ),
+    );
 
     for (cache, size) in &to_remove {
         let age_days = (Utc::now() - cache.created_at).num_days();
@@ -438,7 +445,8 @@ async fn clear_all_caches(
     }
 
     if !skip_confirm {
-        let confirmed = ui::confirm(&ctx, "Are you sure you want to clear all caches?", false).await?;
+        let confirmed =
+            ui::confirm(&ctx, "Are you sure you want to clear all caches?", false).await?;
         if !confirmed {
             ui::outro_warn(&ctx, "Aborted.");
             return Ok(());

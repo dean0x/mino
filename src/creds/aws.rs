@@ -61,12 +61,17 @@ impl AwsCredentials {
     }
 
     /// Get session token using AWS CLI
-    async fn get_session_token_internal(config: &AwsConfig) -> MinotaurResult<AwsSessionCredentials> {
+    async fn get_session_token_internal(
+        config: &AwsConfig,
+    ) -> MinotaurResult<AwsSessionCredentials> {
         info!("Requesting AWS session token via CLI...");
 
         let mut cmd = Command::new("aws");
         cmd.args(["sts", "get-session-token"]);
-        cmd.args(["--duration-seconds", &config.session_duration_secs.to_string()]);
+        cmd.args([
+            "--duration-seconds",
+            &config.session_duration_secs.to_string(),
+        ]);
         cmd.args(["--output", "json"]);
 
         if let Some(profile) = &config.profile {
@@ -86,7 +91,8 @@ impl AwsCredentials {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("Unable to locate credentials") || stderr.contains("not configured") {
+            if stderr.contains("Unable to locate credentials") || stderr.contains("not configured")
+            {
                 return Err(MinotaurError::AwsNotConfigured);
             }
             return Err(MinotaurError::AwsSts(stderr.to_string()));
@@ -120,7 +126,10 @@ impl AwsCredentials {
         cmd.args(["sts", "assume-role"]);
         cmd.args(["--role-arn", role_arn]);
         cmd.args(["--role-session-name", "minotaur-session"]);
-        cmd.args(["--duration-seconds", &config.session_duration_secs.to_string()]);
+        cmd.args([
+            "--duration-seconds",
+            &config.session_duration_secs.to_string(),
+        ]);
         cmd.args(["--output", "json"]);
 
         if let Some(external_id) = &config.external_id {

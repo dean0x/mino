@@ -84,9 +84,9 @@ impl Session {
             return Ok(None);
         }
 
-        let content = fs::read_to_string(&path)
-            .await
-            .map_err(|e| MinotaurError::io(format!("reading session file {}", path.display()), e))?;
+        let content = fs::read_to_string(&path).await.map_err(|e| {
+            MinotaurError::io(format!("reading session file {}", path.display()), e)
+        })?;
 
         let session: Session = serde_json::from_str(&content)?;
         Ok(Some(session))
@@ -104,9 +104,9 @@ impl Session {
         }
 
         let content = serde_json::to_string_pretty(self)?;
-        fs::write(&path, content)
-            .await
-            .map_err(|e| MinotaurError::io(format!("writing session file {}", path.display()), e))?;
+        fs::write(&path, content).await.map_err(|e| {
+            MinotaurError::io(format!("writing session file {}", path.display()), e)
+        })?;
 
         Ok(())
     }
@@ -115,9 +115,9 @@ impl Session {
     pub async fn delete(&self) -> MinotaurResult<()> {
         let path = self.file_path();
         if path.exists() {
-            fs::remove_file(&path)
-                .await
-                .map_err(|e| MinotaurError::io(format!("deleting session file {}", path.display()), e))?;
+            fs::remove_file(&path).await.map_err(|e| {
+                MinotaurError::io(format!("deleting session file {}", path.display()), e)
+            })?;
         }
         Ok(())
     }

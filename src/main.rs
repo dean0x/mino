@@ -54,29 +54,13 @@ async fn run() -> MinotaurResult<()> {
 
     // Dispatch to command
     match cli.command {
-        Commands::Run(args) => {
-            minotaur::cli::commands::run(args, &config).await
-        }
-        Commands::List(args) => {
-            minotaur::cli::commands::list(args, &config).await
-        }
-        Commands::Stop(args) => {
-            minotaur::cli::commands::stop(args, &config).await
-        }
-        Commands::Logs(args) => {
-            minotaur::cli::commands::logs(args, &config).await
-        }
-        Commands::Status => {
-            minotaur::cli::commands::status(&config).await
-        }
-        Commands::Setup(args) => {
-            minotaur::cli::commands::setup(args, &config).await
-        }
-        Commands::Config(args) => {
-            minotaur::cli::commands::config(args, &config).await
-        }
-        Commands::Cache(args) => {
-            minotaur::cli::commands::cache(args, &config).await
-        }
+        Commands::Run(args) => minotaur::cli::commands::run(args, &config).await,
+        Commands::List(args) => minotaur::cli::commands::list(args, &config).await,
+        Commands::Stop(args) => minotaur::cli::commands::stop(args, &config).await,
+        Commands::Logs(args) => minotaur::cli::commands::logs(args, &config).await,
+        Commands::Status => minotaur::cli::commands::status(&config).await,
+        Commands::Setup(args) => minotaur::cli::commands::setup(args, &config).await,
+        Commands::Config(args) => minotaur::cli::commands::config(args, &config).await,
+        Commands::Cache(args) => minotaur::cli::commands::cache(args, &config).await,
     }
 }

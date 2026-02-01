@@ -33,7 +33,10 @@ pub async fn execute(config: &Config) -> MinotaurResult<()> {
             all_ok &= check_native_podman(&ctx).await;
         }
         Platform::Unsupported => {
-            ui::step_error(&ctx, "Unsupported platform - Minotaur supports macOS and Linux only");
+            ui::step_error(
+                &ctx,
+                "Unsupported platform - Minotaur supports macOS and Linux only",
+            );
             all_ok = false;
         }
     }
@@ -41,7 +44,13 @@ pub async fn execute(config: &Config) -> MinotaurResult<()> {
     // Check cloud CLIs
     ui::section(&ctx, "Cloud CLIs");
     check_cli(&ctx, "aws", "aws --version", "brew install awscli").await;
-    check_cli(&ctx, "gcloud", "gcloud --version", "brew install google-cloud-sdk").await;
+    check_cli(
+        &ctx,
+        "gcloud",
+        "gcloud --version",
+        "brew install google-cloud-sdk",
+    )
+    .await;
     check_cli(&ctx, "az", "az --version", "brew install azure-cli").await;
     check_cli(&ctx, "gh", "gh --version", "brew install gh").await;
 
@@ -189,7 +198,11 @@ async fn check_cli(ctx: &UiContext, name: &str, version_cmd: &str, install_hint:
             ui::step_ok_detail(ctx, name, first_line.trim());
         }
         _ => {
-            ui::step_warn_hint(ctx, &format!("{} not found", name), &format!("Install: {}", install_hint));
+            ui::step_warn_hint(
+                ctx,
+                &format!("{} not found", name),
+                &format!("Install: {}", install_hint),
+            );
         }
     }
 }

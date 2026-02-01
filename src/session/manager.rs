@@ -93,7 +93,10 @@ impl SessionManager {
 
         for session in sessions {
             // Only clean up stopped/failed sessions
-            if !matches!(session.status, SessionStatus::Stopped | SessionStatus::Failed) {
+            if !matches!(
+                session.status,
+                SessionStatus::Stopped | SessionStatus::Failed
+            ) {
                 continue;
             }
 

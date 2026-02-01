@@ -249,7 +249,9 @@ impl ContainerRuntime for NativePodmanRuntime {
             lines.to_string()
         };
 
-        let output = self.exec(&["logs", "--tail", &tail_arg, container_id]).await?;
+        let output = self
+            .exec(&["logs", "--tail", &tail_arg, container_id])
+            .await?;
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
@@ -273,10 +275,8 @@ impl ContainerRuntime for NativePodmanRuntime {
         let mut args = vec!["volume", "create"];
 
         // Build label arguments
-        let label_strings: Vec<String> = labels
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
+        let label_strings: Vec<String> =
+            labels.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
 
         for label in &label_strings {
             args.push("--label");
@@ -321,9 +321,7 @@ impl ContainerRuntime for NativePodmanRuntime {
 
     async fn volume_list(&self, prefix: &str) -> MinotaurResult<Vec<VolumeInfo>> {
         // Use JSON format for reliable parsing
-        let output = self
-            .exec(&["volume", "ls", "--format", "json"])
-            .await?;
+        let output = self.exec(&["volume", "ls", "--format", "json"]).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

@@ -55,27 +55,25 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
     }
 
     // Step 2: Check OrbStack
-    let orbstack_result = if homebrew_result == StepResult::AlreadyOk
-        || homebrew_result == StepResult::Installed
-    {
-        check_orbstack(ctx, args).await
-    } else {
-        ui::step_blocked(ctx, "OrbStack", "Homebrew");
-        StepResult::Blocked
-    };
+    let orbstack_result =
+        if homebrew_result == StepResult::AlreadyOk || homebrew_result == StepResult::Installed {
+            check_orbstack(ctx, args).await
+        } else {
+            ui::step_blocked(ctx, "OrbStack", "Homebrew");
+            StepResult::Blocked
+        };
     if orbstack_result == StepResult::Failed || orbstack_result == StepResult::Skipped {
         issues += 1;
     }
 
     // Step 3: Check OrbStack running
-    let orbstack_running_result = if orbstack_result == StepResult::AlreadyOk
-        || orbstack_result == StepResult::Installed
-    {
-        check_orbstack_running(ctx, args).await
-    } else {
-        ui::step_blocked(ctx, "OrbStack Service", "OrbStack");
-        StepResult::Blocked
-    };
+    let orbstack_running_result =
+        if orbstack_result == StepResult::AlreadyOk || orbstack_result == StepResult::Installed {
+            check_orbstack_running(ctx, args).await
+        } else {
+            ui::step_blocked(ctx, "OrbStack Service", "OrbStack");
+            StepResult::Blocked
+        };
     if orbstack_running_result == StepResult::Failed
         || orbstack_running_result == StepResult::Skipped
     {
@@ -123,7 +121,10 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
             ui::outro_warn(ctx, "Setup incomplete - see above for details.");
         }
     } else {
-        ui::outro_success(ctx, "Setup complete! Run 'minotaur run -- <command>' to start.");
+        ui::outro_success(
+            ctx,
+            "Setup complete! Run 'minotaur run -- <command>' to start.",
+        );
     }
 
     Ok(())
@@ -141,27 +142,25 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinotaurResult<()> {
     }
 
     // Step 2: Check rootless mode
-    let rootless_result = if podman_result == StepResult::AlreadyOk
-        || podman_result == StepResult::Installed
-    {
-        check_rootless_mode(ctx, args).await
-    } else {
-        ui::step_blocked(ctx, "Rootless Mode", "Podman");
-        StepResult::Blocked
-    };
+    let rootless_result =
+        if podman_result == StepResult::AlreadyOk || podman_result == StepResult::Installed {
+            check_rootless_mode(ctx, args).await
+        } else {
+            ui::step_blocked(ctx, "Rootless Mode", "Podman");
+            StepResult::Blocked
+        };
     if rootless_result == StepResult::Failed || rootless_result == StepResult::Skipped {
         issues += 1;
     }
 
     // Step 3: Check user namespace support
-    let userns_result = if rootless_result == StepResult::AlreadyOk
-        || rootless_result == StepResult::Installed
-    {
-        check_user_namespaces(ctx, args).await
-    } else {
-        ui::step_blocked(ctx, "User Namespaces", "Rootless Mode");
-        StepResult::Blocked
-    };
+    let userns_result =
+        if rootless_result == StepResult::AlreadyOk || rootless_result == StepResult::Installed {
+            check_user_namespaces(ctx, args).await
+        } else {
+            ui::step_blocked(ctx, "User Namespaces", "Rootless Mode");
+            StepResult::Blocked
+        };
     if userns_result == StepResult::Failed || userns_result == StepResult::Skipped {
         issues += 1;
     }
@@ -180,7 +179,10 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinotaurResult<()> {
             ui::outro_warn(ctx, "Setup incomplete - see above for details.");
         }
     } else {
-        ui::outro_success(ctx, "Setup complete! Run 'minotaur run -- <command>' to start.");
+        ui::outro_success(
+            ctx,
+            "Setup complete! Run 'minotaur run -- <command>' to start.",
+        );
     }
 
     Ok(())
@@ -228,7 +230,11 @@ async fn check_homebrew(ctx: &UiContext, args: &SetupArgs) -> StepResult {
                     ui::step_ok(ctx, "Homebrew installed");
                     StepResult::Installed
                 } else {
-                    ui::step_error_detail(ctx, "Homebrew installation failed", "Visit https://brew.sh");
+                    ui::step_error_detail(
+                        ctx,
+                        "Homebrew installation failed",
+                        "Visit https://brew.sh",
+                    );
                     StepResult::Failed
                 }
             } else {
@@ -340,7 +346,10 @@ async fn check_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &str, vm_distro: &
             StepResult::Installed
         } else {
             ui::step_error(ctx, "VM creation failed");
-            ui::remark(ctx, &format!("Try: orb delete {} && minotaur setup", vm_name));
+            ui::remark(
+                ctx,
+                &format!("Try: orb delete {} && minotaur setup", vm_name),
+            );
             StepResult::Failed
         }
     } else {
@@ -465,7 +474,10 @@ async fn check_native_podman(ctx: &UiContext, args: &SetupArgs) -> StepResult {
                             cmd_args = vec!["-S", "--noconfirm", "podman"];
                         }
 
-                        ui::remark(ctx, &format!("Running: sudo {} {}", name, cmd_args.join(" ")));
+                        ui::remark(
+                            ctx,
+                            &format!("Running: sudo {} {}", name, cmd_args.join(" ")),
+                        );
 
                         if run_visible_sudo(name, &cmd_args).await {
                             ui::step_ok(ctx, "Podman installed");
@@ -505,7 +517,11 @@ async fn check_rootless_mode(ctx: &UiContext, args: &SetupArgs) -> StepResult {
                 StepResult::AlreadyOk
             } else {
                 if args.check {
-                    ui::step_warn_hint(ctx, "Rootless mode not enabled", "Run: podman system migrate");
+                    ui::step_warn_hint(
+                        ctx,
+                        "Rootless mode not enabled",
+                        "Run: podman system migrate",
+                    );
                     return StepResult::Failed;
                 }
 
@@ -549,7 +565,10 @@ async fn check_user_namespaces(ctx: &UiContext, args: &SetupArgs) -> StepResult 
                     ui::step_warn(ctx, "User namespaces disabled (max_user_namespaces = 0)");
                 }
 
-                ui::remark(ctx, "User namespaces must be enabled for rootless containers.");
+                ui::remark(
+                    ctx,
+                    "User namespaces must be enabled for rootless containers.",
+                );
                 ui::remark(ctx, "Run: sudo sysctl -w user.max_user_namespaces=15000");
                 ui::remark(ctx, "To make permanent, add to /etc/sysctl.conf:");
                 ui::remark(ctx, "  user.max_user_namespaces=15000");

@@ -79,8 +79,14 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     }
 
     // Build container config (with cache mounts and env)
-    let container_config =
-        build_container_config(&args, config, &project_dir, credentials, &cache_mounts, cache_env)?;
+    let container_config = build_container_config(
+        &args,
+        config,
+        &project_dir,
+        credentials,
+        &cache_mounts,
+        cache_env,
+    )?;
 
     // Determine command to run
     let command = if args.command.is_empty() {
@@ -205,7 +211,9 @@ async fn setup_caches(
         }
 
         if should_finalize {
-            cache_session.volumes_to_finalize.push(mount.volume_name.clone());
+            cache_session
+                .volumes_to_finalize
+                .push(mount.volume_name.clone());
         }
 
         cache_mounts.push(mount);
@@ -239,14 +247,16 @@ async fn setup_cache_for_lockfile(
                 Some(CacheState::Complete) => {
                     info!(
                         "Cache hit for {} ({}), mounting read-only",
-                        info.ecosystem, &info.hash[..8]
+                        info.ecosystem,
+                        &info.hash[..8]
                     );
                     (CacheState::Complete, false)
                 }
                 Some(CacheState::Building) => {
                     info!(
                         "Resuming incomplete cache for {} ({})",
-                        info.ecosystem, &info.hash[..8]
+                        info.ecosystem,
+                        &info.hash[..8]
                     );
                     (CacheState::Building, true)
                 }
@@ -254,7 +264,8 @@ async fn setup_cache_for_lockfile(
                     // Unknown state, treat as building
                     warn!(
                         "Cache for {} ({}) has unknown state, treating as building",
-                        info.ecosystem, &info.hash[..8]
+                        info.ecosystem,
+                        &info.hash[..8]
                     );
                     (CacheState::Building, true)
                 }
@@ -264,7 +275,8 @@ async fn setup_cache_for_lockfile(
             // Cache miss - create new volume
             info!(
                 "Cache miss for {} ({}), creating volume",
-                info.ecosystem, &info.hash[..8]
+                info.ecosystem,
+                &info.hash[..8]
             );
 
             let cache = CacheVolume::from_lockfile(info, CacheState::Building);
@@ -293,7 +305,10 @@ async fn finalize_caches(runtime: &dyn ContainerRuntime, cache_session: &CacheSe
         let vol_info = match runtime.volume_inspect(volume_name).await {
             Ok(Some(info)) => info,
             Ok(None) => {
-                warn!("Cache volume {} disappeared, skipping finalization", volume_name);
+                warn!(
+                    "Cache volume {} disappeared, skipping finalization",
+                    volume_name
+                );
                 continue;
             }
             Err(e) => {
@@ -413,10 +428,7 @@ async fn gather_credentials(
         match AwsCredentials::get_session_token(&config.credentials.aws, &cache).await {
             Ok(creds) => {
                 env_vars.insert("AWS_ACCESS_KEY_ID".to_string(), creds.access_key_id);
-                env_vars.insert(
-                    "AWS_SECRET_ACCESS_KEY".to_string(),
-                    creds.secret_access_key,
-                );
+                env_vars.insert("AWS_SECRET_ACCESS_KEY".to_string(), creds.secret_access_key);
                 if let Some(token) = creds.session_token {
                     env_vars.insert("AWS_SESSION_TOKEN".to_string(), token);
                 }

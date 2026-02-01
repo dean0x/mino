@@ -133,9 +133,15 @@ pub fn step_blocked(ctx: &UiContext, name: &str, dependency: &str) {
             "{} - {}",
             style(name).dim(),
             style(format!("blocked (requires {})", dependency)).dim()
-        )).ok();
+        ))
+        .ok();
     } else {
-        println!("  {} {} (requires {})", style("[-]").dim(), name, dependency);
+        println!(
+            "  {} {} (requires {})",
+            style("[-]").dim(),
+            name,
+            dependency
+        );
     }
 }
 

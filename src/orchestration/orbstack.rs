@@ -76,7 +76,9 @@ impl OrbStack {
         if status.success() {
             Ok(())
         } else {
-            Err(MinotaurError::VmStart("Failed to start OrbStack".to_string()))
+            Err(MinotaurError::VmStart(
+                "Failed to start OrbStack".to_string(),
+            ))
         }
     }
 
@@ -112,7 +114,10 @@ impl OrbStack {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::VmStart(format!("Failed to create VM: {}", stderr)))
+            Err(MinotaurError::VmStart(format!(
+                "Failed to create VM: {}",
+                stderr
+            )))
         }
     }
 
@@ -173,7 +178,10 @@ impl OrbStack {
         if status.success() {
             Ok(())
         } else {
-            Err(MinotaurError::VmStart(format!("Failed to start VM: {}", self.config.name)))
+            Err(MinotaurError::VmStart(format!(
+                "Failed to start VM: {}",
+                self.config.name
+            )))
         }
     }
 
@@ -186,10 +194,9 @@ impl OrbStack {
         cmd.args(command);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| MinotaurError::command_failed(format!("orb -m {} {:?}", self.config.name, command), e))?;
+        let output = cmd.output().await.map_err(|e| {
+            MinotaurError::command_failed(format!("orb -m {} {:?}", self.config.name, command), e)
+        })?;
 
         Ok(output)
     }
@@ -211,7 +218,10 @@ impl OrbStack {
 
     /// Execute a command in the VM interactively
     pub async fn exec_interactive(&self, command: &[&str]) -> MinotaurResult<i32> {
-        debug!("Executing interactively in VM {}: {:?}", self.config.name, command);
+        debug!(
+            "Executing interactively in VM {}: {:?}",
+            self.config.name, command
+        );
 
         let mut cmd = Command::new("orb");
         cmd.arg("-m").arg(&self.config.name);
@@ -220,10 +230,9 @@ impl OrbStack {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
-        let status = cmd
-            .status()
-            .await
-            .map_err(|e| MinotaurError::command_failed(format!("orb -m {} {:?}", self.config.name, command), e))?;
+        let status = cmd.status().await.map_err(|e| {
+            MinotaurError::command_failed(format!("orb -m {} {:?}", self.config.name, command), e)
+        })?;
 
         Ok(status.code().unwrap_or(-1))
     }
