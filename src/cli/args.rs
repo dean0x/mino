@@ -63,6 +63,10 @@ pub struct SetupArgs {
     /// Check prerequisites only, don't install
     #[arg(long)]
     pub check: bool,
+
+    /// Upgrade existing dependencies to latest versions
+    #[arg(long)]
+    pub upgrade: bool,
 }
 
 /// Arguments for the run command
@@ -327,6 +331,20 @@ mod tests {
             Commands::Setup(args) => {
                 assert!(args.yes);
                 assert!(args.check);
+                assert!(!args.upgrade);
+            }
+            _ => panic!("expected Setup command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_setup_upgrade() {
+        let cli = Cli::parse_from(["minotaur", "setup", "--upgrade"]);
+        match cli.command {
+            Commands::Setup(args) => {
+                assert!(!args.yes);
+                assert!(!args.check);
+                assert!(args.upgrade);
             }
             _ => panic!("expected Setup command"),
         }

@@ -192,6 +192,24 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinotaurResult<()> {
 // macOS Steps
 // =============================================================================
 
+/// Check if an OrbStack VM exists by name
+async fn vm_exists(vm_name: &str) -> bool {
+    let output = Command::new("orb")
+        .args(["list", "-q"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.lines().any(|line| line.trim() == vm_name)
+        }
+        _ => false,
+    }
+}
+
 async fn check_homebrew(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let output = Command::new("brew")
         .arg("--prefix")
@@ -252,6 +270,18 @@ async fn check_orbstack(ctx: &UiContext, args: &SetupArgs) -> StepResult {
         } else {
             ui::step_ok(ctx, "OrbStack installed");
         }
+
+        // Upgrade if requested
+        if args.upgrade {
+            ui::remark(ctx, "Running: brew upgrade --cask orbstack");
+            if run_visible("brew", &["upgrade", "--cask", "orbstack"]).await {
+                if let Ok(new_version) = OrbStack::version().await {
+                    ui::step_ok_detail(ctx, "OrbStack upgraded", &new_version);
+                }
+            }
+            // Don't fail if upgrade fails - package might already be latest
+        }
+
         return StepResult::AlreadyOk;
     }
 
@@ -311,22 +341,7 @@ async fn check_orbstack_running(ctx: &UiContext, args: &SetupArgs) -> StepResult
 }
 
 async fn check_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &str, vm_distro: &str) -> StepResult {
-    let output = Command::new("orb")
-        .args(["list", "-f", "{{.Name}}"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await;
-
-    let vm_exists = match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.lines().any(|line| line.trim() == vm_name)
-        }
-        _ => false,
-    };
-
-    if vm_exists {
+    if vm_exists(vm_name).await {
         ui::step_ok_detail(ctx, "Minotaur VM exists", vm_name);
         return StepResult::AlreadyOk;
     }
@@ -344,6 +359,10 @@ async fn check_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &str, vm_distro: &
         if run_visible("orb", &["create", vm_distro, vm_name]).await {
             ui::step_ok_detail(ctx, "VM created", vm_name);
             StepResult::Installed
+        } else if vm_exists(vm_name).await {
+            // VM was created externally (e.g., via OrbStack UI) while we were waiting
+            ui::step_ok_detail(ctx, "VM already exists", vm_name);
+            StepResult::AlreadyOk
         } else {
             ui::step_error(ctx, "VM creation failed");
             ui::remark(
@@ -376,6 +395,30 @@ async fn check_podman_in_vm(
             let version = String::from_utf8_lossy(&out.stdout);
             let first_line = version.lines().next().unwrap_or("unknown");
             ui::step_ok_detail(ctx, "Podman installed in VM", first_line.trim());
+
+            // Upgrade if requested
+            if args.upgrade {
+                ui::remark(ctx, "Upgrading Podman in VM...");
+                let upgrade_success = upgrade_podman_in_vm(ctx, vm_name, vm_distro).await;
+                if upgrade_success {
+                    // Show new version
+                    let new_output = Command::new("orb")
+                        .args(["-m", vm_name, "podman", "--version"])
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .output()
+                        .await;
+                    if let Ok(out) = new_output {
+                        if out.status.success() {
+                            let new_version = String::from_utf8_lossy(&out.stdout);
+                            let new_first_line = new_version.lines().next().unwrap_or("unknown");
+                            ui::step_ok_detail(ctx, "Podman upgraded", new_first_line.trim());
+                        }
+                    }
+                }
+                // Don't fail if upgrade fails - package might already be latest
+            }
+
             StepResult::AlreadyOk
         }
         _ => {
@@ -438,6 +481,31 @@ async fn check_podman_in_vm(
     }
 }
 
+/// Upgrade Podman in VM using the appropriate package manager
+async fn upgrade_podman_in_vm(ctx: &UiContext, vm_name: &str, vm_distro: &str) -> bool {
+    match vm_distro {
+        "ubuntu" | "debian" => {
+            let update_success = run_visible_orb(vm_name, &["sudo", "apt-get", "update"]).await;
+            if !update_success {
+                ui::remark(ctx, "Package update failed, skipping upgrade");
+                return false;
+            }
+            run_visible_orb(vm_name, &["sudo", "apt-get", "upgrade", "-y", "podman"]).await
+        }
+        "fedora" | "rhel" | "centos" | "rocky" | "alma" => {
+            run_visible_orb(vm_name, &["sudo", "dnf", "upgrade", "-y", "podman"]).await
+        }
+        "arch" => run_visible_orb(vm_name, &["sudo", "pacman", "-Syu", "--noconfirm", "podman"]).await,
+        "opensuse" | "suse" => {
+            run_visible_orb(vm_name, &["sudo", "zypper", "update", "-y", "podman"]).await
+        }
+        _ => {
+            // Default to dnf for unknown distros
+            run_visible_orb(vm_name, &["sudo", "dnf", "upgrade", "-y", "podman"]).await
+        }
+    }
+}
+
 // =============================================================================
 // Linux Steps
 // =============================================================================
@@ -455,6 +523,45 @@ async fn check_native_podman(ctx: &UiContext, args: &SetupArgs) -> StepResult {
             let version = String::from_utf8_lossy(&out.stdout);
             let first_line = version.lines().next().unwrap_or("unknown");
             ui::step_ok_detail(ctx, "Podman", first_line.trim());
+
+            // Upgrade if requested
+            if args.upgrade {
+                if let Some((name, _)) = detect_package_manager().await {
+                    ui::remark(ctx, &format!("Upgrading Podman via {}...", name));
+
+                    let upgrade_args = match name {
+                        "dnf" => vec!["upgrade", "-y", "podman"],
+                        "apt-get" => {
+                            // Run apt-get update first
+                            let _ = run_visible_sudo("apt-get", &["update"]).await;
+                            vec!["upgrade", "-y", "podman"]
+                        }
+                        "pacman" => vec!["-Syu", "--noconfirm", "podman"],
+                        "zypper" => vec!["update", "-y", "podman"],
+                        _ => vec!["upgrade", "-y", "podman"],
+                    };
+
+                    if run_visible_sudo(name, &upgrade_args).await {
+                        // Show new version
+                        let new_output = Command::new("podman")
+                            .arg("--version")
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::null())
+                            .output()
+                            .await;
+                        if let Ok(out) = new_output {
+                            if out.status.success() {
+                                let new_version = String::from_utf8_lossy(&out.stdout);
+                                let new_first_line =
+                                    new_version.lines().next().unwrap_or("unknown");
+                                ui::step_ok_detail(ctx, "Podman upgraded", new_first_line.trim());
+                            }
+                        }
+                    }
+                    // Don't fail if upgrade fails - package might already be latest
+                }
+            }
+
             StepResult::AlreadyOk
         }
         _ => {
