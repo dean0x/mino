@@ -11,5 +11,6 @@ pub mod credentials;
 pub mod error;
 pub mod orchestration;
 pub mod session;
+pub mod ui;
 
 pub use error::{MinotaurError, MinotaurResult};

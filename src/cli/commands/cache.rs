@@ -7,10 +7,10 @@ use crate::cli::args::{CacheAction, CacheArgs, OutputFormat};
 use crate::config::Config;
 use crate::error::{MinotaurError, MinotaurResult};
 use crate::orchestration::{create_runtime, ContainerRuntime};
+use crate::ui::{self, UiContext};
 use chrono::Utc;
 use console::style;
 use std::env;
-use std::io::{self, Write};
 use std::path::PathBuf;
 use tracing::debug;
 
@@ -35,7 +35,11 @@ async fn list_caches(
     let volumes = runtime.volume_list("minotaur-cache-").await?;
 
     if volumes.is_empty() {
-        println!("No cache volumes found.");
+        match format {
+            OutputFormat::Json => println!("{{\"caches\":[]}}"),
+            OutputFormat::Plain => {}
+            OutputFormat::Table => println!("No cache volumes found."),
+        }
         return Ok(());
     }
 
@@ -65,6 +69,10 @@ async fn list_caches(
 }
 
 fn print_cache_table(caches: &[(CacheVolume, u64)], total_size: u64, limit_bytes: u64) {
+    let ctx = UiContext::detect();
+
+    ui::intro(&ctx, "Cache Volumes");
+
     println!(
         "{:<40} {:<10} {:<10} {:<10} {:<16}",
         "VOLUME", "ECOSYSTEM", "STATE", "SIZE", "CREATED"
@@ -180,6 +188,8 @@ async fn show_project_info(
     project: Option<PathBuf>,
     config: &Config,
 ) -> MinotaurResult<()> {
+    let ctx = UiContext::detect();
+
     let project_dir = match project {
         Some(p) => p.canonicalize().unwrap_or(p),
         None => {
@@ -187,33 +197,34 @@ async fn show_project_info(
         }
     };
 
-    println!("Project: {}", project_dir.display());
-    println!();
+    ui::intro(&ctx, "Project Cache Info");
+    ui::key_value(&ctx, "Project", &project_dir.display().to_string());
 
     // Detect lockfiles
     let lockfiles = detect_lockfiles(&project_dir)?;
 
     if lockfiles.is_empty() {
-        println!("No lockfiles detected in this project.");
+        ui::step_info(&ctx, "No lockfiles detected in this project.");
         return Ok(());
     }
 
-    println!("Detected lockfiles:");
+    ui::section(&ctx, "Detected lockfiles");
     for info in &lockfiles {
-        println!(
-            "  {} {} (hash: {})",
-            style("•").cyan(),
-            info.path.file_name().unwrap_or_default().to_string_lossy(),
-            &info.hash
+        ui::step_info(
+            &ctx,
+            &format!(
+                "{} (hash: {})",
+                info.path.file_name().unwrap_or_default().to_string_lossy(),
+                &info.hash
+            ),
         );
     }
-    println!();
 
     // Get disk usage
     let sizes = runtime.volume_disk_usage("minotaur-cache-").await?;
 
     // Check cache states
-    println!("Cache status:");
+    ui::section(&ctx, "Cache status");
     let mut project_total: u64 = 0;
 
     for info in &lockfiles {
@@ -222,31 +233,44 @@ async fn show_project_info(
         let size = sizes.get(&volume_name).copied().unwrap_or(0);
         project_total += size;
 
-        let (state, state_style) = match volume_info {
+        match volume_info {
             Some(v) => {
                 let cache = CacheVolume::from_labels(&v.name, &v.labels);
                 match cache.map(|c| c.state) {
-                    Some(CacheState::Complete) => ("complete (ro)", style("✓").green()),
-                    Some(CacheState::Building) => ("building (rw)", style("~").yellow()),
-                    _ => ("unknown", style("?").dim()),
+                    Some(CacheState::Complete) => {
+                        let size_str = if size > 0 {
+                            format!(" ({})", format_bytes(size))
+                        } else {
+                            String::new()
+                        };
+                        ui::step_ok_detail(
+                            &ctx,
+                            &format!("{}", info.ecosystem),
+                            &format!("complete (ro){}", size_str),
+                        );
+                    }
+                    Some(CacheState::Building) => {
+                        let size_str = if size > 0 {
+                            format!(" ({})", format_bytes(size))
+                        } else {
+                            String::new()
+                        };
+                        ui::step_warn_hint(
+                            &ctx,
+                            &format!("{}", info.ecosystem),
+                            &format!("building (rw){}", size_str),
+                        );
+                    }
+                    _ => {
+                        ui::step_info(&ctx, &format!("{}: unknown state", info.ecosystem));
+                    }
                 }
             }
-            None => ("miss (will create)", style("○").dim()),
-        };
-
-        let size_str = if size > 0 {
-            format!(" ({})", format_bytes(size))
-        } else {
-            String::new()
-        };
-
-        println!(
-            "  {} {} [{}]{}",
-            state_style, info.ecosystem, state, size_str
-        );
+            None => {
+                ui::step_info(&ctx, &format!("{}: miss (will create)", info.ecosystem));
+            }
+        }
     }
-
-    println!();
 
     // Show total cache usage
     let all_sizes = runtime.volume_disk_usage("minotaur-cache-").await?;
@@ -254,19 +278,25 @@ async fn show_project_info(
     let limit_bytes = gb_to_bytes(config.cache.max_total_gb);
     let percent = CacheSizeStatus::percentage(total_size, limit_bytes);
 
-    println!(
-        "Project cache size: {}",
-        if project_total > 0 {
+    println!();
+    ui::key_value(
+        &ctx,
+        "Project cache size",
+        &if project_total > 0 {
             format_bytes(project_total)
         } else {
             "0 B".to_string()
-        }
+        },
     );
-    println!(
-        "Total cache usage:  {} / {} ({:.0}%)",
-        format_bytes(total_size),
-        format_bytes(limit_bytes),
-        percent
+    ui::key_value(
+        &ctx,
+        "Total cache usage",
+        &format!(
+            "{} / {} ({:.0}%)",
+            format_bytes(total_size),
+            format_bytes(limit_bytes),
+            percent
+        ),
     );
 
     Ok(())
@@ -279,6 +309,7 @@ async fn gc_caches(
     days_override: Option<u32>,
     dry_run: bool,
 ) -> MinotaurResult<()> {
+    let ctx = UiContext::detect();
     let gc_days = days_override.unwrap_or(config.cache.gc_days);
 
     // Get current cache size
@@ -286,13 +317,17 @@ async fn gc_caches(
     let total_size: u64 = sizes.values().sum();
     let limit_bytes = gb_to_bytes(config.cache.max_total_gb);
 
-    println!(
-        "Current cache usage: {} / {} ({:.0}%)",
-        format_bytes(total_size),
-        format_bytes(limit_bytes),
-        CacheSizeStatus::percentage(total_size, limit_bytes)
+    ui::intro(&ctx, "Cache Garbage Collection");
+    ui::key_value(
+        &ctx,
+        "Current usage",
+        &format!(
+            "{} / {} ({:.0}%)",
+            format_bytes(total_size),
+            format_bytes(limit_bytes),
+            CacheSizeStatus::percentage(total_size, limit_bytes)
+        ),
     );
-    println!();
 
     let volumes = runtime.volume_list("minotaur-cache-").await?;
     let caches: Vec<CacheVolume> = volumes
@@ -314,20 +349,16 @@ async fn gc_caches(
 
     if to_remove.is_empty() {
         if gc_days > 0 {
-            println!("No caches older than {} days.", gc_days);
+            ui::step_ok(&ctx, &format!("No caches older than {} days.", gc_days));
         } else {
-            println!("Cache GC by age is disabled (gc_days = 0).");
+            ui::step_info(&ctx, "Cache GC by age is disabled (gc_days = 0).");
         }
         return Ok(());
     }
 
     let bytes_to_free: u64 = to_remove.iter().map(|(_, s)| s).sum();
 
-    println!(
-        "Found {} cache(s) to remove ({}):",
-        to_remove.len(),
-        format_bytes(bytes_to_free)
-    );
+    ui::section(&ctx, &format!("Found {} cache(s) to remove ({})", to_remove.len(), format_bytes(bytes_to_free)));
 
     for (cache, size) in &to_remove {
         let age_days = (Utc::now() - cache.created_at).num_days();
@@ -336,24 +367,21 @@ async fn gc_caches(
         } else {
             String::new()
         };
-        println!(
-            "  {} {} - {} days old{}",
-            style("•").red(),
-            cache.name,
-            age_days,
-            size_str
+        ui::step_warn(
+            &ctx,
+            &format!("{} - {} days old{}", cache.name, age_days, size_str),
         );
     }
 
     if dry_run {
         println!();
-        println!("Dry run - no caches removed.");
+        ui::note(&ctx, "Dry run", "No caches removed.");
         return Ok(());
     }
 
     println!();
-    print!("Removing caches... ");
-    let _ = io::stdout().flush();
+    let mut spinner = ui::TaskSpinner::new(&ctx);
+    spinner.start("Removing caches...");
 
     let mut removed = 0;
     for (cache, _) in to_remove {
@@ -362,12 +390,11 @@ async fn gc_caches(
         removed += 1;
     }
 
-    println!(
-        "{} removed {} cache(s), freed {}",
-        style("✓").green(),
+    spinner.stop(&format!(
+        "Removed {} cache(s), freed {}",
         removed,
         format_bytes(bytes_to_free)
-    );
+    ));
 
     Ok(())
 }
@@ -377,10 +404,12 @@ async fn clear_all_caches(
     runtime: &dyn ContainerRuntime,
     skip_confirm: bool,
 ) -> MinotaurResult<()> {
+    let ctx = UiContext::detect();
     let volumes = runtime.volume_list("minotaur-cache-").await?;
 
     if volumes.is_empty() {
-        println!("No cache volumes to clear.");
+        ui::intro(&ctx, "Cache Clear");
+        ui::step_info(&ctx, "No cache volumes to clear.");
         return Ok(());
     }
 
@@ -388,11 +417,16 @@ async fn clear_all_caches(
     let sizes = runtime.volume_disk_usage("minotaur-cache-").await?;
     let total_size: u64 = sizes.values().sum();
 
-    println!(
-        "This will remove {} cache volume(s) ({}):",
-        volumes.len(),
-        format_bytes(total_size)
+    ui::intro(&ctx, "Cache Clear");
+    ui::step_warn(
+        &ctx,
+        &format!(
+            "This will remove {} cache volume(s) ({})",
+            volumes.len(),
+            format_bytes(total_size)
+        ),
     );
+
     for vol in &volumes {
         let size = sizes.get(&vol.name).copied().unwrap_or(0);
         let size_str = if size > 0 {
@@ -400,28 +434,19 @@ async fn clear_all_caches(
         } else {
             String::new()
         };
-        println!("  {} {}{}", style("•").red(), vol.name, size_str);
+        ui::remark(&ctx, &format!("{}{}", vol.name, size_str));
     }
-    println!();
 
     if !skip_confirm {
-        print!("Are you sure? [y/N] ");
-        let _ = io::stdout().flush();
-
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input).is_err() {
-            println!("Failed to read input, aborting.");
-            return Ok(());
-        }
-
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Aborted.");
+        let confirmed = ui::confirm(&ctx, "Are you sure you want to clear all caches?", false).await?;
+        if !confirmed {
+            ui::outro_warn(&ctx, "Aborted.");
             return Ok(());
         }
     }
 
-    print!("Clearing caches... ");
-    let _ = io::stdout().flush();
+    let mut spinner = ui::TaskSpinner::new(&ctx);
+    spinner.start("Clearing caches...");
 
     let mut removed = 0;
     for vol in volumes {
@@ -429,12 +454,11 @@ async fn clear_all_caches(
         removed += 1;
     }
 
-    println!(
-        "{} cleared {} cache(s), freed {}",
-        style("✓").green(),
+    spinner.stop(&format!(
+        "Cleared {} cache(s), freed {}",
         removed,
         format_bytes(total_size)
-    );
+    ));
 
     Ok(())
 }

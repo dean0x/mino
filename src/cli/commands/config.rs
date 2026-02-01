@@ -3,7 +3,7 @@
 use crate::cli::args::{ConfigAction, ConfigArgs};
 use crate::config::{Config, ConfigManager};
 use crate::error::MinotaurResult;
-use console::style;
+use crate::ui::{self, UiContext};
 
 /// Execute the config command
 pub async fn execute(args: ConfigArgs, config: &Config) -> MinotaurResult<()> {
@@ -20,7 +20,8 @@ pub async fn execute(args: ConfigArgs, config: &Config) -> MinotaurResult<()> {
 }
 
 fn show_config(config: &Config) {
-    let toml = toml::to_string_pretty(config).unwrap_or_else(|_| "Error serializing config".to_string());
+    let toml =
+        toml::to_string_pretty(config).unwrap_or_else(|_| "Error serializing config".to_string());
     println!("{}", toml);
 }
 
@@ -29,25 +30,25 @@ fn show_path(manager: &ConfigManager) {
 }
 
 async fn init_config(manager: &ConfigManager, force: bool) -> MinotaurResult<()> {
+    let ctx = UiContext::detect();
     let path = manager.path();
 
     if path.exists() && !force {
-        println!(
-            "{} Config already exists at {}",
-            style("!").yellow(),
-            path.display()
+        ui::step_warn_hint(
+            &ctx,
+            &format!("Config already exists at {}", path.display()),
+            "Use --force to overwrite",
         );
-        println!("Use --force to overwrite");
         return Ok(());
     }
 
     let config = Config::default();
     manager.save(&config).await?;
 
-    println!(
-        "{} Configuration initialized at {}",
-        style("✓").green(),
-        path.display()
+    ui::step_ok_detail(
+        &ctx,
+        "Configuration initialized",
+        &path.display().to_string(),
     );
 
     Ok(())
@@ -59,6 +60,7 @@ async fn set_value(
     key: &str,
     value: &str,
 ) -> MinotaurResult<()> {
+    let ctx = UiContext::detect();
     let mut config = config.clone();
 
     // Parse dot-separated key path
@@ -104,19 +106,15 @@ async fn set_value(
         ["session", "shell"] => config.session.shell = value.to_string(),
 
         _ => {
-            eprintln!(
-                "{} Unknown config key: {}",
-                style("!").yellow(),
-                key
-            );
-            eprintln!("Valid keys:");
+            ui::step_error_detail(&ctx, "Unknown config key", key);
+            ui::remark(&ctx, "Valid keys:");
             print_valid_keys();
             return Ok(());
         }
     }
 
     manager.save(&config).await?;
-    println!("{} Set {} = {}", style("✓").green(), key, value);
+    ui::step_ok(&ctx, &format!("Set {} = {}", key, value));
 
     Ok(())
 }

@@ -33,6 +33,7 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 dirs = "5.0"
 console = "0.15"
 indicatif = "0.17"
+cliclack = "0.3"
 async-trait = "0.1"
 sha2 = "0.10"
 hex = "0.4"

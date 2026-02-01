@@ -12,8 +12,8 @@ use crate::credentials::{
 use crate::error::{MinotaurError, MinotaurResult};
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
+use crate::ui::{TaskSpinner, UiContext};
 use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -35,14 +35,17 @@ impl CacheSession {
 
 /// Execute the run command
 pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
-    let pb = create_progress_bar("Initializing sandbox...");
+    let ctx = UiContext::detect();
+    let mut spinner = TaskSpinner::new(&ctx);
+
+    spinner.start("Initializing sandbox...");
 
     // Create platform-appropriate runtime
     let runtime = create_runtime(config)?;
     debug!("Using runtime: {}", runtime.runtime_name());
 
     // Validate environment (platform-specific checks)
-    pb.set_message(format!("Checking {}...", runtime.runtime_name()));
+    spinner.message(&format!("Checking {}...", runtime.runtime_name()));
     validate_environment().await?;
 
     // Determine project directory
@@ -50,11 +53,11 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     debug!("Project directory: {}", project_dir.display());
 
     // Ensure runtime is ready
-    pb.set_message(format!("Starting {}...", runtime.runtime_name()));
+    spinner.message(&format!("Starting {}...", runtime.runtime_name()));
     runtime.ensure_ready().await?;
 
     // Setup caching (if enabled)
-    pb.set_message("Setting up caches...");
+    spinner.message("Setting up caches...");
     let (cache_mounts, cache_env, cache_session) =
         setup_caches(&*runtime, &args, config, &project_dir).await?;
 
@@ -64,7 +67,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     }
 
     // Collect credentials
-    pb.set_message("Gathering credentials...");
+    spinner.message("Gathering credentials...");
     let credentials = gather_credentials(&args, config).await?;
 
     // Create session
@@ -95,7 +98,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     );
     manager.create(&session).await?;
 
-    pb.set_message("Starting container...");
+    spinner.message("Starting container...");
 
     // Start container
     let container_id = match runtime.run(&container_config, &command).await {
@@ -116,7 +119,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
         .update_status(&session_name, SessionStatus::Running)
         .await?;
 
-    pb.finish_and_clear();
+    spinner.clear();
 
     if args.detach {
         println!(
@@ -550,16 +553,4 @@ fn generate_session_name() -> String {
         .unwrap()
         .as_secs();
     format!("session-{}", timestamp % 100000)
-}
-
-fn create_progress_bar(msg: &str) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
-            .unwrap(),
-    );
-    pb.set_message(msg.to_string());
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-    pb
 }

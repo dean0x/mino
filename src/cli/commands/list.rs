@@ -4,6 +4,7 @@ use crate::cli::args::{ListArgs, OutputFormat};
 use crate::config::Config;
 use crate::error::MinotaurResult;
 use crate::session::{SessionManager, SessionStatus};
+use crate::ui::{self, UiContext};
 use console::style;
 
 /// Execute the list command
@@ -23,7 +24,11 @@ pub async fn execute(args: ListArgs, _config: &Config) -> MinotaurResult<()> {
     if filtered.is_empty() {
         match args.format {
             OutputFormat::Json => println!("[]"),
-            _ => println!("No active sessions"),
+            OutputFormat::Plain => {}
+            OutputFormat::Table => {
+                let ctx = UiContext::detect();
+                ui::step_info(&ctx, "No active sessions");
+            }
         }
         return Ok(());
     }
@@ -38,6 +43,9 @@ pub async fn execute(args: ListArgs, _config: &Config) -> MinotaurResult<()> {
 }
 
 fn print_table(sessions: &[crate::session::Session]) {
+    let ctx = UiContext::detect();
+    ui::intro(&ctx, "Sessions");
+
     println!(
         "{:<20} {:<12} {:<15} {:<30}",
         style("NAME").bold(),
@@ -67,6 +75,9 @@ fn print_table(sessions: &[crate::session::Session]) {
             session.name, status_styled, started, project
         );
     }
+
+    println!();
+    println!("{} session(s)", sessions.len());
 }
 
 fn print_json(sessions: &[crate::session::Session]) -> MinotaurResult<()> {

@@ -3,17 +3,11 @@
 use crate::config::Config;
 use crate::error::{MinotaurError, MinotaurResult};
 use crate::orchestration::{OrbStack, Platform};
-use console::{style, Emoji};
-use std::io::{self, Write};
+use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
 
 use super::super::args::SetupArgs;
-
-static CHECK: Emoji<'_, '_> = Emoji("✓ ", "[OK] ");
-static CROSS: Emoji<'_, '_> = Emoji("✗ ", "[FAIL] ");
-static CIRCLE: Emoji<'_, '_> = Emoji("○ ", "[ ] ");
-static DASH: Emoji<'_, '_> = Emoji("- ", "[-] ");
 
 /// Setup step result for tracking what was done
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,30 +26,30 @@ enum StepResult {
 
 /// Execute the setup command
 pub async fn execute(args: SetupArgs, config: &Config) -> MinotaurResult<()> {
+    let ctx = UiContext::detect().with_auto_yes(args.yes);
+
     if args.check {
-        println!("{}", style("Minotaur Setup (check only)").bold().cyan());
+        ui::intro(&ctx, "Minotaur Setup (check only)");
     } else {
-        println!("{}", style("Minotaur Setup").bold().cyan());
+        ui::intro(&ctx, "Minotaur Setup");
     }
-    println!();
 
     match Platform::detect() {
-        Platform::MacOS => setup_macos(&args, config).await,
-        Platform::Linux => setup_linux(&args).await,
+        Platform::MacOS => setup_macos(&ctx, &args, config).await,
+        Platform::Linux => setup_linux(&ctx, &args).await,
         Platform::Unsupported => Err(MinotaurError::UnsupportedPlatform(
             std::env::consts::OS.to_string(),
         )),
     }
 }
 
-async fn setup_macos(args: &SetupArgs, config: &Config) -> MinotaurResult<()> {
-    println!("{}", style("Checking prerequisites...").bold());
-    println!();
+async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> MinotaurResult<()> {
+    ui::section(ctx, "Checking prerequisites...");
 
     let mut issues = 0;
 
     // Step 1: Check Homebrew
-    let homebrew_result = check_homebrew(args).await;
+    let homebrew_result = check_homebrew(ctx, args).await;
     if homebrew_result == StepResult::Failed || homebrew_result == StepResult::Skipped {
         issues += 1;
     }
@@ -64,9 +58,9 @@ async fn setup_macos(args: &SetupArgs, config: &Config) -> MinotaurResult<()> {
     let orbstack_result = if homebrew_result == StepResult::AlreadyOk
         || homebrew_result == StepResult::Installed
     {
-        check_orbstack(args).await
+        check_orbstack(ctx, args).await
     } else {
-        print_blocked("OrbStack", "Homebrew");
+        ui::step_blocked(ctx, "OrbStack", "Homebrew");
         StepResult::Blocked
     };
     if orbstack_result == StepResult::Failed || orbstack_result == StepResult::Skipped {
@@ -77,12 +71,14 @@ async fn setup_macos(args: &SetupArgs, config: &Config) -> MinotaurResult<()> {
     let orbstack_running_result = if orbstack_result == StepResult::AlreadyOk
         || orbstack_result == StepResult::Installed
     {
-        check_orbstack_running(args).await
+        check_orbstack_running(ctx, args).await
     } else {
-        print_blocked("OrbStack Service", "OrbStack");
+        ui::step_blocked(ctx, "OrbStack Service", "OrbStack");
         StepResult::Blocked
     };
-    if orbstack_running_result == StepResult::Failed || orbstack_running_result == StepResult::Skipped {
+    if orbstack_running_result == StepResult::Failed
+        || orbstack_running_result == StepResult::Skipped
+    {
         issues += 1;
     }
 
@@ -92,9 +88,9 @@ async fn setup_macos(args: &SetupArgs, config: &Config) -> MinotaurResult<()> {
     let vm_result = if orbstack_running_result == StepResult::AlreadyOk
         || orbstack_running_result == StepResult::Installed
     {
-        check_vm(args, vm_name, vm_distro).await
+        check_vm(ctx, args, vm_name, vm_distro).await
     } else {
-        print_blocked(&format!("Minotaur VM ({})", vm_name), "OrbStack");
+        ui::step_blocked(ctx, &format!("Minotaur VM ({})", vm_name), "OrbStack");
         StepResult::Blocked
     };
     if vm_result == StepResult::Failed || vm_result == StepResult::Skipped {
@@ -102,10 +98,11 @@ async fn setup_macos(args: &SetupArgs, config: &Config) -> MinotaurResult<()> {
     }
 
     // Step 5: Check Podman in VM
-    let podman_result = if vm_result == StepResult::AlreadyOk || vm_result == StepResult::Installed {
-        check_podman_in_vm(args, vm_name, vm_distro).await
+    let podman_result = if vm_result == StepResult::AlreadyOk || vm_result == StepResult::Installed
+    {
+        check_podman_in_vm(ctx, args, vm_name, vm_distro).await
     } else {
-        print_blocked("Podman (in VM)", "VM");
+        ui::step_blocked(ctx, "Podman (in VM)", "VM");
         StepResult::Blocked
     };
     if podman_result == StepResult::Failed || podman_result == StepResult::Skipped {
@@ -113,38 +110,32 @@ async fn setup_macos(args: &SetupArgs, config: &Config) -> MinotaurResult<()> {
     }
 
     // Summary
-    println!();
     if issues > 0 {
         if args.check {
-            println!(
-                "{} issue(s) found. Run '{}' to install.",
-                issues,
-                style("minotaur setup").cyan()
+            ui::outro_warn(
+                ctx,
+                &format!(
+                    "{} issue(s) found. Run 'minotaur setup' to install.",
+                    issues
+                ),
             );
         } else {
-            println!(
-                "{}",
-                style("Setup incomplete - see above for details.").yellow().bold()
-            );
+            ui::outro_warn(ctx, "Setup incomplete - see above for details.");
         }
     } else {
-        println!(
-            "{}",
-            style("Setup complete! Run 'minotaur run -- <command>' to start.").green().bold()
-        );
+        ui::outro_success(ctx, "Setup complete! Run 'minotaur run -- <command>' to start.");
     }
 
     Ok(())
 }
 
-async fn setup_linux(args: &SetupArgs) -> MinotaurResult<()> {
-    println!("{}", style("Checking prerequisites...").bold());
-    println!();
+async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinotaurResult<()> {
+    ui::section(ctx, "Checking prerequisites...");
 
     let mut issues = 0;
 
     // Step 1: Check/install Podman
-    let podman_result = check_native_podman(args).await;
+    let podman_result = check_native_podman(ctx, args).await;
     if podman_result == StepResult::Failed || podman_result == StepResult::Skipped {
         issues += 1;
     }
@@ -153,9 +144,9 @@ async fn setup_linux(args: &SetupArgs) -> MinotaurResult<()> {
     let rootless_result = if podman_result == StepResult::AlreadyOk
         || podman_result == StepResult::Installed
     {
-        check_rootless_mode(args).await
+        check_rootless_mode(ctx, args).await
     } else {
-        print_blocked("Rootless Mode", "Podman");
+        ui::step_blocked(ctx, "Rootless Mode", "Podman");
         StepResult::Blocked
     };
     if rootless_result == StepResult::Failed || rootless_result == StepResult::Skipped {
@@ -166,9 +157,9 @@ async fn setup_linux(args: &SetupArgs) -> MinotaurResult<()> {
     let userns_result = if rootless_result == StepResult::AlreadyOk
         || rootless_result == StepResult::Installed
     {
-        check_user_namespaces(args).await
+        check_user_namespaces(ctx, args).await
     } else {
-        print_blocked("User Namespaces", "Rootless Mode");
+        ui::step_blocked(ctx, "User Namespaces", "Rootless Mode");
         StepResult::Blocked
     };
     if userns_result == StepResult::Failed || userns_result == StepResult::Skipped {
@@ -176,25 +167,20 @@ async fn setup_linux(args: &SetupArgs) -> MinotaurResult<()> {
     }
 
     // Summary
-    println!();
     if issues > 0 {
         if args.check {
-            println!(
-                "{} issue(s) found. Run '{}' to install.",
-                issues,
-                style("minotaur setup").cyan()
+            ui::outro_warn(
+                ctx,
+                &format!(
+                    "{} issue(s) found. Run 'minotaur setup' to install.",
+                    issues
+                ),
             );
         } else {
-            println!(
-                "{}",
-                style("Setup incomplete - see above for details.").yellow().bold()
-            );
+            ui::outro_warn(ctx, "Setup incomplete - see above for details.");
         }
     } else {
-        println!(
-            "{}",
-            style("Setup complete! Run 'minotaur run -- <command>' to start.").green().bold()
-        );
+        ui::outro_success(ctx, "Setup complete! Run 'minotaur run -- <command>' to start.");
     }
 
     Ok(())
@@ -204,9 +190,7 @@ async fn setup_linux(args: &SetupArgs) -> MinotaurResult<()> {
 // macOS Steps
 // =============================================================================
 
-async fn check_homebrew(args: &SetupArgs) -> StepResult {
-    println!("  {}", style("Homebrew").bold());
-
+async fn check_homebrew(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let output = Command::new("brew")
         .arg("--prefix")
         .stdout(Stdio::piped())
@@ -217,24 +201,19 @@ async fn check_homebrew(args: &SetupArgs) -> StepResult {
     match output {
         Ok(out) if out.status.success() => {
             let prefix = String::from_utf8_lossy(&out.stdout);
-            println!("  {} Installed ({})", CHECK, prefix.trim());
+            ui::step_ok_detail(ctx, "Homebrew installed", prefix.trim());
             StepResult::AlreadyOk
         }
         _ => {
-            println!("  {} Not installed", CIRCLE);
-
             if args.check {
+                ui::step_error(ctx, "Homebrew not installed");
                 return StepResult::Failed;
             }
 
-            println!();
-            println!("  Homebrew is required to install OrbStack.");
-            println!("  Install from: {}", style("https://brew.sh").cyan());
-            println!();
+            ui::step_warn_hint(ctx, "Homebrew not installed", "https://brew.sh");
 
-            if confirm("Install Homebrew now?", args.yes) {
-                println!("  Running Homebrew installer...");
-                println!();
+            if ui::confirm_inline("Install Homebrew now?", args.yes) {
+                ui::remark(ctx, "Running Homebrew installer...");
 
                 let install_result = run_visible(
                     "/bin/bash",
@@ -246,107 +225,86 @@ async fn check_homebrew(args: &SetupArgs) -> StepResult {
                 .await;
 
                 if install_result {
-                    println!("  {} Homebrew installed", CHECK);
+                    ui::step_ok(ctx, "Homebrew installed");
                     StepResult::Installed
                 } else {
-                    println!(
-                        "  {} Homebrew installation failed",
-                        CROSS
-                    );
-                    println!(
-                        "  Visit {} for manual installation",
-                        style("https://brew.sh").cyan()
-                    );
+                    ui::step_error_detail(ctx, "Homebrew installation failed", "Visit https://brew.sh");
                     StepResult::Failed
                 }
             } else {
-                println!("  Skipped Homebrew installation");
+                ui::remark(ctx, "Skipped Homebrew installation");
                 StepResult::Skipped
             }
         }
     }
 }
 
-async fn check_orbstack(args: &SetupArgs) -> StepResult {
-    println!();
-    println!("  {}", style("OrbStack").bold());
-
+async fn check_orbstack(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     if OrbStack::is_installed().await {
         if let Ok(version) = OrbStack::version().await {
-            println!("  {} Installed ({})", CHECK, version);
+            ui::step_ok_detail(ctx, "OrbStack installed", &version);
         } else {
-            println!("  {} Installed", CHECK);
+            ui::step_ok(ctx, "OrbStack installed");
         }
         return StepResult::AlreadyOk;
     }
 
-    println!("  {} Not installed", CIRCLE);
-
     if args.check {
+        ui::step_error(ctx, "OrbStack not installed");
         return StepResult::Failed;
     }
 
-    if confirm("Install OrbStack via Homebrew?", args.yes) {
-        println!("  Running: brew install --cask orbstack");
-        println!();
+    ui::step_warn(ctx, "OrbStack not installed");
+
+    if ui::confirm_inline("Install OrbStack via Homebrew?", args.yes) {
+        ui::remark(ctx, "Running: brew install --cask orbstack");
 
         if run_visible("brew", &["install", "--cask", "orbstack"]).await {
-            println!("  {} OrbStack installed", CHECK);
+            ui::step_ok(ctx, "OrbStack installed");
             StepResult::Installed
         } else {
-            println!("  {} OrbStack installation failed", CROSS);
-            println!(
-                "  Download manually from: {}",
-                style("https://orbstack.dev").cyan()
-            );
+            ui::step_error_detail(ctx, "OrbStack installation failed", "https://orbstack.dev");
             StepResult::Failed
         }
     } else {
-        println!("  Skipped OrbStack installation");
+        ui::remark(ctx, "Skipped OrbStack installation");
         StepResult::Skipped
     }
 }
 
-async fn check_orbstack_running(args: &SetupArgs) -> StepResult {
-    println!();
-    println!("  {}", style("OrbStack Service").bold());
-
+async fn check_orbstack_running(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     match OrbStack::is_running().await {
         Ok(true) => {
-            println!("  {} Running", CHECK);
+            ui::step_ok(ctx, "OrbStack running");
             StepResult::AlreadyOk
         }
         Ok(false) => {
-            println!("  {} Not running", CIRCLE);
-
             if args.check {
+                ui::step_warn_hint(ctx, "OrbStack not running", "Run: orb start");
                 return StepResult::Failed;
             }
 
-            println!("  Starting OrbStack...");
+            ui::remark(ctx, "Starting OrbStack...");
             match OrbStack::start().await {
                 Ok(()) => {
-                    println!("  {} OrbStack started", CHECK);
+                    ui::step_ok(ctx, "OrbStack started");
                     StepResult::Installed
                 }
                 Err(e) => {
-                    println!("  {} Failed to start OrbStack: {}", CROSS, e);
-                    println!("  Try starting OrbStack manually from Applications");
+                    ui::step_error_detail(ctx, "Failed to start OrbStack", &e.to_string());
+                    ui::remark(ctx, "Try starting OrbStack manually from Applications");
                     StepResult::Failed
                 }
             }
         }
         Err(e) => {
-            println!("  {} Error checking status: {}", CROSS, e);
+            ui::step_error_detail(ctx, "Error checking OrbStack status", &e.to_string());
             StepResult::Failed
         }
     }
 }
 
-async fn check_vm(args: &SetupArgs, vm_name: &str, vm_distro: &str) -> StepResult {
-    println!();
-    println!("  {}", style(format!("Minotaur VM ({})", vm_name)).bold());
-
+async fn check_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &str, vm_distro: &str) -> StepResult {
     let output = Command::new("orb")
         .args(["list", "-f", "{{.Name}}"])
         .stdout(Stdio::piped())
@@ -363,41 +321,40 @@ async fn check_vm(args: &SetupArgs, vm_name: &str, vm_distro: &str) -> StepResul
     };
 
     if vm_exists {
-        println!("  {} Exists", CHECK);
+        ui::step_ok_detail(ctx, "Minotaur VM exists", vm_name);
         return StepResult::AlreadyOk;
     }
 
-    println!("  {} Not found", CIRCLE);
-
     if args.check {
+        ui::step_error_detail(ctx, "Minotaur VM not found", vm_name);
         return StepResult::Failed;
     }
 
-    if confirm(&format!("Create {} VM '{}'?", vm_distro, vm_name), args.yes) {
-        println!("  Creating VM...");
-        println!();
+    ui::step_warn_hint(ctx, "Minotaur VM not found", vm_name);
+
+    if ui::confirm_inline(&format!("Create {} VM '{}'?", vm_distro, vm_name), args.yes) {
+        ui::remark(ctx, "Creating VM...");
 
         if run_visible("orb", &["create", vm_distro, vm_name]).await {
-            println!("  {} VM created ({})", CHECK, vm_name);
+            ui::step_ok_detail(ctx, "VM created", vm_name);
             StepResult::Installed
         } else {
-            println!("  {} VM creation failed", CROSS);
-            println!(
-                "  Try: orb delete {} && minotaur setup",
-                vm_name
-            );
+            ui::step_error(ctx, "VM creation failed");
+            ui::remark(ctx, &format!("Try: orb delete {} && minotaur setup", vm_name));
             StepResult::Failed
         }
     } else {
-        println!("  Skipped VM creation");
+        ui::remark(ctx, "Skipped VM creation");
         StepResult::Skipped
     }
 }
 
-async fn check_podman_in_vm(args: &SetupArgs, vm_name: &str, vm_distro: &str) -> StepResult {
-    println!();
-    println!("  {}", style("Podman (in VM)").bold());
-
+async fn check_podman_in_vm(
+    ctx: &UiContext,
+    args: &SetupArgs,
+    vm_name: &str,
+    vm_distro: &str,
+) -> StepResult {
     let output = Command::new("orb")
         .args(["-m", vm_name, "podman", "--version"])
         .stdout(Stdio::piped())
@@ -409,61 +366,63 @@ async fn check_podman_in_vm(args: &SetupArgs, vm_name: &str, vm_distro: &str) ->
         Ok(out) if out.status.success() => {
             let version = String::from_utf8_lossy(&out.stdout);
             let first_line = version.lines().next().unwrap_or("unknown");
-            println!("  {} Installed ({})", CHECK, first_line.trim());
+            ui::step_ok_detail(ctx, "Podman installed in VM", first_line.trim());
             StepResult::AlreadyOk
         }
         _ => {
-            println!("  {} Not installed", CIRCLE);
-
             if args.check {
+                ui::step_error(ctx, "Podman not installed in VM");
                 return StepResult::Failed;
             }
 
-            if confirm("Install Podman in VM?", args.yes) {
-                println!("  Installing Podman...");
-                println!();
+            ui::step_warn(ctx, "Podman not installed in VM");
 
-                // Determine package manager based on distro
-                let install_cmd = match vm_distro {
-                    "fedora" | "rhel" | "centos" | "rocky" | "alma" => {
-                        vec!["sudo", "dnf", "install", "-y", "podman"]
-                    }
-                    "ubuntu" | "debian" => {
-                        vec!["sudo", "apt-get", "update", "&&", "sudo", "apt-get", "install", "-y", "podman"]
-                    }
-                    "arch" => {
-                        vec!["sudo", "pacman", "-S", "--noconfirm", "podman"]
-                    }
-                    "opensuse" | "suse" => {
-                        vec!["sudo", "zypper", "install", "-y", "podman"]
-                    }
-                    _ => {
-                        // Default to dnf for unknown distros
-                        vec!["sudo", "dnf", "install", "-y", "podman"]
-                    }
-                };
+            if ui::confirm_inline("Install Podman in VM?", args.yes) {
+                ui::remark(ctx, "Installing Podman...");
 
                 // For apt-based systems, we need to run update first
                 if vm_distro == "ubuntu" || vm_distro == "debian" {
-                    let update_success = run_visible_orb(vm_name, &["sudo", "apt-get", "update"]).await;
+                    let update_success =
+                        run_visible_orb(vm_name, &["sudo", "apt-get", "update"]).await;
                     if !update_success {
-                        println!("  {} Package update failed", CROSS);
+                        ui::step_error(ctx, "Package update failed");
                         return StepResult::Failed;
                     }
 
-                    if run_visible_orb(vm_name, &["sudo", "apt-get", "install", "-y", "podman"]).await {
-                        println!("  {} Podman installed", CHECK);
+                    if run_visible_orb(vm_name, &["sudo", "apt-get", "install", "-y", "podman"])
+                        .await
+                    {
+                        ui::step_ok(ctx, "Podman installed");
                         return StepResult::Installed;
                     }
-                } else if run_visible_orb(vm_name, &install_cmd).await {
-                    println!("  {} Podman installed", CHECK);
-                    return StepResult::Installed;
+                } else {
+                    // Determine package manager based on distro
+                    let install_cmd = match vm_distro {
+                        "fedora" | "rhel" | "centos" | "rocky" | "alma" => {
+                            vec!["sudo", "dnf", "install", "-y", "podman"]
+                        }
+                        "arch" => {
+                            vec!["sudo", "pacman", "-S", "--noconfirm", "podman"]
+                        }
+                        "opensuse" | "suse" => {
+                            vec!["sudo", "zypper", "install", "-y", "podman"]
+                        }
+                        _ => {
+                            // Default to dnf for unknown distros
+                            vec!["sudo", "dnf", "install", "-y", "podman"]
+                        }
+                    };
+
+                    if run_visible_orb(vm_name, &install_cmd).await {
+                        ui::step_ok(ctx, "Podman installed");
+                        return StepResult::Installed;
+                    }
                 }
 
-                println!("  {} Podman installation failed", CROSS);
+                ui::step_error(ctx, "Podman installation failed");
                 StepResult::Failed
             } else {
-                println!("  Skipped Podman installation");
+                ui::remark(ctx, "Skipped Podman installation");
                 StepResult::Skipped
             }
         }
@@ -474,9 +433,7 @@ async fn check_podman_in_vm(args: &SetupArgs, vm_name: &str, vm_distro: &str) ->
 // Linux Steps
 // =============================================================================
 
-async fn check_native_podman(args: &SetupArgs) -> StepResult {
-    println!("  {}", style("Podman").bold());
-
+async fn check_native_podman(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let output = Command::new("podman")
         .arg("--version")
         .stdout(Stdio::piped())
@@ -488,47 +445,43 @@ async fn check_native_podman(args: &SetupArgs) -> StepResult {
         Ok(out) if out.status.success() => {
             let version = String::from_utf8_lossy(&out.stdout);
             let first_line = version.lines().next().unwrap_or("unknown");
-            println!("  {} {}", CHECK, first_line.trim());
+            ui::step_ok_detail(ctx, "Podman", first_line.trim());
             StepResult::AlreadyOk
         }
         _ => {
-            println!("  {} Not installed", CIRCLE);
-
             if args.check {
+                ui::step_error(ctx, "Podman not installed");
                 return StepResult::Failed;
             }
 
+            ui::step_warn(ctx, "Podman not installed");
+
             let pkg_manager = detect_package_manager().await;
             match pkg_manager {
-                Some((name, install_args)) => {
-                    if confirm(&format!("Install Podman via {}?", name), args.yes) {
-                        println!("  Running: sudo {} {}", name, install_args.join(" "));
-                        println!();
-
+                Some((name, _)) => {
+                    if ui::confirm_inline(&format!("Install Podman via {}?", name), args.yes) {
                         let mut cmd_args = vec!["install", "-y", "podman"];
                         if name == "pacman" {
                             cmd_args = vec!["-S", "--noconfirm", "podman"];
                         }
 
+                        ui::remark(ctx, &format!("Running: sudo {} {}", name, cmd_args.join(" ")));
+
                         if run_visible_sudo(name, &cmd_args).await {
-                            println!("  {} Podman installed", CHECK);
+                            ui::step_ok(ctx, "Podman installed");
                             StepResult::Installed
                         } else {
-                            println!("  {} Podman installation failed", CROSS);
+                            ui::step_error(ctx, "Podman installation failed");
                             StepResult::Failed
                         }
                     } else {
-                        println!("  Skipped Podman installation");
+                        ui::remark(ctx, "Skipped Podman installation");
                         StepResult::Skipped
                     }
                 }
                 None => {
-                    println!(
-                        "  {} Could not detect package manager",
-                        CROSS
-                    );
-                    println!("  Supported: dnf, apt-get, pacman, zypper");
-                    println!("  Install Podman manually for your distribution");
+                    ui::step_error(ctx, "Could not detect package manager");
+                    ui::remark(ctx, "Supported: dnf, apt-get, pacman, zypper");
                     StepResult::Failed
                 }
             }
@@ -536,10 +489,7 @@ async fn check_native_podman(args: &SetupArgs) -> StepResult {
     }
 }
 
-async fn check_rootless_mode(args: &SetupArgs) -> StepResult {
-    println!();
-    println!("  {}", style("Rootless Mode").bold());
-
+async fn check_rootless_mode(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let output = Command::new("podman")
         .args(["info", "--format", "{{.Host.Security.Rootless}}"])
         .stdout(Stdio::piped())
@@ -551,36 +501,32 @@ async fn check_rootless_mode(args: &SetupArgs) -> StepResult {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             if stdout.trim() == "true" {
-                println!("  {} Enabled", CHECK);
+                ui::step_ok(ctx, "Rootless mode enabled");
                 StepResult::AlreadyOk
             } else {
-                println!("  {} Not enabled", CIRCLE);
-
                 if args.check {
+                    ui::step_warn_hint(ctx, "Rootless mode not enabled", "Run: podman system migrate");
                     return StepResult::Failed;
                 }
 
-                println!("  Running: podman system migrate");
+                ui::remark(ctx, "Running: podman system migrate");
                 if run_visible("podman", &["system", "migrate"]).await {
-                    println!("  {} Rootless mode configured", CHECK);
+                    ui::step_ok(ctx, "Rootless mode configured");
                     StepResult::Installed
                 } else {
-                    println!("  {} Failed to configure rootless mode", CROSS);
+                    ui::step_error(ctx, "Failed to configure rootless mode");
                     StepResult::Failed
                 }
             }
         }
         _ => {
-            println!("  {} Could not check rootless status", CROSS);
+            ui::step_error(ctx, "Could not check rootless status");
             StepResult::Failed
         }
     }
 }
 
-async fn check_user_namespaces(args: &SetupArgs) -> StepResult {
-    println!();
-    println!("  {}", style("User Namespaces").bold());
-
+async fn check_user_namespaces(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     // Check if user namespaces are enabled
     let output = Command::new("cat")
         .arg("/proc/sys/user/max_user_namespaces")
@@ -594,38 +540,26 @@ async fn check_user_namespaces(args: &SetupArgs) -> StepResult {
             let value = String::from_utf8_lossy(&out.stdout);
             let max_ns: u32 = value.trim().parse().unwrap_or(0);
             if max_ns > 0 {
-                println!("  {} Enabled (max: {})", CHECK, max_ns);
+                ui::step_ok_detail(ctx, "User namespaces enabled", &format!("max: {}", max_ns));
                 StepResult::AlreadyOk
             } else {
-                println!("  {} Disabled (max_user_namespaces = 0)", CIRCLE);
-
                 if args.check {
-                    return StepResult::Failed;
+                    ui::step_error(ctx, "User namespaces disabled (max_user_namespaces = 0)");
+                } else {
+                    ui::step_warn(ctx, "User namespaces disabled (max_user_namespaces = 0)");
                 }
 
-                println!();
-                println!("  User namespaces must be enabled for rootless containers.");
-                println!("  Run the following command:");
-                println!();
-                println!(
-                    "    {}",
-                    style("sudo sysctl -w user.max_user_namespaces=15000").cyan()
-                );
-                println!();
-                println!("  To make permanent, add to /etc/sysctl.conf:");
-                println!();
-                println!(
-                    "    {}",
-                    style("user.max_user_namespaces=15000").cyan()
-                );
-                println!();
+                ui::remark(ctx, "User namespaces must be enabled for rootless containers.");
+                ui::remark(ctx, "Run: sudo sysctl -w user.max_user_namespaces=15000");
+                ui::remark(ctx, "To make permanent, add to /etc/sysctl.conf:");
+                ui::remark(ctx, "  user.max_user_namespaces=15000");
 
                 StepResult::Failed
             }
         }
         _ => {
             // If we can't read the file, assume it's fine (some distros don't have this)
-            println!("  {} Could not check (assuming enabled)", CHECK);
+            ui::step_ok_detail(ctx, "User namespaces", "could not check (assuming enabled)");
             StepResult::AlreadyOk
         }
     }
@@ -634,31 +568,6 @@ async fn check_user_namespaces(args: &SetupArgs) -> StepResult {
 // =============================================================================
 // Helpers
 // =============================================================================
-
-fn print_blocked(name: &str, dependency: &str) {
-    println!();
-    println!("  {}", style(name).bold());
-    println!("  {} Blocked (requires {})", DASH, dependency);
-}
-
-/// Prompt user for confirmation, respecting --yes flag
-fn confirm(prompt: &str, auto_yes: bool) -> bool {
-    if auto_yes {
-        println!("  {} (auto-approved)", prompt);
-        return true;
-    }
-
-    print!("  {} [y/N] ", prompt);
-    if io::stdout().flush().is_err() {
-        return false;
-    }
-
-    let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_err() {
-        return false;
-    }
-    input.trim().eq_ignore_ascii_case("y")
-}
 
 /// Run a command, showing output to user
 async fn run_visible(cmd: &str, args: &[&str]) -> bool {
