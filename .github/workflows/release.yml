@@ -178,3 +178,90 @@ jobs:
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  update-homebrew:
+    name: Update Homebrew tap
+    needs: [release, publish-crates, publish-npm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: dean0x/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download release binaries and calculate checksums
+        id: checksums
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE_URL="https://github.com/dean0x/minotaur/releases/download/v${VERSION}"
+
+          curl -sL "${BASE_URL}/minotaur-x86_64-apple-darwin.tar.gz" -o darwin-x64.tar.gz
+          curl -sL "${BASE_URL}/minotaur-aarch64-apple-darwin.tar.gz" -o darwin-arm64.tar.gz
+          curl -sL "${BASE_URL}/minotaur-x86_64-unknown-linux-gnu.tar.gz" -o linux-x64.tar.gz
+          curl -sL "${BASE_URL}/minotaur-aarch64-unknown-linux-gnu.tar.gz" -o linux-arm64.tar.gz
+
+          echo "darwin_x64_sha256=$(sha256sum darwin-x64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "darwin_arm64_sha256=$(sha256sum darwin-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "linux_x64_sha256=$(sha256sum linux-x64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "linux_arm64_sha256=$(sha256sum linux-arm64.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          cat > homebrew-tap/Formula/minotaur.rb << EOF
+          class Minotaur < Formula
+            desc "Secure AI agent sandbox wrapper using Podman rootless containers"
+            homepage "https://github.com/dean0x/minotaur"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_intel do
+                url "https://github.com/dean0x/minotaur/releases/download/v#{version}/minotaur-x86_64-apple-darwin.tar.gz"
+                sha256 "${{ steps.checksums.outputs.darwin_x64_sha256 }}"
+              end
+
+              on_arm do
+                url "https://github.com/dean0x/minotaur/releases/download/v#{version}/minotaur-aarch64-apple-darwin.tar.gz"
+                sha256 "${{ steps.checksums.outputs.darwin_arm64_sha256 }}"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/dean0x/minotaur/releases/download/v#{version}/minotaur-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${{ steps.checksums.outputs.linux_x64_sha256 }}"
+              end
+
+              on_arm do
+                url "https://github.com/dean0x/minotaur/releases/download/v#{version}/minotaur-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${{ steps.checksums.outputs.linux_arm64_sha256 }}"
+              end
+            end
+
+            def install
+              bin.install "minotaur"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/minotaur --version")
+            end
+          end
+          EOF
+          sed -i 's/^          //' homebrew-tap/Formula/minotaur.rb
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/minotaur.rb
+          git diff --staged --quiet || git commit -m "Update minotaur to ${{ steps.version.outputs.version }}"
+          git push
