@@ -1,0 +1,167 @@
+# Minotaur Container Images
+
+Pre-built development images with Claude Code and productivity tools.
+
+## Available Images
+
+| Image | Registry | Description |
+|-------|----------|-------------|
+| `minotaur-base` | `ghcr.io/dean0x/minotaur-base:latest` | Foundation with Claude Code and dev tools |
+| `minotaur-typescript` | `ghcr.io/dean0x/minotaur-typescript:latest` | TypeScript/Node.js development |
+| `minotaur-rust` | `ghcr.io/dean0x/minotaur-rust:latest` | Rust development |
+
+## Quick Start
+
+```bash
+# Use aliases with minotaur
+minotaur run --image typescript -- claude
+minotaur run --image rust -- claude
+
+# Or use full image paths
+minotaur run --image ghcr.io/dean0x/minotaur-typescript:latest -- claude
+```
+
+## Image Aliases
+
+| Alias | Image |
+|-------|-------|
+| `typescript`, `ts`, `node` | `minotaur-typescript` |
+| `rust`, `cargo` | `minotaur-rust` |
+| `base` | `minotaur-base` |
+
+## Tool Inventory
+
+### Base Image (`minotaur-base`)
+
+All language images inherit these tools.
+
+| Category | Tools | Notes |
+|----------|-------|-------|
+| **AI** | claude-code | `@anthropic-ai/claude-code` CLI |
+| **Git** | git, gh, delta | delta for syntax-highlighted diffs |
+| **Search** | ripgrep (rg), fd-find (fd), fzf | Modern grep/find replacements |
+| **View** | bat, jq | Syntax highlighting, JSON processing |
+| **Edit** | neovim | Modern vim |
+| **Navigate** | zoxide | Smart cd with frecency ranking |
+| **Shell** | zsh, mcfly | Neural network history search |
+| **Network** | curl, wget, httpie, ssh | HTTP testing and SSH |
+| **Runtime** | Node.js 22 LTS | Required for Claude Code |
+
+### TypeScript Image (`minotaur-typescript`)
+
+| Tool | Version | Description |
+|------|---------|-------------|
+| Node.js | 22 LTS | JavaScript runtime |
+| pnpm | 9.x | Fast, disk-efficient package manager |
+| tsx | latest | Run TypeScript directly |
+| typescript (tsc) | 5.x | TypeScript compiler |
+| npm-check-updates | latest | Upgrade dependencies |
+
+**Cache environment:**
+```
+PNPM_HOME=/cache/pnpm
+npm_config_cache=/cache/npm
+```
+
+### Rust Image (`minotaur-rust`)
+
+| Tool | Version | Description |
+|------|---------|-------------|
+| rustc | stable | Rust compiler |
+| cargo | stable | Rust package manager |
+| rustfmt | stable | Code formatter |
+| clippy | stable | Linter |
+| bacon | latest | TUI file watcher (replaces cargo-watch) |
+| cargo-edit | latest | `cargo add/rm/upgrade` commands |
+| cargo-outdated | latest | Check for outdated dependencies |
+
+**Cache environment:**
+```
+CARGO_HOME=/cache/cargo
+RUSTUP_HOME=/opt/rustup
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  minotaur-base                       │
+│  Fedora 41 + Node 22 LTS + tools + claude-code      │
+└─────────────────────────────────────────────────────┘
+                          │
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+┌─────────────────────┐       ┌─────────────────────┐
+│  minotaur-typescript │       │    minotaur-rust    │
+│  pnpm, tsx, tsc      │       │  cargo, clippy      │
+└─────────────────────┘       └─────────────────────┘
+```
+
+## Local Development
+
+### Building Images
+
+```bash
+# Build base image
+cd images/base
+podman build -t minotaur-base .
+
+# Build typescript image (uses local base)
+cd ../typescript
+podman build -t minotaur-typescript --build-arg BASE_IMAGE=minotaur-base .
+
+# Build rust image (uses local base)
+cd ../rust
+podman build -t minotaur-rust --build-arg BASE_IMAGE=minotaur-base .
+```
+
+### Testing Images
+
+```bash
+# Verify tools in base
+podman run --rm minotaur-base claude --version
+podman run --rm minotaur-base delta --version
+podman run --rm minotaur-base zoxide --version
+podman run --rm minotaur-base mcfly --version
+
+# Verify typescript tools
+podman run --rm minotaur-typescript pnpm --version
+podman run --rm minotaur-typescript tsc --version
+podman run --rm minotaur-typescript tsx --version
+
+# Verify rust tools
+podman run --rm minotaur-rust rustc --version
+podman run --rm minotaur-rust cargo --version
+podman run --rm minotaur-rust bacon --version
+
+# Interactive test
+podman run --rm -it -v $(pwd):/workspace minotaur-typescript
+```
+
+## CI/CD
+
+Images are automatically built and pushed to GHCR:
+
+- **Trigger**: Push to `images/**`, weekly cron (Mondays), manual dispatch
+- **Platforms**: `linux/amd64`, `linux/arm64`
+- **Tags**: `latest`, `<sha>`, `<YYYYMMDD>` (for scheduled builds)
+
+See `.github/workflows/images.yml` for details.
+
+## Tool Selection Rationale
+
+### Why These Tools?
+
+| Tool | Over | Reason |
+|------|------|--------|
+| **delta** | diff-so-fancy | Syntax highlighting for 200+ languages, within-line highlighting |
+| **zoxide** | autojump/z | 10x faster startup (5ms vs 50ms), Rust-based, fzf integration |
+| **mcfly** | atuin | Neural network ranking, simpler setup, no cloud sync complexity |
+| **pnpm** | npm/yarn | 70% less disk space, fastest installs, ~20% market share |
+| **bacon** | cargo-watch | cargo-watch archived Jan 2025, bacon has TUI, multi-job support |
+
+### Version Policy
+
+- **Node.js**: LTS versions only (currently 22, becomes maintenance Apr 2027)
+- **Rust**: Stable toolchain via rustup (auto-updates)
+- **Tools**: Latest stable, rebuilt weekly for security updates

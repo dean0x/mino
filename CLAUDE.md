@@ -94,3 +94,53 @@ cargo clippy            # Lints
 1. Add field to struct in `src/config/schema.rs`
 2. Update `Default` impl
 3. Document in README.md
+
+## Container Images
+
+### Adding a new language image
+
+1. Create `images/{language}/Dockerfile`:
+   ```dockerfile
+   ARG BASE_IMAGE=ghcr.io/dean0x/minotaur-base:latest
+   FROM ${BASE_IMAGE}
+
+   LABEL org.opencontainers.image.source="https://github.com/dean0x/minotaur"
+   LABEL org.opencontainers.image.description="Minotaur {language} development image"
+
+   USER root
+   # Install language toolchain
+   USER developer
+
+   # Configure cache env vars
+   ENV {LANG}_CACHE=/cache/{lang}
+
+   # Verify installations
+   RUN {tool} --version
+
+   WORKDIR /workspace
+   CMD ["/bin/zsh"]
+   ```
+
+2. Add to `.github/workflows/images.yml` matrix:
+   ```yaml
+   matrix:
+     include:
+       - image: {language}
+         context: ./images/{language}
+   ```
+
+3. Add alias in `src/cli/commands/run.rs` `resolve_image_alias()`:
+   ```rust
+   "{language}" | "{alias}" => "minotaur-{language}",
+   ```
+
+4. Update `images/README.md` with tools inventory
+
+### Image design principles
+
+- Inherit from `minotaur-base` (shared tools, Node for Claude Code)
+- Install toolchain as root, switch to `developer` user
+- Configure cache paths via env vars (CARGO_HOME, npm_config_cache, etc.)
+- Use LTS/stable versions, pin major versions in Dockerfile
+- Run verification commands at end of Dockerfile
+- Keep images minimal - don't add tools that aren't commonly needed
