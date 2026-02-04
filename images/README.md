@@ -86,7 +86,7 @@ RUSTUP_HOME=/opt/rustup
 ```
 ┌─────────────────────────────────────────────────────┐
 │                  minotaur-base                       │
-│  Fedora 41 + Node 22 LTS + tools + claude-code      │
+│  Fedora 43 + Node 22 LTS + tools + claude-code      │
 └─────────────────────────────────────────────────────┘
                           │
           ┌───────────────┴───────────────┐
@@ -99,43 +99,55 @@ RUSTUP_HOME=/opt/rustup
 
 ## Local Development
 
-### Building Images
+### Build & Test Script
+
+Use `build.sh` for local development - it builds images in the correct order and runs comprehensive tests.
 
 ```bash
-# Build base image
-cd images/base
-podman build -t minotaur-base .
+# Build and test all images
+./images/build.sh
 
-# Build typescript image (uses local base)
-cd ../typescript
-podman build -t minotaur-typescript --build-arg BASE_IMAGE=minotaur-base .
+# Test existing images (skip build)
+./images/build.sh --test-only
 
-# Build rust image (uses local base)
-cd ../rust
-podman build -t minotaur-rust --build-arg BASE_IMAGE=minotaur-base .
+# Fresh build without cache
+./images/build.sh --no-cache
+
+# Build/test specific image only
+./images/build.sh base
+./images/build.sh typescript
+./images/build.sh rust
+
+# Use podman instead of docker
+DOCKER=podman ./images/build.sh
 ```
 
-### Testing Images
+The script validates:
+- **Structure**: User is `developer`, workdir is `/workspace`, `/cache` directory exists
+- **Environment**: Cache paths configured correctly (`PNPM_HOME`, `CARGO_HOME`, etc.)
+- **Tools**: Every tool listed in the inventory runs `--version` successfully
+
+### Manual Building
+
+If you need to build manually:
 
 ```bash
-# Verify tools in base
-podman run --rm minotaur-base claude --version
-podman run --rm minotaur-base delta --version
-podman run --rm minotaur-base zoxide --version
-podman run --rm minotaur-base mcfly --version
+# Build base first (required by other images)
+docker build -t minotaur-base ./images/base
 
-# Verify typescript tools
-podman run --rm minotaur-typescript pnpm --version
-podman run --rm minotaur-typescript tsc --version
-podman run --rm minotaur-typescript tsx --version
+# Build language images (reference local base)
+docker build -t minotaur-typescript --build-arg BASE_IMAGE=minotaur-base ./images/typescript
+docker build -t minotaur-rust --build-arg BASE_IMAGE=minotaur-base ./images/rust
+```
 
-# Verify rust tools
-podman run --rm minotaur-rust rustc --version
-podman run --rm minotaur-rust cargo --version
-podman run --rm minotaur-rust bacon --version
+### Interactive Testing
 
-# Interactive test
-podman run --rm -it -v $(pwd):/workspace minotaur-typescript
+```bash
+# Shell into an image
+docker run --rm -it minotaur-typescript
+
+# Mount current directory
+docker run --rm -it -v $(pwd):/workspace minotaur-typescript
 ```
 
 ## CI/CD

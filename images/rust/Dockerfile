@@ -11,6 +11,9 @@ LABEL org.opencontainers.image.description="Minotaur Rust development image"
 
 USER root
 
+# Install OpenSSL dev headers (needed by cargo-outdated)
+RUN dnf install -y --setopt=install_weak_deps=False openssl-devel && dnf clean all
+
 # Install rustup and toolchain in shared location
 ENV RUSTUP_HOME=/opt/rustup
 ENV CARGO_HOME=/opt/cargo
@@ -42,7 +45,7 @@ RUN rustc --version \
     && rustfmt --version \
     && cargo clippy --version \
     && bacon --version \
-    && cargo add --version \
+    && cargo add --help > /dev/null \
     && cargo outdated --version
 
 WORKDIR /workspace

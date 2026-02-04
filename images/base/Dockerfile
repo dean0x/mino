@@ -1,10 +1,10 @@
 # Minotaur Base Image
-# Fedora 41 + Node.js 22 LTS + productivity tools + Claude Code
+# Fedora 43 + Node.js 22 LTS + productivity tools + Claude Code
 #
 # This is the foundation for all minotaur language images.
 # Contains shell tools, git utilities, and the Claude Code CLI.
 
-FROM fedora:41
+FROM fedora:43
 
 LABEL org.opencontainers.image.source="https://github.com/dean0x/minotaur"
 LABEL org.opencontainers.image.description="Minotaur base image with Claude Code and development tools"
@@ -26,7 +26,9 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     # Networking
     procps-ng httpie \
     # Build essentials for native modules
-    gcc gcc-c++ make \
+    gcc gcc-c++ make pkgconf \
+    # Required for git-delta (oniguruma regex)
+    oniguruma-devel \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
@@ -46,9 +48,10 @@ RUN curl -fsSL https://rpm.nodesource.com/setup_22.x | bash - \
 
 # Rust-based tools: delta (git diff), zoxide (smart cd), mcfly (shell history)
 # Install via cargo, then remove rustup to save space
+# RUSTONIG_SYSTEM_LIBONIG tells onig_sys to use system oniguruma instead of bundled
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
     && . "$HOME/.cargo/env" \
-    && cargo install git-delta zoxide mcfly --locked \
+    && RUSTONIG_SYSTEM_LIBONIG=1 cargo install git-delta zoxide mcfly --locked \
     && mv ~/.cargo/bin/delta /usr/local/bin/ \
     && mv ~/.cargo/bin/zoxide /usr/local/bin/ \
     && mv ~/.cargo/bin/mcfly /usr/local/bin/ \

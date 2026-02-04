@@ -143,23 +143,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-base, build-language-images]
     steps:
-      - name: Verify base image
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pull images
         run: |
           docker pull ${{ env.IMAGE_PREFIX }}-base:latest
-          docker run --rm ${{ env.IMAGE_PREFIX }}-base:latest claude --version
-          docker run --rm ${{ env.IMAGE_PREFIX }}-base:latest delta --version
-          docker run --rm ${{ env.IMAGE_PREFIX }}-base:latest zoxide --version
-
-      - name: Verify typescript image
-        run: |
           docker pull ${{ env.IMAGE_PREFIX }}-typescript:latest
-          docker run --rm ${{ env.IMAGE_PREFIX }}-typescript:latest pnpm --version
-          docker run --rm ${{ env.IMAGE_PREFIX }}-typescript:latest tsc --version
-          docker run --rm ${{ env.IMAGE_PREFIX }}-typescript:latest tsx --version
-
-      - name: Verify rust image
-        run: |
           docker pull ${{ env.IMAGE_PREFIX }}-rust:latest
-          docker run --rm ${{ env.IMAGE_PREFIX }}-rust:latest rustc --version
-          docker run --rm ${{ env.IMAGE_PREFIX }}-rust:latest cargo --version
-          docker run --rm ${{ env.IMAGE_PREFIX }}-rust:latest bacon --version
+
+      - name: Tag images for local testing
+        run: |
+          docker tag ${{ env.IMAGE_PREFIX }}-base:latest minotaur-base
+          docker tag ${{ env.IMAGE_PREFIX }}-typescript:latest minotaur-typescript
+          docker tag ${{ env.IMAGE_PREFIX }}-rust:latest minotaur-rust
+
+      - name: Run verification tests
+        run: ./images/build.sh --test-only
