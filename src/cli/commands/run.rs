@@ -1,5 +1,8 @@
 //! Run command - start a sandboxed session
 
+/// Image registry prefix for minotaur images
+const IMAGE_REGISTRY: &str = "ghcr.io/dean0x";
+
 use crate::cache::{
     detect_lockfiles, format_bytes, gb_to_bytes, labels, CacheMount, CacheSizeStatus, CacheState,
     CacheVolume, LockfileInfo,
@@ -506,10 +509,11 @@ fn build_container_config(
     cache_mounts: &[CacheMount],
     cache_env: HashMap<String, String>,
 ) -> MinotaurResult<ContainerConfig> {
-    let image = args
+    let raw_image = args
         .image
         .clone()
         .unwrap_or_else(|| config.container.image.clone());
+    let image = resolve_image_alias(&raw_image);
 
     let mut volumes = vec![
         // Mount project directory
@@ -565,4 +569,88 @@ fn generate_session_name() -> String {
         .unwrap()
         .as_secs();
     format!("session-{}", timestamp % 100000)
+}
+
+/// Resolve image aliases to full registry paths
+///
+/// Supports short aliases for minotaur images:
+/// - `typescript`, `ts`, `node` -> minotaur-typescript
+/// - `rust`, `cargo` -> minotaur-rust
+/// - `base` -> minotaur-base
+///
+/// Full image paths (containing `/` or `:`) are passed through unchanged.
+fn resolve_image_alias(image: &str) -> String {
+    // If the image contains '/' or ':', it's already a full path
+    if image.contains('/') || image.contains(':') {
+        return image.to_string();
+    }
+
+    let image_name = match image {
+        "typescript" | "ts" | "node" => "minotaur-typescript",
+        "rust" | "cargo" => "minotaur-rust",
+        "base" => "minotaur-base",
+        // Not a known alias, pass through (user might have a local image)
+        other => return other.to_string(),
+    };
+
+    format!("{}/{}:latest", IMAGE_REGISTRY, image_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_image_alias_typescript() {
+        assert_eq!(
+            resolve_image_alias("typescript"),
+            "ghcr.io/dean0x/minotaur-typescript:latest"
+        );
+        assert_eq!(
+            resolve_image_alias("ts"),
+            "ghcr.io/dean0x/minotaur-typescript:latest"
+        );
+        assert_eq!(
+            resolve_image_alias("node"),
+            "ghcr.io/dean0x/minotaur-typescript:latest"
+        );
+    }
+
+    #[test]
+    fn resolve_image_alias_rust() {
+        assert_eq!(
+            resolve_image_alias("rust"),
+            "ghcr.io/dean0x/minotaur-rust:latest"
+        );
+        assert_eq!(
+            resolve_image_alias("cargo"),
+            "ghcr.io/dean0x/minotaur-rust:latest"
+        );
+    }
+
+    #[test]
+    fn resolve_image_alias_base() {
+        assert_eq!(
+            resolve_image_alias("base"),
+            "ghcr.io/dean0x/minotaur-base:latest"
+        );
+    }
+
+    #[test]
+    fn resolve_image_alias_passthrough_full_path() {
+        assert_eq!(
+            resolve_image_alias("ghcr.io/custom/image:v1"),
+            "ghcr.io/custom/image:v1"
+        );
+        assert_eq!(
+            resolve_image_alias("docker.io/library/fedora:41"),
+            "docker.io/library/fedora:41"
+        );
+    }
+
+    #[test]
+    fn resolve_image_alias_passthrough_local() {
+        assert_eq!(resolve_image_alias("my-local-image"), "my-local-image");
+        assert_eq!(resolve_image_alias("fedora"), "fedora");
+    }
 }

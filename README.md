@@ -69,6 +69,11 @@ minotaur run -n my-feature -p ~/projects/myapp -- zsh
 
 # Use a different container image
 minotaur run --image ubuntu:22.04 -- bash
+
+# Use minotaur development images (with Claude Code pre-installed)
+minotaur run --image typescript -- claude    # TypeScript/Node.js
+minotaur run --image rust -- claude          # Rust
+minotaur run --image base -- claude          # Base tools only
 ```
 
 ## CLI Reference
@@ -96,7 +101,7 @@ minotaur run [OPTIONS] [-- COMMAND...]
 |--------|-------------|
 | `-n, --name <NAME>` | Session name (auto-generated if omitted) |
 | `-p, --project <PATH>` | Project directory to mount (default: current dir) |
-| `--image <IMAGE>` | Container image to use (default: fedora:41) |
+| `--image <IMAGE>` | Container image (default: fedora:41). Aliases: `typescript`/`ts`/`node`, `rust`/`cargo`, `base` |
 | `--aws` | Include AWS credentials |
 | `--gcp` | Include GCP credentials |
 | `--azure` | Include Azure credentials |
@@ -319,6 +324,20 @@ minotaur cache gc --days 7
 # Clear everything
 minotaur cache clear --all
 ```
+
+## Container Images
+
+Minotaur provides pre-built development images with Claude Code and productivity tools.
+
+| Alias | Image | Includes |
+|-------|-------|----------|
+| `typescript`, `ts`, `node` | `ghcr.io/dean0x/minotaur-typescript` | Node.js 22 LTS, pnpm, tsx, TypeScript |
+| `rust`, `cargo` | `ghcr.io/dean0x/minotaur-rust` | rustup, cargo, clippy, bacon |
+| `base` | `ghcr.io/dean0x/minotaur-base` | Claude Code, git, delta, ripgrep, zoxide |
+
+All images include: Claude Code CLI, git, gh CLI, delta (git diff), ripgrep, fd, bat, fzf, neovim, zsh, zoxide, mcfly.
+
+See [images/README.md](images/README.md) for full tool inventory and local build instructions.
 
 ## Architecture
 

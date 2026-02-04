@@ -178,3 +178,20 @@ jobs:
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  trigger-homebrew:
+    name: Trigger Homebrew update
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Trigger formula update
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.HOMEBREW_TAP_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/dean0x/homebrew-tap/dispatches \
+            -d '{"event_type":"update-formula","client_payload":{"formula":"minotaur","version":"${{ steps.version.outputs.version }}"}}'
