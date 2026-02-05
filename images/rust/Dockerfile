@@ -11,9 +11,6 @@ LABEL org.opencontainers.image.description="Minotaur Rust development image"
 
 USER root
 
-# Install OpenSSL dev headers (needed by cargo-outdated)
-RUN dnf install -y --setopt=install_weak_deps=False openssl-devel && dnf clean all
-
 # Install rustup and toolchain in shared location
 ENV RUSTUP_HOME=/opt/rustup
 ENV CARGO_HOME=/opt/cargo
@@ -22,10 +19,12 @@ ENV PATH="${CARGO_HOME}/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain stable --profile minimal \
     && rustup component add rustfmt clippy \
+    # Install cargo-binstall for fast binary downloads
+    && curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash \
     # bacon: TUI file watcher (replaces archived cargo-watch)
     # cargo-edit: add/rm/upgrade commands
     # cargo-outdated: check for outdated dependencies
-    && cargo install bacon cargo-edit cargo-outdated --locked \
+    && cargo binstall -y bacon cargo-edit cargo-outdated \
     && chmod -R a+rX ${RUSTUP_HOME} ${CARGO_HOME} \
     && chown -R developer:developer ${CARGO_HOME} ${RUSTUP_HOME}
 
