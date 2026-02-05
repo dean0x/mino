@@ -21,7 +21,7 @@ impl OrbStack {
     /// Check if OrbStack is installed
     pub async fn is_installed() -> bool {
         Command::new("orb")
-            .arg("--version")
+            .arg("version")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -47,15 +47,23 @@ impl OrbStack {
     /// Get OrbStack version
     pub async fn version() -> MinotaurResult<String> {
         let output = Command::new("orb")
-            .arg("--version")
+            .arg("version")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("orb --version", e))?;
+            .map_err(|e| MinotaurError::command_failed("orb version", e))?;
 
         if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            // Parse "Version: 2.0.5 (2000500)" to just "2.0.5"
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let version = stdout
+                .lines()
+                .find(|l| l.starts_with("Version:"))
+                .and_then(|l| l.strip_prefix("Version:"))
+                .map(|v| v.split_whitespace().next().unwrap_or("unknown"))
+                .unwrap_or("unknown");
+            Ok(version.to_string())
         } else {
             Err(MinotaurError::OrbStackNotFound)
         }
