@@ -495,7 +495,13 @@ async fn upgrade_podman_in_vm(ctx: &UiContext, vm_name: &str, vm_distro: &str) -
         "fedora" | "rhel" | "centos" | "rocky" | "alma" => {
             run_visible_orb(vm_name, &["sudo", "dnf", "upgrade", "-y", "podman"]).await
         }
-        "arch" => run_visible_orb(vm_name, &["sudo", "pacman", "-Syu", "--noconfirm", "podman"]).await,
+        "arch" => {
+            run_visible_orb(
+                vm_name,
+                &["sudo", "pacman", "-Syu", "--noconfirm", "podman"],
+            )
+            .await
+        }
         "opensuse" | "suse" => {
             run_visible_orb(vm_name, &["sudo", "zypper", "update", "-y", "podman"]).await
         }
