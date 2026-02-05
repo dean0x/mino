@@ -19,6 +19,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     git curl wget jq openssh-clients ca-certificates tar gzip unzip which \
     # Modern replacements for grep/find/cat
     ripgrep fd-find bat fzf \
+    # Git diff and smart cd (from Fedora repos)
+    git-delta zoxide \
     # Editor
     neovim \
     # Shell
@@ -27,8 +29,6 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     procps-ng httpie \
     # Build essentials for native modules
     gcc gcc-c++ make pkgconf \
-    # Required for git-delta (oniguruma regex)
-    oniguruma-devel \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
@@ -46,17 +46,13 @@ RUN curl -fsSL https://rpm.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/cache/dnf \
     && node --version && npm --version
 
-# Rust-based tools: delta (git diff), zoxide (smart cd), mcfly (shell history)
-# Install via cargo, then remove rustup to save space
-# RUSTONIG_SYSTEM_LIBONIG tells onig_sys to use system oniguruma instead of bundled
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
-    && . "$HOME/.cargo/env" \
-    && RUSTONIG_SYSTEM_LIBONIG=1 cargo install git-delta zoxide mcfly --locked \
-    && mv ~/.cargo/bin/delta /usr/local/bin/ \
-    && mv ~/.cargo/bin/zoxide /usr/local/bin/ \
-    && mv ~/.cargo/bin/mcfly /usr/local/bin/ \
-    && rustup self uninstall -y \
-    && rm -rf ~/.cargo ~/.rustup
+# mcfly (shell history search) - download pre-built binary
+# git-delta and zoxide are installed via dnf above
+ARG MCFLY_VERSION=v0.9.2
+RUN ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/cantino/mcfly/releases/download/${MCFLY_VERSION}/mcfly-${MCFLY_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
+    tar -xz -C /usr/local/bin mcfly && \
+    chmod +x /usr/local/bin/mcfly
 
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code \
