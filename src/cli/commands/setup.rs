@@ -107,6 +107,18 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         issues += 1;
     }
 
+    // Step 6: Check rootless Podman in VM
+    let rootless_result =
+        if podman_result == StepResult::AlreadyOk || podman_result == StepResult::Installed {
+            check_rootless_mode_in_vm(ctx, args, vm_name).await
+        } else {
+            ui::step_blocked(ctx, "Rootless Mode (in VM)", "Podman");
+            StepResult::Blocked
+        };
+    if rootless_result == StepResult::Failed || rootless_result == StepResult::Skipped {
+        issues += 1;
+    }
+
     // Summary
     if issues > 0 {
         if args.check {
@@ -509,6 +521,102 @@ async fn upgrade_podman_in_vm(ctx: &UiContext, vm_name: &str, vm_distro: &str) -
             // Default to dnf for unknown distros
             run_visible_orb(vm_name, &["sudo", "dnf", "upgrade", "-y", "podman"]).await
         }
+    }
+}
+
+/// Check and configure rootless Podman mode in VM
+///
+/// Note: `podman info --format {{.Host.Security.Rootless}}` returns true even when
+/// subuid/subgid aren't configured, so we must explicitly check those files.
+async fn check_rootless_mode_in_vm(
+    ctx: &UiContext,
+    args: &SetupArgs,
+    vm_name: &str,
+) -> StepResult {
+    // Get the username in the VM
+    let whoami_output = Command::new("orb")
+        .args(["-m", vm_name, "whoami"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await;
+
+    let username = match whoami_output {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        _ => {
+            ui::step_error(ctx, "Could not determine VM username");
+            return StepResult::Failed;
+        }
+    };
+
+    // Check if subuid entry exists for the user
+    // We grep for "^username:" to ensure exact match at start of line
+    let subuid_check = Command::new("orb")
+        .args(["-m", vm_name, "grep", "-q", &format!("^{}:", username), "/etc/subuid"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+
+    let has_subuid = subuid_check.map(|s| s.success()).unwrap_or(false);
+
+    // Check if subgid entry exists for the user
+    let subgid_check = Command::new("orb")
+        .args(["-m", vm_name, "grep", "-q", &format!("^{}:", username), "/etc/subgid"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+
+    let has_subgid = subgid_check.map(|s| s.success()).unwrap_or(false);
+
+    if has_subuid && has_subgid {
+        ui::step_ok_detail(ctx, "Rootless mode configured in VM", &username);
+        return StepResult::AlreadyOk;
+    }
+
+    if args.check {
+        ui::step_error_detail(
+            ctx,
+            "Rootless mode not configured in VM",
+            "subuid/subgid not set up",
+        );
+        return StepResult::Failed;
+    }
+
+    ui::step_warn(ctx, "Configuring rootless Podman in VM...");
+    ui::remark(ctx, &format!("Adding subuid/subgid entries for '{}'", username));
+
+    if !has_subuid {
+        // Add subuid entry
+        let subuid_cmd = format!("echo '{}:100000:65536' | sudo tee -a /etc/subuid", username);
+        let subuid_result = run_visible_orb(vm_name, &["sh", "-c", &subuid_cmd]).await;
+        if !subuid_result {
+            ui::step_error(ctx, "Failed to configure /etc/subuid");
+            return StepResult::Failed;
+        }
+    }
+
+    if !has_subgid {
+        // Add subgid entry
+        let subgid_cmd = format!("echo '{}:100000:65536' | sudo tee -a /etc/subgid", username);
+        let subgid_result = run_visible_orb(vm_name, &["sh", "-c", &subgid_cmd]).await;
+        if !subgid_result {
+            ui::step_error(ctx, "Failed to configure /etc/subgid");
+            return StepResult::Failed;
+        }
+    }
+
+    // Run podman system migrate to apply the configuration
+    ui::remark(ctx, "Running: podman system migrate");
+    if run_visible_orb(vm_name, &["podman", "system", "migrate"]).await {
+        ui::step_ok(ctx, "Rootless mode configured in VM");
+        StepResult::Installed
+    } else {
+        ui::step_error(ctx, "Failed to run podman system migrate");
+        StepResult::Failed
     }
 }
 

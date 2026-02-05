@@ -93,7 +93,7 @@ impl OrbStack {
     /// Check if the VM exists
     pub async fn vm_exists(&self) -> MinotaurResult<bool> {
         let output = Command::new("orb")
-            .args(["list", "-f", "{{.Name}}"])
+            .args(["list", "-q"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
