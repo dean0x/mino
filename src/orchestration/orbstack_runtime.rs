@@ -101,12 +101,8 @@ impl ContainerRuntime for OrbStackRuntime {
             self.pull(&config.image).await?;
         }
 
-        let mut args = vec!["podman", "run"];
+        let mut args = vec!["podman", "run", "-d"];
 
-        // Detach mode
-        args.push("-d");
-
-        // Interactive/TTY
         if config.interactive {
             args.push("-i");
         }
@@ -114,29 +110,22 @@ impl ContainerRuntime for OrbStackRuntime {
             args.push("-t");
         }
 
-        // Working directory
         args.push("-w");
         args.push(&config.workdir);
-
-        // Network
         args.push("--network");
         args.push(&config.network);
 
-        // Volumes
         let volume_args: Vec<String> = config
             .volumes
             .iter()
             .flat_map(|v| vec!["-v".to_string(), v.clone()])
             .collect();
-
-        // Environment variables
         let env_args: Vec<String> = config
             .env
             .iter()
             .flat_map(|(k, v)| vec!["-e".to_string(), format!("{}={}", k, v)])
             .collect();
 
-        // Build final command
         let mut cmd_args: Vec<&str> = args.clone();
         for v in &volume_args {
             cmd_args.push(v);
@@ -144,16 +133,12 @@ impl ContainerRuntime for OrbStackRuntime {
         for e in &env_args {
             cmd_args.push(e);
         }
-
-        // Image
         cmd_args.push(&config.image);
-
-        // Command to run
         for c in command {
             cmd_args.push(c);
         }
 
-        debug!("Running container: {:?}", cmd_args);
+        debug!("Running container (detached): {:?}", cmd_args);
 
         let output = self.orbstack.exec(&cmd_args).await?;
 
@@ -168,6 +153,81 @@ impl ContainerRuntime for OrbStackRuntime {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(MinotaurError::ContainerStart(stderr.to_string()))
         }
+    }
+
+    async fn create(
+        &self,
+        config: &ContainerConfig,
+        command: &[String],
+    ) -> MinotaurResult<String> {
+        // Ensure image is available
+        if !self.image_exists(&config.image).await? {
+            self.pull(&config.image).await?;
+        }
+
+        let mut args = vec!["podman", "create"];
+
+        if config.interactive {
+            args.push("-i");
+        }
+        if config.tty {
+            args.push("-t");
+        }
+
+        args.push("-w");
+        args.push(&config.workdir);
+        args.push("--network");
+        args.push(&config.network);
+
+        let volume_args: Vec<String> = config
+            .volumes
+            .iter()
+            .flat_map(|v| vec!["-v".to_string(), v.clone()])
+            .collect();
+        let env_args: Vec<String> = config
+            .env
+            .iter()
+            .flat_map(|(k, v)| vec!["-e".to_string(), format!("{}={}", k, v)])
+            .collect();
+
+        let mut cmd_args: Vec<&str> = args.clone();
+        for v in &volume_args {
+            cmd_args.push(v);
+        }
+        for e in &env_args {
+            cmd_args.push(e);
+        }
+        cmd_args.push(&config.image);
+        for c in command {
+            cmd_args.push(c);
+        }
+
+        debug!("Creating container: {:?}", cmd_args);
+
+        let output = self.orbstack.exec(&cmd_args).await?;
+
+        if output.status.success() {
+            let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            debug!(
+                "Container created: {}",
+                &container_id[..12.min(container_id.len())]
+            );
+            Ok(container_id)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(MinotaurError::ContainerStart(stderr.to_string()))
+        }
+    }
+
+    async fn start_attached(&self, container_id: &str) -> MinotaurResult<i32> {
+        debug!("Starting container attached: {}", container_id);
+
+        let exit_code = self
+            .orbstack
+            .exec_interactive(&["podman", "start", "--attach", container_id])
+            .await?;
+
+        Ok(exit_code)
     }
 
     async fn attach(&self, container_id: &str) -> MinotaurResult<i32> {

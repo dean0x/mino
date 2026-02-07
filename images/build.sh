@@ -230,7 +230,6 @@ test_base() {
     echo ""
     log_info "Navigation tools:"
     check_tool "minotaur-base" "zoxide"
-    check_tool "minotaur-base" "mcfly"
 
     echo ""
     log_info "File tools:"

@@ -36,8 +36,15 @@ pub trait ContainerRuntime: Send + Sync {
     /// Ensure the runtime is ready (start VM, check rootless setup, etc.)
     async fn ensure_ready(&self) -> MinotaurResult<()>;
 
-    /// Run a container and return the container ID
+    /// Run a container in detached mode and return the container ID
     async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String>;
+
+    /// Create a container without starting it. Returns container ID.
+    async fn create(&self, config: &ContainerConfig, command: &[String])
+        -> MinotaurResult<String>;
+
+    /// Start a created container attached to the terminal. Returns exit code.
+    async fn start_attached(&self, container_id: &str) -> MinotaurResult<i32>;
 
     /// Attach to a running container interactively
     async fn attach(&self, container_id: &str) -> MinotaurResult<i32>;

@@ -146,47 +146,46 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
         spinner.message("Starting container...");
     }
 
-    // Start container
-    let container_id = match runtime.run(&container_config, &command).await {
-        Ok(id) => id,
-        Err(e) => {
-            manager
-                .update_status(&session_name, SessionStatus::Failed)
-                .await?;
-            audit
-                .log(
-                    "session.failed",
-                    &serde_json::json!({
-                        "name": &session_name,
-                        "error": e.to_string(),
-                    }),
-                )
-                .await;
-            return Err(e);
-        }
-    };
-
-    // Update session with container ID
-    manager
-        .set_container_id(&session_name, &container_id)
-        .await?;
-    manager
-        .update_status(&session_name, SessionStatus::Running)
-        .await?;
-
-    audit
-        .log(
-            "session.started",
-            &serde_json::json!({
-                "name": &session_name,
-                "container_id": &container_id,
-            }),
-        )
-        .await;
-
-    spinner.clear();
-
     if args.detach {
+        // Detached mode: run -d returns container ID immediately
+        let container_id = match runtime.run(&container_config, &command).await {
+            Ok(id) => id,
+            Err(e) => {
+                manager
+                    .update_status(&session_name, SessionStatus::Failed)
+                    .await?;
+                audit
+                    .log(
+                        "session.failed",
+                        &serde_json::json!({
+                            "name": &session_name,
+                            "error": e.to_string(),
+                        }),
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
+
+        manager
+            .set_container_id(&session_name, &container_id)
+            .await?;
+        manager
+            .update_status(&session_name, SessionStatus::Running)
+            .await?;
+
+        audit
+            .log(
+                "session.started",
+                &serde_json::json!({
+                    "name": &session_name,
+                    "container_id": &container_id,
+                }),
+            )
+            .await;
+
+        spinner.clear();
+
         println!(
             "{} Session {} started (container: {})",
             style("✓").green(),
@@ -196,8 +195,6 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
         println!("  Attach with: minotaur logs {}", session_name);
         println!("  Stop with:   minotaur stop {}", session_name);
 
-        // Note: In detached mode, we can't finalize caches automatically
-        // User should run `minotaur stop` for clean exit
         if !cache_session.volumes_to_finalize.is_empty() {
             println!(
                 "  {} Cache finalization requires: minotaur stop {}",
@@ -206,10 +203,48 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
             );
         }
     } else {
-        debug!("Attaching to container {}", &container_id[..12]);
+        // Interactive mode: create + start_attached (no race condition)
+        let container_id = match runtime.create(&container_config, &command).await {
+            Ok(id) => id,
+            Err(e) => {
+                manager
+                    .update_status(&session_name, SessionStatus::Failed)
+                    .await?;
+                audit
+                    .log(
+                        "session.failed",
+                        &serde_json::json!({
+                            "name": &session_name,
+                            "error": e.to_string(),
+                        }),
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
 
-        // Attach to container interactively
-        let exit_code = runtime.attach(&container_id).await?;
+        manager
+            .set_container_id(&session_name, &container_id)
+            .await?;
+        manager
+            .update_status(&session_name, SessionStatus::Running)
+            .await?;
+
+        audit
+            .log(
+                "session.started",
+                &serde_json::json!({
+                    "name": &session_name,
+                    "container_id": &container_id,
+                }),
+            )
+            .await;
+
+        spinner.clear();
+
+        debug!("Starting container attached: {}", &container_id[..12]);
+
+        let exit_code = runtime.start_attached(&container_id).await?;
 
         // Finalize caches on clean exit
         if exit_code == 0 && !cache_session.volumes_to_finalize.is_empty() {

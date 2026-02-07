@@ -46,14 +46,6 @@ RUN curl -fsSL https://rpm.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/cache/dnf \
     && node --version && npm --version
 
-# mcfly (shell history search) - download pre-built binary
-# git-delta and zoxide are installed via dnf above
-ARG MCFLY_VERSION=v0.9.2
-RUN ARCH=$(uname -m) && \
-    curl -fsSL "https://github.com/cantino/mcfly/releases/download/${MCFLY_VERSION}/mcfly-${MCFLY_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
-    tar -xz -C /usr/local/bin mcfly && \
-    chmod +x /usr/local/bin/mcfly
-
 # yq (YAML processor) - download pre-built binary
 ARG YQ_VERSION=v4.44.3
 RUN ARCH=$(uname -m) && \
@@ -162,9 +154,7 @@ alias grep="rg"
 
 # Tool integrations
 eval "$(zoxide init zsh)"
-eval "$(mcfly init zsh)"
-export MCFLY_FUZZY=2
-export MCFLY_RESULTS=50
+source <(fzf --zsh)
 
 # History (augments oh-my-zsh defaults)
 HISTSIZE=50000
@@ -195,7 +185,6 @@ RUN claude --version \
     && fzf --version \
     && nvim --version | head -1 \
     && zoxide --version \
-    && mcfly --version \
     && eza --version \
     && sd --version \
     && yq --version \

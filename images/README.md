@@ -45,7 +45,7 @@ All language images inherit these tools.
 | **File listing** | eza | Modern ls + tree replacement |
 | **Edit** | neovim | Modern vim |
 | **Navigate** | zoxide | Smart cd with frecency ranking |
-| **Shell** | zsh, Oh My Zsh, mcfly | Autosuggestions, history-substring-search, neural network history search |
+| **Shell** | zsh, Oh My Zsh, fzf | Autosuggestions, history-substring-search, fzf Ctrl+R history search |
 | **Node management** | nvm | Node Version Manager (system Node 22 LTS as fallback) |
 | **Network** | curl, wget, httpie, ssh | HTTP testing and SSH |
 | **Runtime** | Node.js 22 LTS | Required for Claude Code |
@@ -182,7 +182,7 @@ See `.github/workflows/images.yml` for details.
 |------|------|--------|
 | **delta** | diff-so-fancy | Syntax highlighting for 200+ languages, within-line highlighting |
 | **zoxide** | autojump/z | 10x faster startup (5ms vs 50ms), Rust-based, fzf integration |
-| **mcfly** | atuin | Neural network ranking, simpler setup, no cloud sync complexity |
+| **fzf** | atuin/mcfly | Already installed for file search, Ctrl+R for fuzzy history, zero extra dependencies |
 | **eza** | ls/tree | Single binary replaces both `ls` and `tree`, color/git integration |
 | **sd** | sed | Intuitive regex syntax, no escaping nightmares, string literal mode |
 | **yq** | python-yaml | `jq` syntax for YAML, single binary, no runtime dependencies |
