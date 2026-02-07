@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Azure credential provider
 pub struct AzureCredentials;
@@ -40,7 +40,7 @@ impl AzureCredentials {
     async fn get_access_token_internal(
         config: &AzureConfig,
     ) -> MinotaurResult<(String, DateTime<Utc>)> {
-        info!("Requesting Azure access token...");
+        debug!("Requesting Azure access token...");
 
         let mut cmd = Command::new("az");
         cmd.args(["account", "get-access-token", "--output", "json"]);

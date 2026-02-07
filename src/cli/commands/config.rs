@@ -69,11 +69,10 @@ async fn set_value(
     match parts.as_slice() {
         ["general", "verbose"] => config.general.verbose = parse_bool(value)?,
         ["general", "log_format"] => config.general.log_format = value.to_string(),
+        ["general", "audit_log"] => config.general.audit_log = parse_bool(value)?,
 
         ["vm", "name"] => config.vm.name = value.to_string(),
         ["vm", "distro"] => config.vm.distro = value.to_string(),
-        ["vm", "cpus"] => config.vm.cpus = Some(parse_u32(value)?),
-        ["vm", "memory_mb"] => config.vm.memory_mb = Some(parse_u32(value)?),
 
         ["container", "image"] => config.container.image = value.to_string(),
         ["container", "network"] => config.container.network = value.to_string(),
@@ -102,6 +101,9 @@ async fn set_value(
         }
 
         ["session", "shell"] => config.session.shell = value.to_string(),
+        ["session", "auto_cleanup_hours"] => {
+            config.session.auto_cleanup_hours = parse_u32(value)?
+        }
 
         _ => {
             ui::step_error_detail(&ctx, "Unknown config key", key);
@@ -138,10 +140,9 @@ fn print_valid_keys() {
     let keys = [
         "general.verbose",
         "general.log_format",
+        "general.audit_log",
         "vm.name",
         "vm.distro",
-        "vm.cpus",
-        "vm.memory_mb",
         "container.image",
         "container.network",
         "container.workdir",
@@ -153,6 +154,7 @@ fn print_valid_keys() {
         "credentials.azure.subscription",
         "credentials.azure.tenant",
         "session.shell",
+        "session.auto_cleanup_hours",
     ];
 
     for key in keys {

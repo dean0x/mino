@@ -39,7 +39,7 @@ pub struct GeneralConfig {
     /// Log format: "text" or "json"
     pub log_format: String,
 
-    /// Enable audit logging
+    /// Enable audit logging (security events written to state dir)
     pub audit_log: bool,
 }
 
@@ -62,12 +62,6 @@ pub struct VmConfig {
 
     /// VM distribution
     pub distro: String,
-
-    /// CPU cores allocated
-    pub cpus: Option<u32>,
-
-    /// Memory in MB
-    pub memory_mb: Option<u32>,
 }
 
 impl Default for VmConfig {
@@ -75,8 +69,6 @@ impl Default for VmConfig {
         Self {
             name: "minotaur".to_string(),
             distro: "fedora".to_string(),
-            cpus: None,
-            memory_mb: None,
         }
     }
 }
@@ -87,9 +79,6 @@ impl Default for VmConfig {
 pub struct ContainerConfig {
     /// Base image to use
     pub image: String,
-
-    /// Additional packages to install
-    pub packages: Vec<String>,
 
     /// Environment variables to set
     pub env: HashMap<String, String>,
@@ -108,7 +97,6 @@ impl Default for ContainerConfig {
     fn default() -> Self {
         Self {
             image: "fedora:41".to_string(),
-            packages: vec!["git".to_string(), "curl".to_string(), "which".to_string()],
             env: HashMap::new(),
             volumes: vec![],
             network: "host".to_string(),
@@ -211,11 +199,8 @@ pub struct SessionConfig {
     /// Default shell inside container
     pub shell: String,
 
-    /// Auto-cleanup sessions older than N hours (0 = disabled)
+    /// Auto-cleanup stopped/failed sessions older than N hours (0 = disabled)
     pub auto_cleanup_hours: u32,
-
-    /// Maximum concurrent sessions
-    pub max_sessions: u32,
 
     /// Default project directory to mount
     pub default_project_dir: Option<PathBuf>,
@@ -225,8 +210,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             shell: "/bin/bash".to_string(),
-            auto_cleanup_hours: 24,
-            max_sessions: 10,
+            auto_cleanup_hours: 720,
             default_project_dir: None,
         }
     }

@@ -1,6 +1,6 @@
 //! CLI argument definitions using clap derive
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// Minotaur - Secure AI Agent Sandbox
@@ -16,9 +16,9 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    /// Enable verbose output
-    #[arg(short, long, global = true)]
-    pub verbose: bool,
+    /// Increase verbosity (-v info, -vv debug)
+    #[arg(short, long, global = true, action = ArgAction::Count)]
+    pub verbose: u8,
 
     /// Configuration file path
     #[arg(short, long, global = true, env = "MINOTAUR_CONFIG")]
@@ -348,5 +348,17 @@ mod tests {
             }
             _ => panic!("expected Setup command"),
         }
+    }
+
+    #[test]
+    fn cli_verbose_levels() {
+        let cli = Cli::parse_from(["minotaur", "status"]);
+        assert_eq!(cli.verbose, 0);
+
+        let cli = Cli::parse_from(["minotaur", "-v", "status"]);
+        assert_eq!(cli.verbose, 1);
+
+        let cli = Cli::parse_from(["minotaur", "-vv", "status"]);
+        assert_eq!(cli.verbose, 2);
     }
 }

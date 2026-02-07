@@ -7,7 +7,7 @@ pub use schema::Config;
 use crate::error::{MinotaurError, MinotaurResult};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Configuration manager
 pub struct ConfigManager {
@@ -53,7 +53,7 @@ impl ConfigManager {
         Self::state_dir().join("credentials")
     }
 
-    /// Get the audit log path
+    /// Get the audit log file path
     pub fn audit_log_path() -> PathBuf {
         Self::state_dir().join("audit.log")
     }
@@ -92,7 +92,7 @@ impl ConfigManager {
             )
         })?;
 
-        info!("Configuration saved to {}", self.config_path.display());
+        debug!("Configuration saved to {}", self.config_path.display());
         Ok(())
     }
 

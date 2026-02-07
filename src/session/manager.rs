@@ -4,7 +4,7 @@ use crate::config::ConfigManager;
 use crate::error::{MinotaurError, MinotaurResult};
 use crate::session::state::{Session, SessionStatus};
 use chrono::{Duration, Utc};
-use tracing::{debug, info};
+use tracing::{debug, warn};
 
 /// Session manager handles session CRUD and cleanup
 pub struct SessionManager;
@@ -17,15 +17,10 @@ impl SessionManager {
         Ok(Self)
     }
 
-    /// Create a new session
+    /// Create a new session (atomic — fails if name already taken)
     pub async fn create(&self, session: &Session) -> MinotaurResult<()> {
-        // Check for name collision
-        if Session::load(&session.name).await?.is_some() {
-            return Err(MinotaurError::SessionExists(session.name.clone()));
-        }
-
-        session.save().await?;
-        info!("Created session: {}", session.name);
+        session.create_file().await?;
+        debug!("Created session: {}", session.name);
         Ok(())
     }
 
@@ -77,46 +72,8 @@ impl SessionManager {
             .ok_or_else(|| MinotaurError::SessionNotFound(name.to_string()))?;
 
         session.delete().await?;
-        info!("Deleted session: {}", name);
+        debug!("Deleted session: {}", name);
         Ok(())
-    }
-
-    /// Clean up old sessions
-    pub async fn cleanup(&self, max_age_hours: u32) -> MinotaurResult<u32> {
-        if max_age_hours == 0 {
-            return Ok(0);
-        }
-
-        let cutoff = Utc::now() - Duration::hours(max_age_hours as i64);
-        let sessions = self.list().await?;
-        let mut cleaned = 0;
-
-        for session in sessions {
-            // Only clean up stopped/failed sessions
-            if !matches!(
-                session.status,
-                SessionStatus::Stopped | SessionStatus::Failed
-            ) {
-                continue;
-            }
-
-            if session.updated_at < cutoff {
-                session.delete().await?;
-                cleaned += 1;
-                info!("Cleaned up old session: {}", session.name);
-            }
-        }
-
-        Ok(cleaned)
-    }
-
-    /// Get active session count
-    pub async fn active_count(&self) -> MinotaurResult<usize> {
-        let sessions = self.list().await?;
-        Ok(sessions
-            .iter()
-            .filter(|s| matches!(s.status, SessionStatus::Running | SessionStatus::Starting))
-            .count())
     }
 
     /// Find session by container ID
@@ -125,6 +82,39 @@ impl SessionManager {
         Ok(sessions
             .into_iter()
             .find(|s| s.container_id.as_deref() == Some(container_id)))
+    }
+
+    /// Remove stopped/failed sessions older than `max_age_hours`.
+    /// Returns the number of sessions cleaned up.
+    pub async fn cleanup(&self, max_age_hours: u32) -> MinotaurResult<u32> {
+        if max_age_hours == 0 {
+            return Ok(0);
+        }
+
+        let cutoff = Utc::now() - Duration::hours(max_age_hours as i64);
+        let sessions = self.list().await?;
+        let mut cleaned = 0u32;
+
+        for session in sessions {
+            let dominated = matches!(
+                session.status,
+                SessionStatus::Stopped | SessionStatus::Failed
+            );
+
+            if dominated && session.updated_at < cutoff {
+                match session.delete().await {
+                    Ok(()) => {
+                        debug!("Cleaned up session: {}", session.name);
+                        cleaned += 1;
+                    }
+                    Err(e) => {
+                        warn!("Failed to clean up session {}: {}", session.name, e);
+                    }
+                }
+            }
+        }
+
+        Ok(cleaned)
     }
 }
 

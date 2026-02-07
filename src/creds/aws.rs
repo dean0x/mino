@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// AWS session credentials
 #[derive(Debug, Clone)]
@@ -64,7 +64,7 @@ impl AwsCredentials {
     async fn get_session_token_internal(
         config: &AwsConfig,
     ) -> MinotaurResult<AwsSessionCredentials> {
-        info!("Requesting AWS session token via CLI...");
+        debug!("Requesting AWS session token via CLI...");
 
         let mut cmd = Command::new("aws");
         cmd.args(["sts", "get-session-token"]);
@@ -120,7 +120,7 @@ impl AwsCredentials {
             .as_ref()
             .ok_or_else(|| MinotaurError::AwsSts("No role ARN configured".to_string()))?;
 
-        info!("Assuming AWS role: {}", role_arn);
+        debug!("Assuming AWS role: {}", role_arn);
 
         let mut cmd = Command::new("aws");
         cmd.args(["sts", "assume-role"]);
