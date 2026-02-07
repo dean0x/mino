@@ -17,8 +17,8 @@ ENV LC_ALL=C.UTF-8
 RUN dnf install -y --setopt=install_weak_deps=False \
     # Core utilities
     git curl wget jq openssh-clients ca-certificates tar gzip unzip which \
-    # Modern replacements for grep/find/cat/ls/sed
-    ripgrep fd-find bat fzf eza sd \
+    # Modern replacements for grep/find/cat
+    ripgrep fd-find bat fzf \
     # Git diff and smart cd (from Fedora repos)
     git-delta zoxide \
     # Editor
@@ -69,9 +69,28 @@ RUN ARCH=$(uname -m) && \
 # tokei (code statistics) - download pre-built binary
 ARG TOKEI_VERSION=v12.1.2
 RUN ARCH=$(uname -m) && \
-    curl -fsSL "https://github.com/XAMPPRocky/tokei/releases/download/${TOKEI_VERSION}/tokei-${ARCH}-unknown-linux-musl.tar.gz" | \
+    curl -fsSL "https://github.com/XAMPPRocky/tokei/releases/download/${TOKEI_VERSION}/tokei-${ARCH}-unknown-linux-gnu.tar.gz" | \
     tar -xz -C /usr/local/bin tokei && \
     chmod +x /usr/local/bin/tokei
+
+# eza (modern ls/tree replacement) - download pre-built binary
+ARG EZA_VERSION=v0.20.22
+RUN ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/eza-community/eza/releases/download/${EZA_VERSION}/eza_${ARCH}-unknown-linux-gnu.tar.gz" | \
+    tar -xz -C /usr/local/bin ./eza && \
+    chmod +x /usr/local/bin/eza
+
+# sd (modern sed replacement) - download pre-built binary
+ARG SD_VERSION=v1.0.0
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+        x86_64) SD_TARGET="x86_64-unknown-linux-gnu" ;; \
+        aarch64) SD_TARGET="aarch64-unknown-linux-musl" ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/chmln/sd/releases/download/${SD_VERSION}/sd-${SD_VERSION}-${SD_TARGET}.tar.gz" | \
+    tar -xz --strip-components=1 -C /usr/local/bin "sd-${SD_VERSION}-${SD_TARGET}/sd" && \
+    chmod +x /usr/local/bin/sd
 
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code \
