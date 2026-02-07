@@ -52,7 +52,10 @@ impl Ecosystem {
                 ("PNPM_HOME", "/cache/pnpm"),
                 ("npm_config_cache", "/cache/npm"),
             ],
-            Self::Cargo => vec![("CARGO_HOME", "/cache/cargo")],
+            Self::Cargo => vec![
+                ("CARGO_HOME", "/cache/cargo"),
+                ("SCCACHE_DIR", "/cache/sccache"),
+            ],
             Self::Pip => vec![("PIP_CACHE_DIR", "/cache/pip")],
             Self::Poetry => vec![
                 ("POETRY_CACHE_DIR", "/cache/poetry"),

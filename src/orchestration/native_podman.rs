@@ -77,6 +77,26 @@ impl NativePodmanRuntime {
         Ok(status.code().unwrap_or(-1))
     }
 
+    /// Append workdir, network, volumes, env, image, and command args to a Vec<String>.
+    fn push_container_args(args: &mut Vec<String>, config: &ContainerConfig, command: &[String]) {
+        args.push("-w".to_string());
+        args.push(config.workdir.clone());
+        args.push("--network".to_string());
+        args.push(config.network.clone());
+
+        for v in &config.volumes {
+            args.push("-v".to_string());
+            args.push(v.clone());
+        }
+        for (k, v) in &config.env {
+            args.push("-e".to_string());
+            args.push(format!("{}={}", k, v));
+        }
+
+        args.push(config.image.clone());
+        args.extend(command.iter().cloned());
+    }
+
     /// Pull an image
     async fn pull(&self, image: &str) -> MinotaurResult<()> {
         debug!("Pulling image: {}", image);
@@ -131,12 +151,8 @@ impl ContainerRuntime for NativePodmanRuntime {
             self.pull(&config.image).await?;
         }
 
-        let mut args = vec!["run".to_string()];
+        let mut args = vec!["run".to_string(), "-d".to_string()];
 
-        // Detach mode
-        args.push("-d".to_string());
-
-        // Interactive/TTY
         if config.interactive {
             args.push("-i".to_string());
         }
@@ -144,33 +160,9 @@ impl ContainerRuntime for NativePodmanRuntime {
             args.push("-t".to_string());
         }
 
-        // Working directory
-        args.push("-w".to_string());
-        args.push(config.workdir.clone());
+        Self::push_container_args(&mut args, config, command);
 
-        // Network
-        args.push("--network".to_string());
-        args.push(config.network.clone());
-
-        // Volumes
-        for v in &config.volumes {
-            args.push("-v".to_string());
-            args.push(v.clone());
-        }
-
-        // Environment variables
-        for (k, v) in &config.env {
-            args.push("-e".to_string());
-            args.push(format!("{}={}", k, v));
-        }
-
-        // Image
-        args.push(config.image.clone());
-
-        // Command to run
-        args.extend(command.iter().cloned());
-
-        debug!("Running container: podman {:?}", args);
+        debug!("Running container (detached): podman {:?}", args);
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = self.exec(&args_refs).await?;
@@ -186,6 +178,51 @@ impl ContainerRuntime for NativePodmanRuntime {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(MinotaurError::ContainerStart(stderr.to_string()))
         }
+    }
+
+    async fn create(
+        &self,
+        config: &ContainerConfig,
+        command: &[String],
+    ) -> MinotaurResult<String> {
+        // Ensure image is available
+        if !self.image_exists(&config.image).await? {
+            self.pull(&config.image).await?;
+        }
+
+        let mut args = vec!["create".to_string()];
+
+        if config.interactive {
+            args.push("-i".to_string());
+        }
+        if config.tty {
+            args.push("-t".to_string());
+        }
+
+        Self::push_container_args(&mut args, config, command);
+
+        debug!("Creating container: podman {:?}", args);
+
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.exec(&args_refs).await?;
+
+        if output.status.success() {
+            let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            debug!(
+                "Container created: {}",
+                &container_id[..12.min(container_id.len())]
+            );
+            Ok(container_id)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(MinotaurError::ContainerStart(stderr.to_string()))
+        }
+    }
+
+    async fn start_attached(&self, container_id: &str) -> MinotaurResult<i32> {
+        debug!("Starting container attached: {}", container_id);
+        self.exec_interactive(&["start", "--attach", container_id])
+            .await
     }
 
     async fn attach(&self, container_id: &str) -> MinotaurResult<i32> {

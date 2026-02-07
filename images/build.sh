@@ -141,6 +141,21 @@ check_workdir() {
     fi
 }
 
+check_path_exists() {
+    local image="$1"
+    local path="$2"
+    local label="$3"
+
+    if $DOCKER run --rm "$image" test -e "$path" 2>/dev/null; then
+        log_success "$label"
+        return 0
+    else
+        log_error "$label (path $path missing)"
+        FAILURES+=("$image: $label")
+        return 1
+    fi
+}
+
 #------------------------------------------------------------------------------
 # Build functions
 #------------------------------------------------------------------------------
@@ -209,11 +224,17 @@ test_base() {
     check_tool "minotaur-base" "bat"
     check_tool "minotaur-base" "jq"
     check_tool "minotaur-base" "nvim" "nvim --version"
+    check_tool "minotaur-base" "yq"
+    check_tool "minotaur-base" "sd"
 
     echo ""
     log_info "Navigation tools:"
     check_tool "minotaur-base" "zoxide"
-    check_tool "minotaur-base" "mcfly"
+
+    echo ""
+    log_info "File tools:"
+    check_tool "minotaur-base" "eza"
+    check_tool "minotaur-base" "tokei"
 
     echo ""
     log_info "Network tools:"
@@ -223,6 +244,17 @@ test_base() {
     echo ""
     log_info "Runtime:"
     check_tool "minotaur-base" "node"
+
+    echo ""
+    log_info "Shell environment:"
+    check_path_exists "minotaur-base" "/home/developer/.oh-my-zsh" "Oh My Zsh"
+    check_path_exists "minotaur-base" "/home/developer/.oh-my-zsh/custom/plugins/zsh-autosuggestions" "zsh-autosuggestions"
+    check_path_exists "minotaur-base" "/home/developer/.oh-my-zsh/custom/plugins/zsh-history-substring-search" "zsh-history-substring-search"
+    check_path_exists "minotaur-base" "/home/developer/.nvm/nvm.sh" "nvm"
+
+    echo ""
+    log_info "Healthcheck:"
+    check_tool "minotaur-base" "minotaur-healthcheck" "minotaur-healthcheck"
 }
 
 test_typescript() {
@@ -241,6 +273,9 @@ test_typescript() {
     check_tool "minotaur-typescript" "tsx"
     check_tool "minotaur-typescript" "tsc" "tsc --version"
     check_tool "minotaur-typescript" "ncu" "ncu --version"
+    check_tool "minotaur-typescript" "biome" "biome --version"
+    check_tool "minotaur-typescript" "turbo" "turbo --version"
+    check_tool "minotaur-typescript" "vite" "vite --version"
 
     echo ""
     log_info "Inherited from base:"
@@ -257,6 +292,8 @@ test_rust() {
     check_workdir "minotaur-rust" "/workspace"
     check_env "minotaur-rust" "CARGO_HOME" "/cache/cargo"
     check_env "minotaur-rust" "RUSTUP_HOME" "/opt/rustup"
+    check_env "minotaur-rust" "RUSTC_WRAPPER" "sccache"
+    check_env "minotaur-rust" "SCCACHE_DIR" "/cache/sccache"
 
     echo ""
     log_info "Rust tools:"
@@ -267,6 +304,8 @@ test_rust() {
     check_tool "minotaur-rust" "bacon"
     check_tool "minotaur-rust" "cargo-add" "cargo add --help > /dev/null"
     check_tool "minotaur-rust" "cargo-outdated" "cargo outdated --version"
+    check_tool "minotaur-rust" "cargo-nextest" "cargo nextest --version"
+    check_tool "minotaur-rust" "sccache"
 
     echo ""
     log_info "Inherited from base:"
