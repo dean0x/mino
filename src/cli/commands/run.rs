@@ -535,7 +535,11 @@ async fn gather_credentials(
     let (use_aws, use_gcp, use_azure) = if args.all_clouds {
         (true, true, true)
     } else {
-        (args.aws, args.gcp, args.azure)
+        (
+            args.aws || config.credentials.aws.enabled,
+            args.gcp || config.credentials.gcp.enabled,
+            args.azure || config.credentials.azure.enabled,
+        )
     };
 
     // AWS credentials

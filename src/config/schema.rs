@@ -126,6 +126,9 @@ pub struct CredentialsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AwsConfig {
+    /// Enable AWS credentials via config (equivalent to --aws flag)
+    pub enabled: bool,
+
     /// Session token duration in seconds (default: 1 hour)
     pub session_duration_secs: u32,
 
@@ -145,6 +148,7 @@ pub struct AwsConfig {
 impl Default for AwsConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             session_duration_secs: 3600,
             role_arn: None,
             external_id: None,
@@ -158,6 +162,9 @@ impl Default for AwsConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GcpConfig {
+    /// Enable GCP credentials via config (equivalent to --gcp flag)
+    pub enabled: bool,
+
     /// GCP project ID
     pub project: Option<String>,
 
@@ -169,6 +176,9 @@ pub struct GcpConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AzureConfig {
+    /// Enable Azure credentials via config (equivalent to --azure flag)
+    pub enabled: bool,
+
     /// Azure subscription ID
     pub subscription: Option<String>,
 

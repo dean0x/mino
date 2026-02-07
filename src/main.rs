@@ -8,6 +8,7 @@ use minotaur::cli::{Cli, Commands};
 use minotaur::config::ConfigManager;
 use minotaur::error::MinotaurResult;
 use std::process::ExitCode;
+use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -40,6 +41,11 @@ async fn run() -> MinotaurResult<()> {
         .without_time()
         .init();
 
+    // Init command doesn't need config loading
+    if let Commands::Init(args) = cli.command {
+        return minotaur::cli::commands::init(args).await;
+    }
+
     // Load configuration
     let config_manager = if let Some(ref path) = cli.config {
         ConfigManager::with_path(path.clone())
@@ -47,13 +53,30 @@ async fn run() -> MinotaurResult<()> {
         ConfigManager::new()
     };
 
-    let config = config_manager.load().await?;
+    // Find local config unless --no-local is set
+    let local_config_path = if cli.no_local {
+        debug!("Local config discovery disabled (--no-local)");
+        None
+    } else {
+        let cwd =
+            std::env::current_dir().map_err(|e| minotaur::error::MinotaurError::io("getting current directory", e))?;
+        let found = ConfigManager::find_local_config(&cwd);
+        if let Some(ref path) = found {
+            debug!("Found local config: {}", path.display());
+        }
+        found
+    };
+
+    let config = config_manager
+        .load_merged(local_config_path.as_deref())
+        .await?;
 
     // Ensure state directories exist
     ConfigManager::ensure_state_dirs().await?;
 
     // Dispatch to command
     match cli.command {
+        Commands::Init(_) => unreachable!("Init handled above"),
         Commands::Run(args) => minotaur::cli::commands::run(args, &config).await,
         Commands::List(args) => minotaur::cli::commands::list(args, &config).await,
         Commands::Stop(args) => minotaur::cli::commands::stop(args, &config).await,
