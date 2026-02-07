@@ -11,8 +11,8 @@ LABEL org.opencontainers.image.description="Minotaur TypeScript development imag
 
 USER root
 
-# Install pnpm, tsx, typescript, and npm-check-updates
-RUN npm install -g pnpm tsx typescript npm-check-updates \
+# Install pnpm, tsx, typescript, npm-check-updates, biome, turbo, vite
+RUN npm install -g pnpm tsx typescript npm-check-updates @biomejs/biome turbo vite \
     && npm cache clean --force
 
 USER developer
@@ -30,7 +30,10 @@ ENV PATH="${PNPM_HOME}:${PATH}"
 RUN pnpm --version \
     && tsx --version \
     && tsc --version \
-    && ncu --version
+    && ncu --version \
+    && biome --version \
+    && turbo --version \
+    && vite --version
 
 WORKDIR /workspace
 CMD ["/bin/zsh"]

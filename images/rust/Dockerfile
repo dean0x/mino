@@ -24,7 +24,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     # bacon: TUI file watcher (replaces archived cargo-watch)
     # cargo-edit: add/rm/upgrade commands
     # cargo-outdated: check for outdated dependencies
-    && cargo binstall -y bacon cargo-edit cargo-outdated \
+    # cargo-nextest: structured test output with per-test timing
+    # sccache: shared compilation cache
+    && cargo binstall -y bacon cargo-edit cargo-outdated cargo-nextest sccache \
     && chmod -R a+rX ${RUSTUP_HOME} ${CARGO_HOME} \
     && chown -R developer:developer ${CARGO_HOME} ${RUSTUP_HOME}
 
@@ -38,6 +40,10 @@ ENV CARGO_HOME=/cache/cargo
 ENV RUSTUP_HOME=/opt/rustup
 ENV PATH="/opt/cargo/bin:${PATH}"
 
+# sccache configuration
+ENV RUSTC_WRAPPER=sccache
+ENV SCCACHE_DIR=/cache/sccache
+
 # Verify installations
 RUN rustc --version \
     && cargo --version \
@@ -45,7 +51,9 @@ RUN rustc --version \
     && cargo clippy --version \
     && bacon --version \
     && cargo add --help > /dev/null \
-    && cargo outdated --version
+    && cargo outdated --version \
+    && cargo nextest --version \
+    && sccache --version
 
 WORKDIR /workspace
 CMD ["/bin/zsh"]

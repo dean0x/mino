@@ -17,8 +17,8 @@ ENV LC_ALL=C.UTF-8
 RUN dnf install -y --setopt=install_weak_deps=False \
     # Core utilities
     git curl wget jq openssh-clients ca-certificates tar gzip unzip which \
-    # Modern replacements for grep/find/cat
-    ripgrep fd-find bat fzf \
+    # Modern replacements for grep/find/cat/ls/sed
+    ripgrep fd-find bat fzf eza sd \
     # Git diff and smart cd (from Fedora repos)
     git-delta zoxide \
     # Editor
@@ -54,6 +54,25 @@ RUN ARCH=$(uname -m) && \
     tar -xz -C /usr/local/bin mcfly && \
     chmod +x /usr/local/bin/mcfly
 
+# yq (YAML processor) - download pre-built binary
+ARG YQ_VERSION=v4.44.3
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+        x86_64) YQ_ARCH="amd64" ;; \
+        aarch64) YQ_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${YQ_ARCH}" \
+        -o /usr/local/bin/yq && \
+    chmod +x /usr/local/bin/yq
+
+# tokei (code statistics) - download pre-built binary
+ARG TOKEI_VERSION=v12.1.2
+RUN ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/XAMPPRocky/tokei/releases/download/${TOKEI_VERSION}/tokei-${ARCH}-unknown-linux-musl.tar.gz" | \
+    tar -xz -C /usr/local/bin tokei && \
+    chmod +x /usr/local/bin/tokei
+
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code \
     && npm cache clean --force \
@@ -71,19 +90,76 @@ RUN git config --system core.pager delta \
     && git config --system delta.side-by-side false \
     && git config --system interactive.diffFilter "delta --color-only"
 
+# Healthcheck script
+RUN printf '#!/bin/bash\nset -e\ncommand -v claude >/dev/null 2>&1\ncommand -v git >/dev/null 2>&1\ncommand -v node >/dev/null 2>&1\ntest -d /workspace\ntest -d /cache\ntest "$(whoami)" = "developer"\necho "ok"\n' \
+    > /usr/local/bin/minotaur-healthcheck \
+    && chmod +x /usr/local/bin/minotaur-healthcheck
+
 # Shell configuration for developer user
 USER developer
 WORKDIR /home/developer
 
-# Configure zsh with zoxide and mcfly
-RUN echo 'eval "$(zoxide init zsh)"' >> ~/.zshrc \
-    && echo 'eval "$(mcfly init zsh)"' >> ~/.zshrc \
-    && echo 'export MCFLY_FUZZY=2' >> ~/.zshrc \
-    && echo 'export MCFLY_RESULTS=50' >> ~/.zshrc \
-    && echo 'alias ls="ls --color=auto"' >> ~/.zshrc \
-    && echo 'alias cat="bat --paging=never"' >> ~/.zshrc \
-    && echo 'alias find="fd"' >> ~/.zshrc \
-    && echo 'alias grep="rg"' >> ~/.zshrc
+# Oh My Zsh (unattended, no shell change prompt)
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+
+# zsh-autosuggestions plugin (grey ghost text as you type)
+RUN git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+    ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+
+# zsh-history-substring-search (up/down arrows filter by typed prefix)
+RUN git clone --depth=1 https://github.com/zsh-users/zsh-history-substring-search \
+    ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-history-substring-search
+
+# nvm (Node Version Manager) - system Node remains as fallback
+ARG NVM_VERSION=v0.40.1
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh | bash
+
+# Configure zsh with Oh My Zsh, plugins, and modern CLI tools
+RUN cat > ~/.zshrc << 'ZSHRC'
+# Oh My Zsh configuration
+export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME="robbyrussell"
+DISABLE_AUTO_UPDATE=true
+DISABLE_UPDATE_PROMPT=true
+plugins=(git zsh-autosuggestions history-substring-search)
+source $ZSH/oh-my-zsh.sh
+
+# nvm
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+# Modern CLI replacements (override oh-my-zsh defaults)
+# Users can type the familiar command and get the modern tool
+alias ls="eza --color=auto"
+alias ll="eza -la --color=auto"
+alias la="eza -a --color=auto"
+alias tree="eza --tree"
+alias cat="bat --paging=never"
+alias find="fd"
+alias grep="rg"
+# NOTE: sd is NOT aliased to sed — incompatible syntax
+# (sd 'from' 'to' vs sed 's/from/to/'). Use sd directly.
+
+# Tool integrations
+eval "$(zoxide init zsh)"
+eval "$(mcfly init zsh)"
+export MCFLY_FUZZY=2
+export MCFLY_RESULTS=50
+
+# History (augments oh-my-zsh defaults)
+HISTSIZE=50000
+SAVEHIST=50000
+setopt HIST_IGNORE_DUPS
+setopt HIST_IGNORE_SPACE
+
+# Up/down arrow history substring search keybindings
+bindkey '^[[A' history-substring-search-up
+bindkey '^[[B' history-substring-search-down
+
+# PATH for user-local tool installs
+export PATH="$HOME/.local/bin:$PATH"
+ZSHRC
 
 WORKDIR /workspace
 
@@ -100,6 +176,12 @@ RUN claude --version \
     && fzf --version \
     && nvim --version | head -1 \
     && zoxide --version \
-    && mcfly --version
+    && mcfly --version \
+    && eza --version \
+    && sd --version \
+    && yq --version \
+    && tokei --version
+
+HEALTHCHECK CMD minotaur-healthcheck
 
 CMD ["/bin/zsh"]
