@@ -78,6 +78,9 @@ async fn set_value(
         ["container", "network"] => config.container.network = value.to_string(),
         ["container", "workdir"] => config.container.workdir = value.to_string(),
 
+        ["credentials", "aws", "enabled"] => {
+            config.credentials.aws.enabled = parse_bool(value)?
+        }
         ["credentials", "aws", "session_duration_secs"] => {
             config.credentials.aws.session_duration_secs = parse_u32(value)?
         }
@@ -89,10 +92,16 @@ async fn set_value(
         }
         ["credentials", "aws", "region"] => config.credentials.aws.region = Some(value.to_string()),
 
+        ["credentials", "gcp", "enabled"] => {
+            config.credentials.gcp.enabled = parse_bool(value)?
+        }
         ["credentials", "gcp", "project"] => {
             config.credentials.gcp.project = Some(value.to_string())
         }
 
+        ["credentials", "azure", "enabled"] => {
+            config.credentials.azure.enabled = parse_bool(value)?
+        }
         ["credentials", "azure", "subscription"] => {
             config.credentials.azure.subscription = Some(value.to_string())
         }
@@ -146,11 +155,14 @@ fn print_valid_keys() {
         "container.image",
         "container.network",
         "container.workdir",
+        "credentials.aws.enabled",
         "credentials.aws.session_duration_secs",
         "credentials.aws.role_arn",
         "credentials.aws.profile",
         "credentials.aws.region",
+        "credentials.gcp.enabled",
         "credentials.gcp.project",
+        "credentials.azure.enabled",
         "credentials.azure.subscription",
         "credentials.azure.tenant",
         "session.shell",

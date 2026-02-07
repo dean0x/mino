@@ -23,6 +23,10 @@ pub struct Cli {
     /// Configuration file path
     #[arg(short, long, global = true, env = "MINOTAUR_CONFIG")]
     pub config: Option<PathBuf>,
+
+    /// Skip local .minotaur.toml discovery
+    #[arg(long, global = true)]
+    pub no_local: bool,
 }
 
 /// Available commands
@@ -30,6 +34,9 @@ pub struct Cli {
 pub enum Commands {
     /// Start a sandboxed session
     Run(RunArgs),
+
+    /// Initialize a project-local .minotaur.toml config
+    Init(InitArgs),
 
     /// List active sessions
     List(ListArgs),
@@ -67,6 +74,18 @@ pub struct SetupArgs {
     /// Upgrade existing dependencies to latest versions
     #[arg(long)]
     pub upgrade: bool,
+}
+
+/// Arguments for the init command
+#[derive(Parser, Debug)]
+pub struct InitArgs {
+    /// Overwrite existing .minotaur.toml
+    #[arg(short, long)]
+    pub force: bool,
+
+    /// Target directory (defaults to current directory)
+    #[arg(short, long)]
+    pub path: Option<PathBuf>,
 }
 
 /// Arguments for the run command
