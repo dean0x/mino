@@ -78,7 +78,8 @@ impl ConfigManager {
     }
 
     /// Deep-merge two TOML value trees. Keys in `overlay` override `base`.
-    /// Tables are merged recursively; all other value types replace outright.
+    /// Tables are merged recursively; all other value types (including arrays)
+    /// replace outright — arrays are **not** appended.
     pub fn merge_toml(base: Value, overlay: Value) -> Value {
         match (base, overlay) {
             (Value::Table(mut base_table), Value::Table(overlay_table)) => {
@@ -143,11 +144,22 @@ impl ConfigManager {
         };
 
         // Deserialize merged tree into Config (serde defaults fill gaps)
+        let config_source = match local_path {
+            Some(lp) => format!(
+                "merged config [global: {}, local: {}]",
+                self.config_path.display(),
+                lp.display()
+            ),
+            None => self.config_path.display().to_string(),
+        };
+
         merged_value
             .try_into()
             .map_err(|e: toml::de::Error| MinotaurError::ConfigInvalid {
-                path: self.config_path.clone(),
-                reason: e.to_string(),
+                path: local_path
+                    .unwrap_or(&self.config_path)
+                    .to_path_buf(),
+                reason: format!("{} (source: {})", e, config_source),
             })
     }
 
@@ -374,6 +386,28 @@ mod tests {
         let overlay: Value = toml::from_str("").unwrap();
         let merged = ConfigManager::merge_toml(base.clone(), overlay);
         assert_eq!(merged, base);
+    }
+
+    #[test]
+    fn merge_toml_array_replaces() {
+        let base: Value = toml::from_str(
+            r#"
+            [container]
+            volumes = ["/shared:/shared"]
+            "#,
+        )
+        .unwrap();
+        let overlay: Value = toml::from_str(
+            r#"
+            [container]
+            volumes = ["/project:/project"]
+            "#,
+        )
+        .unwrap();
+        let merged = ConfigManager::merge_toml(base, overlay);
+        let volumes = merged["container"]["volumes"].as_array().unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].as_str().unwrap(), "/project:/project");
     }
 
     #[test]

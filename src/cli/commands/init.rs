@@ -3,7 +3,7 @@
 use crate::cli::args::InitArgs;
 use crate::error::{MinotaurError, MinotaurResult};
 use crate::ui::{self, UiContext};
-use std::path::PathBuf;
+use std::path::Path;
 use tokio::fs;
 
 /// Template for project-local config
@@ -46,7 +46,7 @@ pub async fn execute(args: InitArgs) -> MinotaurResult<()> {
 
     if config_path.exists() && !args.force {
         return Err(MinotaurError::User(format!(
-            "{}  already exists. Use --force to overwrite.",
+            "{} already exists. Use --force to overwrite.",
             config_path.display()
         )));
     }
@@ -66,7 +66,7 @@ pub async fn execute(args: InitArgs) -> MinotaurResult<()> {
     Ok(())
 }
 
-async fn ensure_dir(dir: &PathBuf) -> MinotaurResult<()> {
+async fn ensure_dir(dir: &Path) -> MinotaurResult<()> {
     if !dir.exists() {
         fs::create_dir_all(dir)
             .await

@@ -220,6 +220,9 @@ pub enum ConfigAction {
         key: String,
         /// Value to set
         value: String,
+        /// Write to project-local .minotaur.toml instead of global config
+        #[arg(long)]
+        local: bool,
     },
 }
 
@@ -367,6 +370,27 @@ mod tests {
             }
             _ => panic!("expected Setup command"),
         }
+    }
+
+    #[test]
+    fn cli_parses_init() {
+        let cli = Cli::parse_from(["minotaur", "init"]);
+        assert!(matches!(cli.command, Commands::Init(_)));
+    }
+
+    #[test]
+    fn cli_parses_init_force() {
+        let cli = Cli::parse_from(["minotaur", "init", "--force"]);
+        match cli.command {
+            Commands::Init(args) => assert!(args.force),
+            _ => panic!("expected Init command"),
+        }
+    }
+
+    #[test]
+    fn cli_no_local_flag() {
+        let cli = Cli::parse_from(["minotaur", "--no-local", "status"]);
+        assert!(cli.no_local);
     }
 
     #[test]
