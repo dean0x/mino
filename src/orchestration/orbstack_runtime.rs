@@ -9,7 +9,7 @@ use crate::orchestration::podman::ContainerConfig;
 use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Container runtime using OrbStack VM + Podman (for macOS)
 pub struct OrbStackRuntime {
@@ -36,7 +36,7 @@ impl OrbStackRuntime {
             return Ok(());
         }
 
-        info!("Installing Podman in VM...");
+        debug!("Installing Podman in VM...");
 
         // Try to install based on distro
         let install_result = self
@@ -61,7 +61,7 @@ impl OrbStackRuntime {
 
     /// Pull an image
     async fn pull(&self, image: &str) -> MinotaurResult<()> {
-        info!("Pulling image: {}", image);
+        debug!("Pulling image: {}", image);
 
         let output = self.orbstack.exec(&["podman", "pull", image]).await?;
 
@@ -76,14 +76,6 @@ impl OrbStackRuntime {
         }
     }
 
-    /// Check if image exists locally
-    async fn image_exists(&self, image: &str) -> MinotaurResult<bool> {
-        let output = self
-            .orbstack
-            .exec(&["podman", "image", "exists", image])
-            .await?;
-        Ok(output.status.success())
-    }
 }
 
 #[async_trait]
@@ -167,7 +159,7 @@ impl ContainerRuntime for OrbStackRuntime {
 
         if output.status.success() {
             let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            info!(
+            debug!(
                 "Container started: {}",
                 &container_id[..12.min(container_id.len())]
             );
@@ -264,6 +256,14 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(())
     }
 
+    async fn image_exists(&self, image: &str) -> MinotaurResult<bool> {
+        let output = self
+            .orbstack
+            .exec(&["podman", "image", "exists", image])
+            .await?;
+        Ok(output.status.success())
+    }
+
     fn runtime_name(&self) -> &'static str {
         "OrbStack + Podman"
     }
@@ -275,7 +275,7 @@ impl ContainerRuntime for OrbStackRuntime {
     ) -> MinotaurResult<()> {
         debug!("Creating volume: {}", name);
 
-        let mut args = vec!["podman", "volume", "create"];
+        let mut args = vec!["podman", "volume", "create", "--ignore"];
 
         // Build label arguments
         let label_strings: Vec<String> =
@@ -291,7 +291,7 @@ impl ContainerRuntime for OrbStackRuntime {
         let output = self.orbstack.exec(&args).await?;
 
         if output.status.success() {
-            info!("Volume created: {}", name);
+            debug!("Volume created: {}", name);
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);

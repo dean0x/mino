@@ -27,11 +27,11 @@ async fn main() -> ExitCode {
 async fn run() -> MinotaurResult<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
-    let filter = if cli.verbose {
-        EnvFilter::new("minotaur=debug")
-    } else {
-        EnvFilter::new("minotaur=info")
+    // Initialize logging: 0 = warn (spinners only), 1 = info, 2+ = debug
+    let filter = match cli.verbose {
+        0 => EnvFilter::new("minotaur=warn"),
+        1 => EnvFilter::new("minotaur=info"),
+        _ => EnvFilter::new("minotaur=debug"),
     };
 
     tracing_subscriber::fmt()

@@ -4,7 +4,7 @@ use crate::config::schema::VmConfig;
 use crate::error::{MinotaurError, MinotaurResult};
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// OrbStack manager
 #[derive(Clone)]
@@ -71,7 +71,7 @@ impl OrbStack {
 
     /// Start OrbStack
     pub async fn start() -> MinotaurResult<()> {
-        info!("Starting OrbStack...");
+        debug!("Starting OrbStack...");
 
         let status = Command::new("orb")
             .arg("start")
@@ -93,7 +93,7 @@ impl OrbStack {
     /// Check if the VM exists
     pub async fn vm_exists(&self) -> MinotaurResult<bool> {
         let output = Command::new("orb")
-            .args(["list", "-f", "{{.Name}}"])
+            .args(["list", "-q"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
@@ -106,7 +106,7 @@ impl OrbStack {
 
     /// Create the VM
     pub async fn create_vm(&self) -> MinotaurResult<()> {
-        info!("Creating OrbStack VM: {}", self.config.name);
+        debug!("Creating OrbStack VM: {}", self.config.name);
 
         let mut cmd = Command::new("orb");
         cmd.args(["create", &self.config.distro, &self.config.name]);
@@ -173,7 +173,7 @@ impl OrbStack {
 
     /// Start the VM
     pub async fn start_vm(&self) -> MinotaurResult<()> {
-        info!("Starting VM: {}", self.config.name);
+        debug!("Starting VM: {}", self.config.name);
 
         let status = Command::new("orb")
             .args(["start", &self.config.name])

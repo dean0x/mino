@@ -6,7 +6,7 @@ use crate::error::{MinotaurError, MinotaurResult};
 use chrono::{Duration, Utc};
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// GCP credential provider
 pub struct GcpCredentials;
@@ -38,7 +38,7 @@ impl GcpCredentials {
 
     /// Get access token from gcloud CLI
     async fn get_access_token_internal(config: &GcpConfig) -> MinotaurResult<String> {
-        info!("Requesting GCP access token...");
+        debug!("Requesting GCP access token...");
 
         let mut cmd = Command::new("gcloud");
         cmd.args(["auth", "print-access-token"]);

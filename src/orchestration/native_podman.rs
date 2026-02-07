@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Container runtime using native rootless Podman (for Linux)
 pub struct NativePodmanRuntime;
@@ -79,7 +79,7 @@ impl NativePodmanRuntime {
 
     /// Pull an image
     async fn pull(&self, image: &str) -> MinotaurResult<()> {
-        info!("Pulling image: {}", image);
+        debug!("Pulling image: {}", image);
 
         let output = self.exec(&["pull", image]).await?;
 
@@ -94,11 +94,6 @@ impl NativePodmanRuntime {
         }
     }
 
-    /// Check if image exists locally
-    async fn image_exists(&self, image: &str) -> MinotaurResult<bool> {
-        let output = self.exec(&["image", "exists", image]).await?;
-        Ok(output.status.success())
-    }
 }
 
 impl Default for NativePodmanRuntime {
@@ -182,7 +177,7 @@ impl ContainerRuntime for NativePodmanRuntime {
 
         if output.status.success() {
             let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            info!(
+            debug!(
                 "Container started: {}",
                 &container_id[..12.min(container_id.len())]
             );
@@ -261,6 +256,11 @@ impl ContainerRuntime for NativePodmanRuntime {
         Ok(())
     }
 
+    async fn image_exists(&self, image: &str) -> MinotaurResult<bool> {
+        let output = self.exec(&["image", "exists", image]).await?;
+        Ok(output.status.success())
+    }
+
     fn runtime_name(&self) -> &'static str {
         "Native Podman"
     }
@@ -272,7 +272,7 @@ impl ContainerRuntime for NativePodmanRuntime {
     ) -> MinotaurResult<()> {
         debug!("Creating volume: {}", name);
 
-        let mut args = vec!["volume", "create"];
+        let mut args = vec!["volume", "create", "--ignore"];
 
         // Build label arguments
         let label_strings: Vec<String> =
@@ -288,7 +288,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         let output = self.exec(&args).await?;
 
         if output.status.success() {
-            info!("Volume created: {}", name);
+            debug!("Volume created: {}", name);
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);

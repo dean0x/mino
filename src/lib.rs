@@ -3,6 +3,7 @@
 //! Wraps any command in rootless containers with temporary cloud
 //! credentials and SSH agent forwarding.
 
+pub mod audit;
 pub mod cache;
 pub mod cli;
 pub mod config;

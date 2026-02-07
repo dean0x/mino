@@ -3,6 +3,7 @@
 /// Image registry prefix for minotaur images
 const IMAGE_REGISTRY: &str = "ghcr.io/dean0x";
 
+use crate::audit::AuditLog;
 use crate::cache::{
     detect_lockfiles, format_bytes, gb_to_bytes, labels, CacheMount, CacheSizeStatus, CacheState,
     CacheVolume, LockfileInfo,
@@ -20,7 +21,8 @@ use console::style;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
+use uuid::Uuid;
 
 /// Tracks cache volumes created during this session (for finalization)
 struct CacheSession {
@@ -71,15 +73,21 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
 
     // Collect credentials
     spinner.message("Gathering credentials...");
-    let credentials = gather_credentials(&args, config).await?;
+    let (credentials, active_providers) = gather_credentials(&args, config).await?;
 
-    // Create session
+    // Create session manager and run cleanup
     let session_name = args.name.clone().unwrap_or_else(generate_session_name);
     let manager = SessionManager::new().await?;
 
-    if manager.get(&session_name).await?.is_some() {
-        return Err(MinotaurError::SessionExists(session_name));
+    if config.session.auto_cleanup_hours > 0 {
+        let cleaned = manager.cleanup(config.session.auto_cleanup_hours).await?;
+        if cleaned > 0 {
+            debug!("Cleaned up {} old session(s)", cleaned);
+        }
     }
+
+    // Initialize audit log
+    let audit = AuditLog::new(config);
 
     // Build container config (with cache mounts and env)
     let container_config = build_container_config(
@@ -107,7 +115,36 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     );
     manager.create(&session).await?;
 
-    spinner.message("Starting container...");
+    audit
+        .log(
+            "session.created",
+            &serde_json::json!({
+                "name": &session_name,
+                "project_dir": project_dir.display().to_string(),
+                "image": &container_config.image,
+                "command": &command,
+            }),
+        )
+        .await;
+
+    if !active_providers.is_empty() {
+        audit
+            .log(
+                "credentials.injected",
+                &serde_json::json!({
+                    "session_name": &session_name,
+                    "providers": &active_providers,
+                }),
+            )
+            .await;
+    }
+
+    // Check if image needs pulling and update spinner accordingly
+    if !runtime.image_exists(&container_config.image).await.unwrap_or(false) {
+        spinner.message(&format!("Pulling image {}...", container_config.image));
+    } else {
+        spinner.message("Starting container...");
+    }
 
     // Start container
     let container_id = match runtime.run(&container_config, &command).await {
@@ -116,6 +153,15 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
             manager
                 .update_status(&session_name, SessionStatus::Failed)
                 .await?;
+            audit
+                .log(
+                    "session.failed",
+                    &serde_json::json!({
+                        "name": &session_name,
+                        "error": e.to_string(),
+                    }),
+                )
+                .await;
             return Err(e);
         }
     };
@@ -127,6 +173,16 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     manager
         .update_status(&session_name, SessionStatus::Running)
         .await?;
+
+    audit
+        .log(
+            "session.started",
+            &serde_json::json!({
+                "name": &session_name,
+                "container_id": &container_id,
+            }),
+        )
+        .await;
 
     spinner.clear();
 
@@ -150,7 +206,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
             );
         }
     } else {
-        info!("Attaching to container {}", &container_id[..12]);
+        debug!("Attaching to container {}", &container_id[..12]);
 
         // Attach to container interactively
         let exit_code = runtime.attach(&container_id).await?;
@@ -164,6 +220,16 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
         manager
             .update_status(&session_name, SessionStatus::Stopped)
             .await?;
+
+        audit
+            .log(
+                "session.stopped",
+                &serde_json::json!({
+                    "name": &session_name,
+                    "exit_code": exit_code,
+                }),
+            )
+            .await;
 
         if exit_code != 0 {
             println!(
@@ -201,7 +267,7 @@ async fn setup_caches(
         return Ok((cache_mounts, cache_env, cache_session));
     }
 
-    info!("Detected {} lockfile(s)", lockfiles.len());
+    debug!("Detected {} lockfile(s)", lockfiles.len());
 
     // Process each lockfile
     for info in &lockfiles {
@@ -248,7 +314,7 @@ async fn setup_cache_for_lockfile(
             let cache = CacheVolume::from_labels(&vol_info.name, &vol_info.labels);
             match cache.map(|c| c.state) {
                 Some(CacheState::Complete) => {
-                    info!(
+                    debug!(
                         "Cache hit for {} ({}), mounting read-only",
                         info.ecosystem,
                         &info.hash[..8]
@@ -256,7 +322,7 @@ async fn setup_cache_for_lockfile(
                     (CacheState::Complete, false)
                 }
                 Some(CacheState::Building) => {
-                    info!(
+                    debug!(
                         "Resuming incomplete cache for {} ({})",
                         info.ecosystem,
                         &info.hash[..8]
@@ -275,8 +341,8 @@ async fn setup_cache_for_lockfile(
             }
         }
         None => {
-            // Cache miss - create new volume
-            info!(
+            // Cache miss - create new volume (idempotent with --ignore)
+            debug!(
                 "Cache miss for {} ({}), creating volume",
                 info.ecosystem,
                 &info.hash[..8]
@@ -285,7 +351,17 @@ async fn setup_cache_for_lockfile(
             let cache = CacheVolume::from_lockfile(info, CacheState::Building);
             runtime.volume_create(&volume_name, &cache.labels()).await?;
 
-            (CacheState::Building, true)
+            // Re-inspect: another process may have created it first with different state
+            match runtime.volume_inspect(&volume_name).await? {
+                Some(vol_info) => {
+                    let cache = CacheVolume::from_labels(&vol_info.name, &vol_info.labels);
+                    match cache.map(|c| c.state) {
+                        Some(CacheState::Complete) => (CacheState::Complete, false),
+                        _ => (CacheState::Building, true),
+                    }
+                }
+                None => (CacheState::Building, true), // shouldn't happen, but safe fallback
+            }
         }
     };
 
@@ -327,7 +403,7 @@ async fn finalize_caches(runtime: &dyn ContainerRuntime, cache_session: &CacheSe
         // Note: Podman doesn't support updating labels in place, so we just log success
         // The label was already set correctly when we created the volume
         // For true immutability, we'd need to track state externally or use a different mechanism
-        info!("Cache {} finalized (complete)", volume_name);
+        debug!("Cache {} finalized (complete)", volume_name);
     }
 }
 
@@ -412,11 +488,13 @@ fn resolve_project_dir(args: &RunArgs, config: &Config) -> MinotaurResult<PathBu
     env::current_dir().map_err(|e| MinotaurError::io("getting current directory", e))
 }
 
+/// Returns (env_vars, list of successfully loaded provider names)
 async fn gather_credentials(
     args: &RunArgs,
     config: &Config,
-) -> MinotaurResult<HashMap<String, String>> {
+) -> MinotaurResult<(HashMap<String, String>, Vec<String>)> {
     let mut env_vars = HashMap::new();
+    let mut providers = Vec::new();
     let cache = CredentialCache::new().await?;
 
     let (use_aws, use_gcp, use_azure) = if args.all_clouds {
@@ -439,7 +517,8 @@ async fn gather_credentials(
                     env_vars.insert("AWS_REGION".to_string(), region.clone());
                     env_vars.insert("AWS_DEFAULT_REGION".to_string(), region.clone());
                 }
-                info!("AWS credentials loaded");
+                providers.push("aws".to_string());
+                debug!("AWS credentials loaded");
             }
             Err(e) => {
                 eprintln!("{} AWS: {}", style("!").yellow(), e);
@@ -456,7 +535,8 @@ async fn gather_credentials(
                 if let Some(project) = &config.credentials.gcp.project {
                     env_vars.insert("CLOUDSDK_CORE_PROJECT".to_string(), project.clone());
                 }
-                info!("GCP credentials loaded");
+                providers.push("gcp".to_string());
+                debug!("GCP credentials loaded");
             }
             Err(e) => {
                 eprintln!("{} GCP: {}", style("!").yellow(), e);
@@ -470,7 +550,8 @@ async fn gather_credentials(
         match AzureCredentials::get_access_token(&config.credentials.azure, &cache).await {
             Ok(token) => {
                 env_vars.insert("AZURE_ACCESS_TOKEN".to_string(), token);
-                info!("Azure credentials loaded");
+                providers.push("azure".to_string());
+                debug!("Azure credentials loaded");
             }
             Err(e) => {
                 eprintln!("{} Azure: {}", style("!").yellow(), e);
@@ -485,7 +566,8 @@ async fn gather_credentials(
             Ok(token) => {
                 env_vars.insert("GITHUB_TOKEN".to_string(), token.clone());
                 env_vars.insert("GH_TOKEN".to_string(), token);
-                info!("GitHub token loaded");
+                providers.push("github".to_string());
+                debug!("GitHub token loaded");
             }
             Err(e) => {
                 debug!("GitHub token not available: {}", e);
@@ -498,7 +580,7 @@ async fn gather_credentials(
         env_vars.insert(key.clone(), value.clone());
     }
 
-    Ok(env_vars)
+    Ok((env_vars, providers))
 }
 
 fn build_container_config(
@@ -563,12 +645,8 @@ fn build_container_config(
 }
 
 fn generate_session_name() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    format!("session-{}", timestamp % 100000)
+    let short_id = &Uuid::new_v4().to_string()[..8];
+    format!("session-{}", short_id)
 }
 
 /// Resolve image aliases to full registry paths

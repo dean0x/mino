@@ -57,6 +57,9 @@ pub trait ContainerRuntime: Send + Sync {
     /// Follow container logs interactively
     async fn logs_follow(&self, container_id: &str) -> MinotaurResult<()>;
 
+    /// Check if a container image exists locally
+    async fn image_exists(&self, image: &str) -> MinotaurResult<bool>;
+
     /// Get the human-readable runtime name for display
     fn runtime_name(&self) -> &'static str;
 

@@ -92,7 +92,42 @@ impl Session {
         Ok(Some(session))
     }
 
-    /// Save session to file
+    /// Create session file atomically — fails if file already exists.
+    /// Uses O_CREAT | O_EXCL for kernel-level atomic create-or-fail,
+    /// eliminating the TOCTOU race in load-then-save.
+    pub async fn create_file(&self) -> MinotaurResult<()> {
+        let path = self.file_path();
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| MinotaurError::io("creating sessions directory", e))?;
+        }
+
+        let content = serde_json::to_string_pretty(self)?;
+
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    MinotaurError::SessionExists(self.name.clone())
+                } else {
+                    MinotaurError::io(format!("creating session file {}", path.display()), e)
+                }
+            })?;
+
+        use tokio::io::AsyncWriteExt;
+        file.write_all(content.as_bytes()).await.map_err(|e| {
+            MinotaurError::io(format!("writing session file {}", path.display()), e)
+        })?;
+
+        Ok(())
+    }
+
+    /// Save session to file (overwrites existing). Use for status updates.
     pub async fn save(&self) -> MinotaurResult<()> {
         let path = self.file_path();
 
