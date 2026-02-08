@@ -115,6 +115,16 @@ pub enum MinotaurError {
     #[error("Failed to read lockfile {path}: {reason}")]
     CacheLockfileRead { path: String, reason: String },
 
+    // Layer errors
+    #[error("Layer '{name}' not found. Searched: {searched}")]
+    LayerNotFound { name: String, searched: String },
+
+    #[error("Layer install script missing: {0}")]
+    LayerScriptMissing(String),
+
+    #[error("Image build failed for '{tag}': {reason}")]
+    ImageBuild { tag: String, reason: String },
+
     // IO errors
     #[error("IO error: {context}")]
     Io {
@@ -206,6 +216,8 @@ impl MinotaurError {
             Self::GcpNotAuthenticated => Some("Run: gcloud auth login"),
             Self::AzureNotAuthenticated => Some("Run: az login"),
             Self::GithubNotAuthenticated => Some("Run: gh auth login"),
+            Self::LayerNotFound { .. } => Some("Create a layer with layer.toml + install.sh in .minotaur/layers/<name>/ or ~/.config/minotaur/layers/<name>/"),
+            Self::ImageBuild { .. } => Some("Check build output above. Use -v for details."),
             _ => None,
         }
     }
