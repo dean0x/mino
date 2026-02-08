@@ -9,6 +9,7 @@ use crate::orchestration::podman::ContainerConfig;
 use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::Path;
 use tracing::debug;
 
 /// Container runtime using OrbStack VM + Podman (for macOS)
@@ -75,7 +76,6 @@ impl OrbStackRuntime {
             })
         }
     }
-
 }
 
 #[async_trait]
@@ -155,11 +155,7 @@ impl ContainerRuntime for OrbStackRuntime {
         }
     }
 
-    async fn create(
-        &self,
-        config: &ContainerConfig,
-        command: &[String],
-    ) -> MinotaurResult<String> {
+    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String> {
         // Ensure image is available
         if !self.image_exists(&config.image).await? {
             self.pull(&config.image).await?;
@@ -322,6 +318,67 @@ impl ContainerRuntime for OrbStackRuntime {
             .exec(&["podman", "image", "exists", image])
             .await?;
         Ok(output.status.success())
+    }
+
+    async fn build_image(&self, context_dir: &Path, tag: &str) -> MinotaurResult<()> {
+        let context_str = context_dir.display().to_string();
+        let exit_code = self
+            .orbstack
+            .exec_interactive(&["podman", "build", "-t", tag, &context_str])
+            .await?;
+
+        if exit_code != 0 {
+            return Err(MinotaurError::ImageBuild {
+                tag: tag.to_string(),
+                reason: format!("build exited with code {}", exit_code),
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn image_remove(&self, image: &str) -> MinotaurResult<()> {
+        let output = self.orbstack.exec(&["podman", "rmi", image]).await?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("image not known") {
+                Ok(())
+            } else {
+                Err(MinotaurError::command_exec("podman rmi", stderr))
+            }
+        }
+    }
+
+    async fn image_list_prefixed(&self, prefix: &str) -> MinotaurResult<Vec<String>> {
+        let filter = format!("reference={}*", prefix);
+        let output = self
+            .orbstack
+            .exec(&[
+                "podman",
+                "images",
+                "--filter",
+                &filter,
+                "--format",
+                "{{.Repository}}:{{.Tag}}",
+            ])
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(MinotaurError::command_exec("podman images", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let images: Vec<String> = stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(String::from)
+            .collect();
+
+        Ok(images)
     }
 
     fn runtime_name(&self) -> &'static str {
@@ -508,40 +565,37 @@ impl ContainerRuntime for OrbStackRuntime {
     }
 
     async fn volume_disk_usage(&self, prefix: &str) -> MinotaurResult<HashMap<String, u64>> {
-        // Use podman system df -v to get volume sizes
-        let output = self
-            .orbstack
-            .exec(&["podman", "system", "df", "-v", "--format", "json"])
-            .await?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(MinotaurError::command_exec("podman system df", stderr));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.trim().is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        // Parse JSON - structure is { "Volumes": [...] }
-        let df: serde_json::Value =
-            serde_json::from_str(&stdout).map_err(|e| MinotaurError::Internal(e.to_string()))?;
-
+        // Get volume sizes by inspecting each volume individually.
+        // Note: `podman system df -v --format json` is not supported (flags conflict).
+        let volumes = self.volume_list(prefix).await?;
         let mut sizes = HashMap::new();
 
-        if let Some(volumes) = df.get("Volumes").and_then(|v| v.as_array()) {
-            for vol in volumes {
-                let name = vol["VolumeName"].as_str().unwrap_or_default();
+        for vol in &volumes {
+            let output = self
+                .orbstack
+                .exec(&[
+                    "podman",
+                    "volume",
+                    "inspect",
+                    &vol.name,
+                    "--format",
+                    "{{.Mountpoint}}",
+                ])
+                .await?;
 
-                // Filter by prefix
-                if !name.starts_with(prefix) {
-                    continue;
-                }
-
-                // Size is in bytes
-                if let Some(size) = vol["Size"].as_u64() {
-                    sizes.insert(name.to_string(), size);
+            if output.status.success() {
+                let mountpoint = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !mountpoint.is_empty() {
+                    // Get directory size via du
+                    let du_output = self.orbstack.exec(&["du", "-sb", &mountpoint]).await?;
+                    if du_output.status.success() {
+                        let du_str = String::from_utf8_lossy(&du_output.stdout);
+                        if let Some(size_str) = du_str.split_whitespace().next() {
+                            if let Ok(size) = size_str.parse::<u64>() {
+                                sizes.insert(vol.name.clone(), size);
+                            }
+                        }
+                    }
                 }
             }
         }

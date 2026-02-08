@@ -127,6 +127,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub image: Option<String>,
 
+    /// Composable layers to combine (comma-separated)
+    #[arg(long, value_delimiter = ',', conflicts_with = "image")]
+    pub layers: Vec<String>,
+
     /// Additional environment variables (KEY=VALUE)
     #[arg(short, long, value_parser = parse_env_var)]
     pub env: Vec<(String, String)>,
@@ -275,9 +279,13 @@ pub enum CacheAction {
 
     /// Clear caches
     Clear {
-        /// Clear all caches (required)
-        #[arg(long, required = true)]
+        /// Clear all cache volumes
+        #[arg(long, required_unless_present = "images", conflicts_with = "images")]
         all: bool,
+
+        /// Clear composed layer images only
+        #[arg(long, required_unless_present = "all")]
+        images: bool,
 
         /// Skip confirmation prompt
         #[arg(short, long)]

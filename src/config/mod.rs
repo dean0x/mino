@@ -134,10 +134,7 @@ impl ConfigManager {
                             path: path.to_path_buf(),
                             reason: e.to_string(),
                         })?;
-                debug!(
-                    "Merging local config from {} over global",
-                    path.display()
-                );
+                debug!("Merging local config from {} over global", path.display());
                 Self::merge_toml(global_value, local_value)
             }
             None => global_value,
@@ -156,9 +153,7 @@ impl ConfigManager {
         merged_value
             .try_into()
             .map_err(|e: toml::de::Error| MinotaurError::ConfigInvalid {
-                path: local_path
-                    .unwrap_or(&self.config_path)
-                    .to_path_buf(),
+                path: local_path.unwrap_or(&self.config_path).to_path_buf(),
                 reason: format!("{} (source: {})", e, config_source),
             })
     }
@@ -479,10 +474,7 @@ mod tests {
         assert_eq!(config.session.shell, "/bin/bash");
         // Local adds new section
         assert!(config.credentials.aws.enabled);
-        assert_eq!(
-            config.credentials.aws.region.as_deref(),
-            Some("us-west-2")
-        );
+        assert_eq!(config.credentials.aws.region.as_deref(), Some("us-west-2"));
     }
 
     #[tokio::test]

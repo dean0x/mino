@@ -85,9 +85,7 @@ async fn set_value(
         ["container", "network"] => config.container.network = value.to_string(),
         ["container", "workdir"] => config.container.workdir = value.to_string(),
 
-        ["credentials", "aws", "enabled"] => {
-            config.credentials.aws.enabled = parse_bool(value)?
-        }
+        ["credentials", "aws", "enabled"] => config.credentials.aws.enabled = parse_bool(value)?,
         ["credentials", "aws", "session_duration_secs"] => {
             config.credentials.aws.session_duration_secs = parse_u32(value)?
         }
@@ -99,9 +97,7 @@ async fn set_value(
         }
         ["credentials", "aws", "region"] => config.credentials.aws.region = Some(value.to_string()),
 
-        ["credentials", "gcp", "enabled"] => {
-            config.credentials.gcp.enabled = parse_bool(value)?
-        }
+        ["credentials", "gcp", "enabled"] => config.credentials.gcp.enabled = parse_bool(value)?,
         ["credentials", "gcp", "project"] => {
             config.credentials.gcp.project = Some(value.to_string())
         }
@@ -117,9 +113,7 @@ async fn set_value(
         }
 
         ["session", "shell"] => config.session.shell = value.to_string(),
-        ["session", "auto_cleanup_hours"] => {
-            config.session.auto_cleanup_hours = parse_u32(value)?
-        }
+        ["session", "auto_cleanup_hours"] => config.session.auto_cleanup_hours = parse_u32(value)?,
 
         _ => {
             ui::step_error_detail(&ctx, "Unknown config key", key);
@@ -138,8 +132,8 @@ async fn set_value(
 async fn set_local_value(key: &str, value: &str) -> MinotaurResult<()> {
     let ctx = UiContext::detect();
 
-    let cwd = std::env::current_dir()
-        .map_err(|e| MinotaurError::io("getting current directory", e))?;
+    let cwd =
+        std::env::current_dir().map_err(|e| MinotaurError::io("getting current directory", e))?;
     let local_path = cwd.join(".minotaur.toml");
 
     // Validate the key before touching the file

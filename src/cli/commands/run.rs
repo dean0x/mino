@@ -3,6 +3,9 @@
 /// Image registry prefix for minotaur images
 const IMAGE_REGISTRY: &str = "ghcr.io/dean0x";
 
+/// Default base image for layer composition (requires developer user, zsh, etc.)
+const LAYER_BASE_IMAGE: &str = "ghcr.io/dean0x/minotaur-base:latest";
+
 use crate::audit::AuditLog;
 use crate::cache::{
     detect_lockfiles, format_bytes, gb_to_bytes, labels, CacheMount, CacheSizeStatus, CacheState,
@@ -14,6 +17,7 @@ use crate::credentials::{
     AwsCredentials, AzureCredentials, CredentialCache, GcpCredentials, GithubCredentials,
 };
 use crate::error::{MinotaurError, MinotaurResult};
+use crate::layer::{compose_image, resolve_layers};
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{TaskSpinner, UiContext};
@@ -38,6 +42,73 @@ impl CacheSession {
     }
 }
 
+/// Result of resolving the image to use
+struct ImageResolution {
+    /// Final image tag to use
+    image: String,
+    /// Extra env vars from layers (empty if using single image)
+    layer_env: HashMap<String, String>,
+}
+
+/// Determine which layers to compose (if any).
+///
+/// Returns None for single-image mode, Some(names) for layer composition.
+///
+/// Precedence:
+/// 1. CLI `--layers` → compose from layers
+/// 2. CLI `--image` → use single image (overrides config layers)
+/// 3. Config `container.layers` (non-empty) → compose from config layers
+/// 4. Config `container.image` / default → use single image
+fn resolve_layer_names(args: &RunArgs, config: &Config) -> Option<Vec<String>> {
+    if !args.layers.is_empty() {
+        return Some(args.layers.clone());
+    }
+    if args.image.is_none() && !config.container.layers.is_empty() {
+        return Some(config.container.layers.clone());
+    }
+    None
+}
+
+/// Resolve image from layers or single image alias.
+async fn resolve_image_or_layers(
+    layer_names: Option<Vec<String>>,
+    args: &RunArgs,
+    config: &Config,
+    runtime: &dyn ContainerRuntime,
+    project_dir: &Path,
+) -> MinotaurResult<ImageResolution> {
+    if let Some(names) = layer_names {
+        let resolved = resolve_layers(&names, project_dir).await?;
+        // Layers compose on top of minotaur-base (which has developer user, zsh, etc.)
+        // not the user's config image (which may be bare fedora/alpine)
+        let base_image = LAYER_BASE_IMAGE;
+        let result = compose_image(runtime, base_image, &resolved).await?;
+
+        if result.was_cached {
+            debug!("Using cached composed image: {}", result.image_tag);
+        } else {
+            debug!("Built new composed image: {}", result.image_tag);
+        }
+
+        return Ok(ImageResolution {
+            image: result.image_tag,
+            layer_env: result.env,
+        });
+    }
+
+    // Single image path (existing behavior)
+    let raw_image = args
+        .image
+        .clone()
+        .unwrap_or_else(|| config.container.image.clone());
+    let image = resolve_image_alias(&raw_image);
+
+    Ok(ImageResolution {
+        image,
+        layer_env: HashMap::new(),
+    })
+}
+
 /// Execute the run command
 pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     let ctx = UiContext::detect();
@@ -60,6 +131,14 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     // Ensure runtime is ready
     spinner.message(&format!("Starting {}...", runtime.runtime_name()));
     runtime.ensure_ready().await?;
+
+    // Resolve image or compose from layers
+    let layer_names = resolve_layer_names(&args, config);
+    if layer_names.is_some() {
+        spinner.message("Resolving layers...");
+    }
+    let resolution =
+        resolve_image_or_layers(layer_names, &args, config, &*runtime, &project_dir).await?;
 
     // Setup caching (if enabled)
     spinner.message("Setting up caches...");
@@ -94,6 +173,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
         &args,
         config,
         &project_dir,
+        &resolution,
         credentials,
         &cache_mounts,
         cache_env,
@@ -140,7 +220,11 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     }
 
     // Check if image needs pulling and update spinner accordingly
-    if !runtime.image_exists(&container_config.image).await.unwrap_or(false) {
+    if !runtime
+        .image_exists(&container_config.image)
+        .await
+        .unwrap_or(false)
+    {
         spinner.message(&format!("Pulling image {}...", container_config.image));
     } else {
         spinner.message("Starting container...");
@@ -626,15 +710,12 @@ fn build_container_config(
     args: &RunArgs,
     config: &Config,
     project_dir: &Path,
+    resolution: &ImageResolution,
     env_vars: HashMap<String, String>,
     cache_mounts: &[CacheMount],
     cache_env: HashMap<String, String>,
 ) -> MinotaurResult<ContainerConfig> {
-    let raw_image = args
-        .image
-        .clone()
-        .unwrap_or_else(|| config.container.image.clone());
-    let image = resolve_image_alias(&raw_image);
+    let image = resolution.image.clone();
 
     let mut volumes = vec![
         // Mount project directory
@@ -663,7 +744,9 @@ fn build_container_config(
         volumes.push(vol.clone());
     }
 
+    // Env precedence: config < layer < cache < credential < CLI -e
     let mut final_env = config.container.env.clone();
+    final_env.extend(resolution.layer_env.clone());
     final_env.extend(cache_env);
     final_env.extend(env_vars);
 

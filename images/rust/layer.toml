@@ -1,0 +1,16 @@
+[layer]
+name = "rust"
+description = "Rust stable toolchain + cargo tools"
+version = "1"
+
+[env]
+CARGO_HOME = "/cache/cargo"
+RUSTUP_HOME = "/opt/rustup"
+RUSTC_WRAPPER = "sccache"
+SCCACHE_DIR = "/cache/sccache"
+
+[env.path_prepend]
+dirs = ["/opt/cargo/bin"]
+
+[cache]
+paths = ["/cache/cargo", "/cache/sccache"]

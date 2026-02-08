@@ -108,12 +108,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let audit = test_audit_log(&dir, true);
 
-        audit
-            .log("event.one", &serde_json::json!({}))
-            .await;
-        audit
-            .log("event.two", &serde_json::json!({}))
-            .await;
+        audit.log("event.one", &serde_json::json!({})).await;
+        audit.log("event.two", &serde_json::json!({})).await;
 
         let content = tokio::fs::read_to_string(&audit.path).await.unwrap();
         let lines: Vec<&str> = content.trim().lines().collect();
@@ -125,9 +121,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let audit = test_audit_log(&dir, false);
 
-        audit
-            .log("should.not.appear", &serde_json::json!({}))
-            .await;
+        audit.log("should.not.appear", &serde_json::json!({})).await;
 
         assert!(!audit.path.exists());
     }
