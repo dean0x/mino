@@ -1,16 +1,16 @@
-//! Error types for Minotaur
+//! Error types for Mino
 //!
-//! All modules use `MinotaurResult<T>` as their return type.
+//! All modules use `MinoResult<T>` as their return type.
 
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Result type alias for Minotaur operations
-pub type MinotaurResult<T> = Result<T, MinotaurError>;
+/// Result type alias for Mino operations
+pub type MinoResult<T> = Result<T, MinoError>;
 
-/// All errors that can occur in Minotaur
+/// All errors that can occur in Mino
 #[derive(Error, Debug)]
-pub enum MinotaurError {
+pub enum MinoError {
     // Environment errors
     #[error("OrbStack not found. Install from https://orbstack.dev or run: brew install orbstack")]
     OrbStackNotFound,
@@ -21,7 +21,7 @@ pub enum MinotaurError {
     #[error("Podman not available in OrbStack VM. Run: orb -m <vm> sudo dnf install -y podman")]
     PodmanNotFound,
 
-    #[error("Unsupported platform: {0}. Minotaur supports macOS and Linux.")]
+    #[error("Unsupported platform: {0}. Mino supports macOS and Linux.")]
     UnsupportedPlatform(String),
 
     #[error("Podman rootless setup incomplete: {reason}")]
@@ -171,7 +171,7 @@ pub enum MinotaurError {
     User(String),
 }
 
-impl MinotaurError {
+impl MinoError {
     /// Create an IO error with context
     pub fn io(context: impl Into<String>, source: std::io::Error) -> Self {
         Self::Io {
@@ -216,7 +216,7 @@ impl MinotaurError {
             Self::GcpNotAuthenticated => Some("Run: gcloud auth login"),
             Self::AzureNotAuthenticated => Some("Run: az login"),
             Self::GithubNotAuthenticated => Some("Run: gh auth login"),
-            Self::LayerNotFound { .. } => Some("Create a layer with layer.toml + install.sh in .minotaur/layers/<name>/ or ~/.config/minotaur/layers/<name>/"),
+            Self::LayerNotFound { .. } => Some("Create a layer with layer.toml + install.sh in .mino/layers/<name>/ or ~/.config/mino/layers/<name>/"),
             Self::ImageBuild { .. } => Some("Check build output above. Use -v for details."),
             _ => None,
         }
@@ -229,19 +229,19 @@ mod tests {
 
     #[test]
     fn error_display() {
-        let err = MinotaurError::OrbStackNotFound;
+        let err = MinoError::OrbStackNotFound;
         assert!(err.to_string().contains("OrbStack not found"));
     }
 
     #[test]
     fn error_hint() {
-        let err = MinotaurError::AwsNotConfigured;
+        let err = MinoError::AwsNotConfigured;
         assert_eq!(err.hint(), Some("Run: aws configure"));
     }
 
     #[test]
     fn error_retryable() {
-        assert!(MinotaurError::OrbStackNotRunning.is_retryable());
-        assert!(!MinotaurError::OrbStackNotFound.is_retryable());
+        assert!(MinoError::OrbStackNotRunning.is_retryable());
+        assert!(!MinoError::OrbStackNotFound.is_retryable());
     }
 }

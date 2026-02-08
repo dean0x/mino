@@ -1,7 +1,7 @@
 //! OrbStack VM management
 
 use crate::config::schema::VmConfig;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::debug;
@@ -31,28 +31,28 @@ impl OrbStack {
     }
 
     /// Check if OrbStack is running
-    pub async fn is_running() -> MinotaurResult<bool> {
+    pub async fn is_running() -> MinoResult<bool> {
         let output = Command::new("orb")
             .args(["status"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("orb status", e))?;
+            .map_err(|e| MinoError::command_failed("orb status", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(stdout.contains("running") || output.status.success())
     }
 
     /// Get OrbStack version
-    pub async fn version() -> MinotaurResult<String> {
+    pub async fn version() -> MinoResult<String> {
         let output = Command::new("orb")
             .arg("version")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("orb version", e))?;
+            .map_err(|e| MinoError::command_failed("orb version", e))?;
 
         if output.status.success() {
             // Parse "Version: 2.0.5 (2000500)" to just "2.0.5"
@@ -65,12 +65,12 @@ impl OrbStack {
                 .unwrap_or("unknown");
             Ok(version.to_string())
         } else {
-            Err(MinotaurError::OrbStackNotFound)
+            Err(MinoError::OrbStackNotFound)
         }
     }
 
     /// Start OrbStack
-    pub async fn start() -> MinotaurResult<()> {
+    pub async fn start() -> MinoResult<()> {
         debug!("Starting OrbStack...");
 
         let status = Command::new("orb")
@@ -79,33 +79,33 @@ impl OrbStack {
             .stderr(Stdio::piped())
             .status()
             .await
-            .map_err(|e| MinotaurError::command_failed("orb start", e))?;
+            .map_err(|e| MinoError::command_failed("orb start", e))?;
 
         if status.success() {
             Ok(())
         } else {
-            Err(MinotaurError::VmStart(
+            Err(MinoError::VmStart(
                 "Failed to start OrbStack".to_string(),
             ))
         }
     }
 
     /// Check if the VM exists
-    pub async fn vm_exists(&self) -> MinotaurResult<bool> {
+    pub async fn vm_exists(&self) -> MinoResult<bool> {
         let output = Command::new("orb")
             .args(["list", "-q"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("orb list", e))?;
+            .map_err(|e| MinoError::command_failed("orb list", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(stdout.lines().any(|line| line.trim() == self.config.name))
     }
 
     /// Create the VM
-    pub async fn create_vm(&self) -> MinotaurResult<()> {
+    pub async fn create_vm(&self) -> MinoResult<()> {
         debug!("Creating OrbStack VM: {}", self.config.name);
 
         let mut cmd = Command::new("orb");
@@ -116,13 +116,13 @@ impl OrbStack {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("orb create", e))?;
+            .map_err(|e| MinoError::command_failed("orb create", e))?;
 
         if output.status.success() {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::VmStart(format!(
+            Err(MinoError::VmStart(format!(
                 "Failed to create VM: {}",
                 stderr
             )))
@@ -130,7 +130,7 @@ impl OrbStack {
     }
 
     /// Ensure VM is running
-    pub async fn ensure_vm_running(&self) -> MinotaurResult<()> {
+    pub async fn ensure_vm_running(&self) -> MinoResult<()> {
         // First ensure OrbStack itself is running
         if !Self::is_running().await? {
             Self::start().await?;
@@ -151,14 +151,14 @@ impl OrbStack {
     }
 
     /// Get VM status
-    pub async fn vm_status(&self) -> MinotaurResult<String> {
+    pub async fn vm_status(&self) -> MinoResult<String> {
         let output = Command::new("orb")
             .args(["list", "-f", "{{.Name}}\t{{.State}}"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("orb list", e))?;
+            .map_err(|e| MinoError::command_failed("orb list", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -172,7 +172,7 @@ impl OrbStack {
     }
 
     /// Start the VM
-    pub async fn start_vm(&self) -> MinotaurResult<()> {
+    pub async fn start_vm(&self) -> MinoResult<()> {
         debug!("Starting VM: {}", self.config.name);
 
         let status = Command::new("orb")
@@ -181,12 +181,12 @@ impl OrbStack {
             .stderr(Stdio::piped())
             .status()
             .await
-            .map_err(|e| MinotaurError::command_failed("orb start", e))?;
+            .map_err(|e| MinoError::command_failed("orb start", e))?;
 
         if status.success() {
             Ok(())
         } else {
-            Err(MinotaurError::VmStart(format!(
+            Err(MinoError::VmStart(format!(
                 "Failed to start VM: {}",
                 self.config.name
             )))
@@ -194,7 +194,7 @@ impl OrbStack {
     }
 
     /// Execute a command in the VM
-    pub async fn exec(&self, command: &[&str]) -> MinotaurResult<std::process::Output> {
+    pub async fn exec(&self, command: &[&str]) -> MinoResult<std::process::Output> {
         debug!("Executing in VM {}: {:?}", self.config.name, command);
 
         let mut cmd = Command::new("orb");
@@ -203,21 +203,21 @@ impl OrbStack {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let output = cmd.output().await.map_err(|e| {
-            MinotaurError::command_failed(format!("orb -m {} {:?}", self.config.name, command), e)
+            MinoError::command_failed(format!("orb -m {} {:?}", self.config.name, command), e)
         })?;
 
         Ok(output)
     }
 
     /// Execute a command in the VM and return stdout
-    pub async fn exec_output(&self, command: &[&str]) -> MinotaurResult<String> {
+    pub async fn exec_output(&self, command: &[&str]) -> MinoResult<String> {
         let output = self.exec(command).await?;
 
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::VmCommand(format!(
+            Err(MinoError::VmCommand(format!(
                 "Command failed: {:?}, stderr: {}",
                 command, stderr
             )))
@@ -225,7 +225,7 @@ impl OrbStack {
     }
 
     /// Execute a command in the VM interactively
-    pub async fn exec_interactive(&self, command: &[&str]) -> MinotaurResult<i32> {
+    pub async fn exec_interactive(&self, command: &[&str]) -> MinoResult<i32> {
         debug!(
             "Executing interactively in VM {}: {:?}",
             self.config.name, command
@@ -239,7 +239,7 @@ impl OrbStack {
             .stderr(Stdio::inherit());
 
         let status = cmd.status().await.map_err(|e| {
-            MinotaurError::command_failed(format!("orb -m {} {:?}", self.config.name, command), e)
+            MinoError::command_failed(format!("orb -m {} {:?}", self.config.name, command), e)
         })?;
 
         Ok(status.code().unwrap_or(-1))
@@ -259,6 +259,6 @@ mod tests {
     fn orbstack_new() {
         let config = VmConfig::default();
         let orb = OrbStack::new(config);
-        assert_eq!(orb.vm_name(), "minotaur");
+        assert_eq!(orb.vm_name(), "mino");
     }
 }

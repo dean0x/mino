@@ -4,16 +4,16 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-const BINARY_NAME = process.platform === "win32" ? "minotaur.exe" : "minotaur";
+const BINARY_NAME = process.platform === "win32" ? "mino.exe" : "mino";
 
 /**
  * Platform-specific package mapping
  */
 const PLATFORM_PACKAGES = {
-  "darwin-x64": "@dean0x/minotaur-darwin-x64",
-  "darwin-arm64": "@dean0x/minotaur-darwin-arm64",
-  "linux-x64": "@dean0x/minotaur-linux-x64",
-  "linux-arm64": "@dean0x/minotaur-linux-arm64",
+  "darwin-x64": "@dean0x/mino-darwin-x64",
+  "darwin-arm64": "@dean0x/mino-darwin-arm64",
+  "linux-x64": "@dean0x/mino-linux-x64",
+  "linux-arm64": "@dean0x/mino-linux-arm64",
 };
 
 /**
@@ -71,7 +71,7 @@ function resolveBinaryFromFallback() {
 }
 
 /**
- * Find the minotaur binary
+ * Find the mino binary
  * @returns {string}
  */
 function findBinary() {
@@ -93,17 +93,17 @@ function findBinary() {
     console.error(
       `Error: Unsupported platform: ${process.platform}-${process.arch}`
     );
-    console.error("Minotaur supports: darwin-x64, darwin-arm64, linux-x64, linux-arm64");
+    console.error("Mino supports: darwin-x64, darwin-arm64, linux-x64, linux-arm64");
     process.exit(1);
   }
 
-  console.error("Error: Could not find minotaur binary.");
+  console.error("Error: Could not find mino binary.");
   console.error("");
   console.error("This usually means:");
   console.error("  1. npm failed to install the platform-specific package");
   console.error("  2. The postinstall script failed to download the binary");
   console.error("");
-  console.error("Try reinstalling: npm install -g @dean0x/minotaur");
+  console.error("Try reinstalling: npm install -g @dean0x/mino");
   process.exit(1);
 }
 
@@ -120,7 +120,7 @@ function main() {
   });
 
   child.on("error", (err) => {
-    console.error(`Failed to execute minotaur: ${err.message}`);
+    console.error(`Failed to execute mino: ${err.message}`);
     process.exit(1);
   });
 

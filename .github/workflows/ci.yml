@@ -60,8 +60,8 @@ jobs:
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
-          name: minotaur-macos
-          path: target/release/minotaur
+          name: mino-macos
+          path: target/release/mino
 
   msrv:
     name: MSRV (1.82)

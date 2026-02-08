@@ -1,11 +1,11 @@
 {
-  "name": "@dean0x/minotaur-linux-arm64",
+  "name": "@dean0x/mino-linux-arm64",
   "version": "0.1.0",
-  "description": "Minotaur binary for Linux ARM64",
+  "description": "Mino binary for Linux ARM64",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dean0x/minotaur"
+    "url": "https://github.com/dean0x/mino"
   },
   "os": ["linux"],
   "cpu": ["arm64"],

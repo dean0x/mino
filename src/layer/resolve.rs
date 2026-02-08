@@ -1,11 +1,11 @@
 //! Layer resolution
 //!
 //! Resolves layer names to their manifests and install scripts by searching:
-//! 1. Project-local: `{project_dir}/.minotaur/layers/{name}/`
-//! 2. User-global: `~/.config/minotaur/layers/{name}/`
+//! 1. Project-local: `{project_dir}/.mino/layers/{name}/`
+//! 2. User-global: `~/.config/mino/layers/{name}/`
 //! 3. Built-in: compiled into the binary via `include_str!`
 
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::layer::manifest::LayerManifest;
 use std::path::{Path, PathBuf};
 
@@ -40,10 +40,10 @@ pub enum LayerScript {
 
 impl LayerScript {
     /// Read the script content (from disk or embedded)
-    pub async fn content(&self) -> MinotaurResult<String> {
+    pub async fn content(&self) -> MinoResult<String> {
         match self {
             Self::Path(path) => tokio::fs::read_to_string(path).await.map_err(|e| {
-                MinotaurError::io(format!("reading install script {}", path.display()), e)
+                MinoError::io(format!("reading install script {}", path.display()), e)
             }),
             Self::Embedded(content) => Ok((*content).to_string()),
         }
@@ -53,10 +53,10 @@ impl LayerScript {
 /// Where a layer was resolved from
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerSource {
-    /// `.minotaur/layers/{name}/` in the project directory
+    /// `.mino/layers/{name}/` in the project directory
     ProjectLocal,
 
-    /// `~/.config/minotaur/layers/{name}/`
+    /// `~/.config/mino/layers/{name}/`
     UserGlobal,
 
     /// Compiled into the binary
@@ -66,13 +66,13 @@ pub enum LayerSource {
 /// Resolve a list of layer names to their manifests and scripts.
 ///
 /// Resolution chain (first match wins per layer):
-/// 1. `{project_dir}/.minotaur/layers/{name}/`
-/// 2. `~/.config/minotaur/layers/{name}/`
+/// 1. `{project_dir}/.mino/layers/{name}/`
+/// 2. `~/.config/mino/layers/{name}/`
 /// 3. Built-in embedded layers
 pub async fn resolve_layers(
     names: &[String],
     project_dir: &Path,
-) -> MinotaurResult<Vec<ResolvedLayer>> {
+) -> MinoResult<Vec<ResolvedLayer>> {
     let mut resolved = Vec::with_capacity(names.len());
 
     for name in names {
@@ -84,14 +84,14 @@ pub async fn resolve_layers(
 }
 
 /// Validate that a layer name is safe (no path traversal, no special characters).
-fn validate_layer_name(name: &str) -> MinotaurResult<()> {
+fn validate_layer_name(name: &str) -> MinoResult<()> {
     if name.is_empty() {
-        return Err(MinotaurError::User(
+        return Err(MinoError::User(
             "Layer name cannot be empty".to_string(),
         ));
     }
     if name.contains('/') || name.contains('\\') || name.contains("..") || name.contains('\0') {
-        return Err(MinotaurError::User(format!(
+        return Err(MinoError::User(format!(
             "Invalid layer name '{}': must not contain path separators or '..'",
             name
         )));
@@ -101,7 +101,7 @@ fn validate_layer_name(name: &str) -> MinotaurResult<()> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(MinotaurError::User(format!(
+        return Err(MinoError::User(format!(
             "Invalid layer name '{}': must contain only alphanumeric characters, hyphens, or underscores",
             name
         )));
@@ -109,11 +109,11 @@ fn validate_layer_name(name: &str) -> MinotaurResult<()> {
     Ok(())
 }
 
-async fn resolve_single(name: &str, project_dir: &Path) -> MinotaurResult<ResolvedLayer> {
+async fn resolve_single(name: &str, project_dir: &Path) -> MinoResult<ResolvedLayer> {
     validate_layer_name(name)?;
 
-    let project_layer_dir = project_dir.join(".minotaur").join("layers").join(name);
-    let global_layer_dir = dirs::config_dir().map(|d| d.join("minotaur").join("layers").join(name));
+    let project_layer_dir = project_dir.join(".mino").join("layers").join(name);
+    let global_layer_dir = dirs::config_dir().map(|d| d.join("mino").join("layers").join(name));
 
     // 1. Project-local
     if let Some(layer) = try_resolve_from_dir(&project_layer_dir, LayerSource::ProjectLocal).await?
@@ -140,7 +140,7 @@ async fn resolve_single(name: &str, project_dir: &Path) -> MinotaurResult<Resolv
     }
     searched.push("built-in layers".to_string());
 
-    Err(MinotaurError::LayerNotFound {
+    Err(MinoError::LayerNotFound {
         name: name.to_string(),
         searched: searched.join(", "),
     })
@@ -152,7 +152,7 @@ async fn resolve_single(name: &str, project_dir: &Path) -> MinotaurResult<Resolv
 async fn try_resolve_from_dir(
     dir: &Path,
     source: LayerSource,
-) -> MinotaurResult<Option<ResolvedLayer>> {
+) -> MinoResult<Option<ResolvedLayer>> {
     let manifest_path = dir.join("layer.toml");
     let script_path = dir.join("install.sh");
 
@@ -162,7 +162,7 @@ async fn try_resolve_from_dir(
 
     // Manifest exists but script is missing — that's an error, not a miss
     if !script_path.exists() {
-        return Err(MinotaurError::LayerScriptMissing(
+        return Err(MinoError::LayerScriptMissing(
             script_path.display().to_string(),
         ));
     }
@@ -177,7 +177,7 @@ async fn try_resolve_from_dir(
 }
 
 /// Resolve a built-in layer by name
-fn resolve_builtin(name: &str) -> MinotaurResult<Option<ResolvedLayer>> {
+fn resolve_builtin(name: &str) -> MinoResult<Option<ResolvedLayer>> {
     let (manifest_str, install_str) = match name {
         "rust" | "cargo" => (BUILTIN_RUST_MANIFEST, BUILTIN_RUST_INSTALL),
         "typescript" | "ts" | "node" => (BUILTIN_TS_MANIFEST, BUILTIN_TS_INSTALL),
@@ -227,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_project_local_layer() {
         let temp = TempDir::new().unwrap();
-        let layer_dir = temp.path().join(".minotaur").join("layers").join("custom");
+        let layer_dir = temp.path().join(".mino").join("layers").join("custom");
         std::fs::create_dir_all(&layer_dir).unwrap();
 
         let manifest = r#"
@@ -264,7 +264,7 @@ MY_VAR = "/custom/path"
     #[tokio::test]
     async fn resolve_missing_script_errors() {
         let temp = TempDir::new().unwrap();
-        let layer_dir = temp.path().join(".minotaur").join("layers").join("broken");
+        let layer_dir = temp.path().join(".mino").join("layers").join("broken");
         std::fs::create_dir_all(&layer_dir).unwrap();
 
         let manifest = r#"
@@ -285,7 +285,7 @@ version = "1"
     #[tokio::test]
     async fn project_local_overrides_builtin() {
         let temp = TempDir::new().unwrap();
-        let layer_dir = temp.path().join(".minotaur").join("layers").join("rust");
+        let layer_dir = temp.path().join(".mino").join("layers").join("rust");
         std::fs::create_dir_all(&layer_dir).unwrap();
 
         let manifest = r#"

@@ -1,8 +1,8 @@
-# Minotaur - Development Guide
+# Mino - Development Guide
 
 ## Project Overview
 
-Minotaur is a secure sandbox wrapper for AI coding agents. It runs commands in rootless Podman containers with temporary cloud credentials, SSH agent forwarding, and persistent dependency caching.
+Mino is a secure sandbox wrapper for AI coding agents. It runs commands in rootless Podman containers with temporary cloud credentials, SSH agent forwarding, and persistent dependency caching.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ Minotaur is a secure sandbox wrapper for AI coding agents. It runs commands in r
 src/
 ├── main.rs                    # CLI entry point
 ├── lib.rs                     # Library exports
-├── error.rs                   # MinotaurError enum, Result type
+├── error.rs                   # MinoError enum, Result type
 ├── cache/                     # Dependency caching system
 │   ├── lockfile.rs            # Lockfile detection + SHA256 hashing
 │   └── volume.rs              # Cache volume state management
@@ -33,8 +33,8 @@ src/
 ## Key Patterns
 
 ### Error Handling
-- All functions return `MinotaurResult<T>` (never panic in business logic)
-- Use `MinotaurError::io()` for IO errors with context
+- All functions return `MinoResult<T>` (never panic in business logic)
+- Use `MinoError::io()` for IO errors with context
 - Errors have `.hint()` for actionable suggestions
 
 ### Async Runtime
@@ -49,26 +49,26 @@ src/
 - Factory pattern selects runtime based on `Platform::detect()`
 
 ### Configuration
-- TOML at `~/.config/minotaur/config.toml`
+- TOML at `~/.config/mino/config.toml`
 - All structs use `#[serde(default)]` for partial configs
-- State stored at `~/.local/share/minotaur/`
+- State stored at `~/.local/share/mino/`
 
 ## Cache System
 
 Content-addressed caching keyed by lockfile SHA256 hash.
 
 **States:**
-- `Miss` → create volume, mount read-write
-- `Building` → mount read-write (resume after crash)
-- `Complete` → mount read-only (immutable)
+- `Miss` -> create volume, mount read-write
+- `Building` -> mount read-write (resume after crash)
+- `Complete` -> mount read-only (immutable)
 
-**Volume naming:** `minotaur-cache-{ecosystem}-{hash12}`
+**Volume naming:** `mino-cache-{ecosystem}-{hash12}`
 
 **Labels:** Stored on Podman volumes via `--label`:
-- `io.minotaur.cache=true`
-- `io.minotaur.cache.ecosystem={npm,cargo,...}`
-- `io.minotaur.cache.hash={hash}`
-- `io.minotaur.cache.state={building,complete}`
+- `io.mino.cache=true`
+- `io.mino.cache.ecosystem={npm,cargo,...}`
+- `io.mino.cache.hash={hash}`
+- `io.mino.cache.state={building,complete}`
 
 ## Testing
 
@@ -101,11 +101,11 @@ cargo clippy            # Lints
 
 1. Create `images/{language}/Dockerfile`:
    ```dockerfile
-   ARG BASE_IMAGE=ghcr.io/dean0x/minotaur-base:latest
+   ARG BASE_IMAGE=ghcr.io/dean0x/mino-base:latest
    FROM ${BASE_IMAGE}
 
-   LABEL org.opencontainers.image.source="https://github.com/dean0x/minotaur"
-   LABEL org.opencontainers.image.description="Minotaur {language} development image"
+   LABEL org.opencontainers.image.source="https://github.com/dean0x/mino"
+   LABEL org.opencontainers.image.description="Mino {language} development image"
 
    USER root
    # Install language toolchain
@@ -131,14 +131,14 @@ cargo clippy            # Lints
 
 3. Add alias in `src/cli/commands/run.rs` `resolve_image_alias()`:
    ```rust
-   "{language}" | "{alias}" => "minotaur-{language}",
+   "{language}" | "{alias}" => "mino-{language}",
    ```
 
 4. Update `images/README.md` with tools inventory
 
 ### Image design principles
 
-- Inherit from `minotaur-base` (shared tools, Node for Claude Code)
+- Inherit from `mino-base` (shared tools, Node for Claude Code)
 - Install toolchain as root, switch to `developer` user
 - Configure cache paths via env vars (CARGO_HOME, npm_config_cache, etc.)
 - Use LTS/stable versions, pin major versions in Dockerfile

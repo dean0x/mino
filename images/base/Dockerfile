@@ -1,13 +1,13 @@
-# Minotaur Base Image
+# Mino Base Image
 # Fedora 43 + Node.js 22 LTS + productivity tools + Claude Code
 #
-# This is the foundation for all minotaur language images.
+# This is the foundation for all mino language images.
 # Contains shell tools, git utilities, and the Claude Code CLI.
 
 FROM fedora:43
 
-LABEL org.opencontainers.image.source="https://github.com/dean0x/minotaur"
-LABEL org.opencontainers.image.description="Minotaur base image with Claude Code and development tools"
+LABEL org.opencontainers.image.source="https://github.com/dean0x/mino"
+LABEL org.opencontainers.image.description="Mino base image with Claude Code and development tools"
 
 # Avoid interactive prompts
 ENV LANG=C.UTF-8
@@ -103,8 +103,8 @@ RUN git config --system core.pager delta \
 
 # Healthcheck script
 RUN printf '#!/bin/bash\nset -e\ncommand -v claude >/dev/null 2>&1\ncommand -v git >/dev/null 2>&1\ncommand -v node >/dev/null 2>&1\ntest -d /workspace\ntest -d /cache\ntest "$(whoami)" = "developer"\necho "ok"\n' \
-    > /usr/local/bin/minotaur-healthcheck \
-    && chmod +x /usr/local/bin/minotaur-healthcheck
+    > /usr/local/bin/mino-healthcheck \
+    && chmod +x /usr/local/bin/mino-healthcheck
 
 # Shell configuration for developer user
 USER developer
@@ -190,6 +190,6 @@ RUN claude --version \
     && yq --version \
     && tokei --version
 
-HEALTHCHECK CMD minotaur-healthcheck
+HEALTHCHECK CMD mino-healthcheck
 
 CMD ["/bin/zsh"]

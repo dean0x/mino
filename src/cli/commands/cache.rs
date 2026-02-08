@@ -5,7 +5,7 @@ use crate::cache::{
 };
 use crate::cli::args::{CacheAction, CacheArgs, OutputFormat};
 use crate::config::Config;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{create_runtime, ContainerRuntime};
 use crate::ui::{self, UiContext};
 use chrono::Utc;
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use tracing::debug;
 
 /// Execute the cache command
-pub async fn execute(args: CacheArgs, config: &Config) -> MinotaurResult<()> {
+pub async fn execute(args: CacheArgs, config: &Config) -> MinoResult<()> {
     let runtime = create_runtime(config)?;
 
     match args.action {
@@ -37,8 +37,8 @@ async fn list_caches(
     runtime: &dyn ContainerRuntime,
     format: OutputFormat,
     config: &Config,
-) -> MinotaurResult<()> {
-    let volumes = runtime.volume_list("minotaur-cache-").await?;
+) -> MinoResult<()> {
+    let volumes = runtime.volume_list("mino-cache-").await?;
 
     if volumes.is_empty() {
         match format {
@@ -50,7 +50,7 @@ async fn list_caches(
     }
 
     // Get disk usage for all cache volumes
-    let sizes = runtime.volume_disk_usage("minotaur-cache-").await?;
+    let sizes = runtime.volume_disk_usage("mino-cache-").await?;
 
     // Parse into CacheVolume structs with sizes
     let caches: Vec<(CacheVolume, u64)> = volumes
@@ -122,12 +122,12 @@ fn print_cache_table(caches: &[(CacheVolume, u64)], total_size: u64, limit_bytes
     match status {
         CacheSizeStatus::Ok => println!("{}", total_display),
         CacheSizeStatus::Warning => println!(
-            "{} {} - consider running: minotaur cache gc",
+            "{} {} - consider running: mino cache gc",
             style("!").yellow(),
             total_display
         ),
         CacheSizeStatus::Exceeded => println!(
-            "{} {} - run: minotaur cache gc",
+            "{} {} - run: mino cache gc",
             style("!").red().bold(),
             total_display
         ),
@@ -140,7 +140,7 @@ fn print_cache_json(
     caches: &[(CacheVolume, u64)],
     total_size: u64,
     limit_bytes: u64,
-) -> MinotaurResult<()> {
+) -> MinoResult<()> {
     #[derive(serde::Serialize)]
     struct CacheJson {
         name: String,
@@ -193,13 +193,13 @@ async fn show_project_info(
     runtime: &dyn ContainerRuntime,
     project: Option<PathBuf>,
     config: &Config,
-) -> MinotaurResult<()> {
+) -> MinoResult<()> {
     let ctx = UiContext::detect();
 
     let project_dir = match project {
         Some(p) => p.canonicalize().unwrap_or(p),
         None => {
-            env::current_dir().map_err(|e| MinotaurError::io("getting current directory", e))?
+            env::current_dir().map_err(|e| MinoError::io("getting current directory", e))?
         }
     };
 
@@ -227,7 +227,7 @@ async fn show_project_info(
     }
 
     // Get disk usage
-    let sizes = runtime.volume_disk_usage("minotaur-cache-").await?;
+    let sizes = runtime.volume_disk_usage("mino-cache-").await?;
 
     // Check cache states
     ui::section(&ctx, "Cache status");
@@ -279,7 +279,7 @@ async fn show_project_info(
     }
 
     // Show total cache usage
-    let all_sizes = runtime.volume_disk_usage("minotaur-cache-").await?;
+    let all_sizes = runtime.volume_disk_usage("mino-cache-").await?;
     let total_size: u64 = all_sizes.values().sum();
     let limit_bytes = gb_to_bytes(config.cache.max_total_gb);
     let percent = CacheSizeStatus::percentage(total_size, limit_bytes);
@@ -314,12 +314,12 @@ async fn gc_caches(
     config: &Config,
     days_override: Option<u32>,
     dry_run: bool,
-) -> MinotaurResult<()> {
+) -> MinoResult<()> {
     let ctx = UiContext::detect();
     let gc_days = days_override.unwrap_or(config.cache.gc_days);
 
     // Get current cache size
-    let sizes = runtime.volume_disk_usage("minotaur-cache-").await?;
+    let sizes = runtime.volume_disk_usage("mino-cache-").await?;
     let total_size: u64 = sizes.values().sum();
     let limit_bytes = gb_to_bytes(config.cache.max_total_gb);
 
@@ -335,7 +335,7 @@ async fn gc_caches(
         ),
     );
 
-    let volumes = runtime.volume_list("minotaur-cache-").await?;
+    let volumes = runtime.volume_list("mino-cache-").await?;
     let caches: Vec<CacheVolume> = volumes
         .iter()
         .filter_map(|v| CacheVolume::from_labels(&v.name, &v.labels))
@@ -416,9 +416,9 @@ async fn gc_caches(
 async fn clear_all_caches(
     runtime: &dyn ContainerRuntime,
     skip_confirm: bool,
-) -> MinotaurResult<()> {
+) -> MinoResult<()> {
     let ctx = UiContext::detect();
-    let volumes = runtime.volume_list("minotaur-cache-").await?;
+    let volumes = runtime.volume_list("mino-cache-").await?;
 
     if volumes.is_empty() {
         ui::intro(&ctx, "Cache Clear");
@@ -427,7 +427,7 @@ async fn clear_all_caches(
     }
 
     // Get sizes
-    let sizes = runtime.volume_disk_usage("minotaur-cache-").await?;
+    let sizes = runtime.volume_disk_usage("mino-cache-").await?;
     let total_size: u64 = sizes.values().sum();
 
     ui::intro(&ctx, "Cache Clear");
@@ -480,9 +480,9 @@ async fn clear_all_caches(
 async fn clear_composed_images(
     runtime: &dyn ContainerRuntime,
     skip_confirm: bool,
-) -> MinotaurResult<()> {
+) -> MinoResult<()> {
     let ctx = UiContext::detect();
-    let images = runtime.image_list_prefixed("minotaur-composed-").await?;
+    let images = runtime.image_list_prefixed("mino-composed-").await?;
 
     if images.is_empty() {
         ui::intro(&ctx, "Clear Composed Images");

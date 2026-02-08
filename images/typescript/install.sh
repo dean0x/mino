@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Minotaur TypeScript layer install script
+# Mino TypeScript layer install script
 # Installs: pnpm, tsx, typescript, npm-check-updates, biome, turbo, vite
 #
 # Must run as root. Idempotent - safe to run multiple times.

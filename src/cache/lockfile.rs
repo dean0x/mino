@@ -3,7 +3,7 @@
 //! Detects package manager lockfiles and generates content-addressed cache keys
 //! based on the lockfile contents. Same lockfile = same cache.
 
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs;
@@ -124,13 +124,13 @@ pub struct LockfileInfo {
 impl LockfileInfo {
     /// Generate the cache volume name for this lockfile
     pub fn volume_name(&self) -> String {
-        format!("minotaur-cache-{}-{}", self.ecosystem, self.hash)
+        format!("mino-cache-{}-{}", self.ecosystem, self.hash)
     }
 }
 
 /// Hash a lockfile's contents using SHA256, returning first 12 hex chars
-fn hash_file_contents(path: &Path) -> MinotaurResult<String> {
-    let contents = fs::read(path).map_err(|e| MinotaurError::Io {
+fn hash_file_contents(path: &Path) -> MinoResult<String> {
+    let contents = fs::read(path).map_err(|e| MinoError::Io {
         context: format!("reading lockfile {}", path.display()),
         source: e,
     })?;
@@ -148,7 +148,7 @@ fn hash_file_contents(path: &Path) -> MinotaurResult<String> {
 ///
 /// Scans the project root for known lockfile patterns and returns
 /// information about each detected lockfile, including a content hash.
-pub fn detect_lockfiles(project_dir: &Path) -> MinotaurResult<Vec<LockfileInfo>> {
+pub fn detect_lockfiles(project_dir: &Path) -> MinoResult<Vec<LockfileInfo>> {
     let mut lockfiles = Vec::new();
 
     for ecosystem in Ecosystem::all() {
@@ -258,7 +258,7 @@ mod tests {
             hash: "a1b2c3d4e5f6".to_string(),
         };
 
-        assert_eq!(info.volume_name(), "minotaur-cache-npm-a1b2c3d4e5f6");
+        assert_eq!(info.volume_name(), "mino-cache-npm-a1b2c3d4e5f6");
     }
 
     #[test]

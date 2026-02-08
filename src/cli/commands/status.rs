@@ -1,17 +1,17 @@
 //! Status command - check system health and dependencies
 
 use crate::config::Config;
-use crate::error::MinotaurResult;
+use crate::error::MinoResult;
 use crate::orchestration::{create_runtime, OrbStack, Platform};
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
 
 /// Execute the status command
-pub async fn execute(config: &Config) -> MinotaurResult<()> {
+pub async fn execute(config: &Config) -> MinoResult<()> {
     let ctx = UiContext::detect();
 
-    ui::intro(&ctx, "Minotaur System Status");
+    ui::intro(&ctx, "Mino System Status");
 
     let mut all_ok = true;
     let platform = Platform::detect();
@@ -35,7 +35,7 @@ pub async fn execute(config: &Config) -> MinotaurResult<()> {
         Platform::Unsupported => {
             ui::step_error(
                 &ctx,
-                "Unsupported platform - Minotaur supports macOS and Linux only",
+                "Unsupported platform - Mino supports macOS and Linux only",
             );
             all_ok = false;
         }
@@ -113,7 +113,7 @@ async fn check_podman_in_vm(ctx: &UiContext, config: &Config) -> bool {
                 ui::step_warn_hint(
                     ctx,
                     "Not installed in VM",
-                    "Run: minotaur setup (will auto-install)",
+                    "Run: mino setup (will auto-install)",
                 );
                 false
             }

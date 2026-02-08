@@ -2,14 +2,14 @@
 
 use crate::cli::args::StopArgs;
 use crate::config::Config;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::orchestration::create_runtime;
 use crate::session::{SessionManager, SessionStatus};
 use crate::ui::{self, TaskSpinner, UiContext};
 use console::style;
 
 /// Execute the stop command
-pub async fn execute(args: StopArgs, config: &Config) -> MinotaurResult<()> {
+pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
     let ctx = UiContext::detect();
     let manager = SessionManager::new().await?;
 
@@ -17,7 +17,7 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinotaurResult<()> {
     let session = manager
         .get(&args.session)
         .await?
-        .ok_or_else(|| MinotaurError::SessionNotFound(args.session.clone()))?;
+        .ok_or_else(|| MinoError::SessionNotFound(args.session.clone()))?;
 
     if !matches!(
         session.status,

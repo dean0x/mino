@@ -1,11 +1,11 @@
 #!/bin/sh
-# Minotaur installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/dean0x/minotaur/main/scripts/install.sh | sh
+# Mino installer script
+# Usage: curl -fsSL https://raw.githubusercontent.com/dean0x/mino/main/scripts/install.sh | sh
 set -e
 
-REPO="dean0x/minotaur"
+REPO="dean0x/mino"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-BINARY_NAME="minotaur"
+BINARY_NAME="mino"
 
 # Colors (disabled if not a terminal)
 if [ -t 1 ]; then

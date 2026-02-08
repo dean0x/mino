@@ -1,16 +1,16 @@
-//! Integration tests for Minotaur
+//! Integration tests for Mino
 
 mod cli_tests {
-    use assert_cmd::Command;
+    use assert_cmd::{cargo::cargo_bin_cmd, Command};
     use predicates::prelude::*;
 
-    fn minotaur() -> Command {
-        Command::cargo_bin("minotaur").unwrap()
+    fn mino() -> Command {
+        cargo_bin_cmd!("mino")
     }
 
     #[test]
     fn help_displays() {
-        minotaur()
+        mino()
             .arg("--help")
             .assert()
             .success()
@@ -19,29 +19,29 @@ mod cli_tests {
 
     #[test]
     fn version_displays() {
-        minotaur()
+        mino()
             .arg("--version")
             .assert()
             .success()
-            .stdout(predicate::str::contains("minotaur"));
+            .stdout(predicate::str::contains("mino"));
     }
 
     #[test]
     fn status_runs() {
         // Status may fail if OrbStack isn't installed, but should not panic
-        minotaur().arg("status").assert();
+        let _ = mino().arg("status").assert();
     }
 
     #[test]
     fn list_empty() {
-        minotaur().args(["list"]).assert().success().stdout(
+        mino().args(["list"]).assert().success().stdout(
             predicate::str::contains("No active sessions").or(predicate::str::contains("NAME")),
         );
     }
 
     #[test]
     fn config_path() {
-        minotaur()
+        mino()
             .args(["config", "path"])
             .assert()
             .success()
@@ -50,7 +50,7 @@ mod cli_tests {
 
     #[test]
     fn config_show() {
-        minotaur()
+        mino()
             .args(["config", "show"])
             .assert()
             .success()
@@ -59,7 +59,7 @@ mod cli_tests {
 
     #[test]
     fn stop_missing_session() {
-        minotaur()
+        mino()
             .args(["stop", "nonexistent-session"])
             .assert()
             .failure()
@@ -68,7 +68,7 @@ mod cli_tests {
 
     #[test]
     fn logs_missing_session() {
-        minotaur()
+        mino()
             .args(["logs", "nonexistent-session"])
             .assert()
             .failure()
@@ -78,16 +78,16 @@ mod cli_tests {
     #[test]
     fn setup_check_runs() {
         // Setup check should run without error (may report issues but shouldn't panic)
-        minotaur()
+        mino()
             .args(["setup", "--check"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Minotaur Setup"));
+            .stdout(predicate::str::contains("Mino Setup"));
     }
 
     #[test]
     fn setup_help() {
-        minotaur()
+        mino()
             .args(["setup", "--help"])
             .assert()
             .success()

@@ -18,17 +18,17 @@ jobs:
           # macOS
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: minotaur-x86_64-apple-darwin
+            artifact: mino-x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: minotaur-aarch64-apple-darwin
+            artifact: mino-aarch64-apple-darwin
           # Linux
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: minotaur-x86_64-unknown-linux-gnu
+            artifact: mino-x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact: minotaur-aarch64-unknown-linux-gnu
+            artifact: mino-aarch64-unknown-linux-gnu
             cross: true
 
     steps:
@@ -55,7 +55,7 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czvf ../../../${{ matrix.artifact }}.tar.gz minotaur
+          tar czvf ../../../${{ matrix.artifact }}.tar.gz mino
           cd ../../..
 
       - uses: actions/upload-artifact@v4
@@ -129,40 +129,40 @@ jobs:
           # Extract binaries and copy to npm package directories
 
           # darwin-x64
-          tar xzf artifacts/minotaur-x86_64-apple-darwin.tar.gz
-          cp minotaur npm/minotaur-darwin-x64/bin/
-          rm minotaur
+          tar xzf artifacts/mino-x86_64-apple-darwin.tar.gz
+          cp mino npm/mino-darwin-x64/bin/
+          rm mino
 
           # darwin-arm64
-          tar xzf artifacts/minotaur-aarch64-apple-darwin.tar.gz
-          cp minotaur npm/minotaur-darwin-arm64/bin/
-          rm minotaur
+          tar xzf artifacts/mino-aarch64-apple-darwin.tar.gz
+          cp mino npm/mino-darwin-arm64/bin/
+          rm mino
 
           # linux-x64
-          tar xzf artifacts/minotaur-x86_64-unknown-linux-gnu.tar.gz
-          cp minotaur npm/minotaur-linux-x64/bin/
-          rm minotaur
+          tar xzf artifacts/mino-x86_64-unknown-linux-gnu.tar.gz
+          cp mino npm/mino-linux-x64/bin/
+          rm mino
 
           # linux-arm64
-          tar xzf artifacts/minotaur-aarch64-unknown-linux-gnu.tar.gz
-          cp minotaur npm/minotaur-linux-arm64/bin/
-          rm minotaur
+          tar xzf artifacts/mino-aarch64-unknown-linux-gnu.tar.gz
+          cp mino npm/mino-linux-arm64/bin/
+          rm mino
 
       - name: Update package versions
         run: |
           VERSION=${{ steps.version.outputs.version }}
 
           # Update all package.json files with the release version
-          for pkg in minotaur minotaur-darwin-x64 minotaur-darwin-arm64 minotaur-linux-x64 minotaur-linux-arm64; do
+          for pkg in mino mino-darwin-x64 mino-darwin-arm64 mino-linux-x64 mino-linux-arm64; do
             jq --arg v "$VERSION" '.version = $v' npm/$pkg/package.json > tmp.json && mv tmp.json npm/$pkg/package.json
           done
 
           # Update optionalDependencies versions in main package
-          jq --arg v "$VERSION" '.optionalDependencies = (.optionalDependencies | to_entries | map(.value = $v) | from_entries)' npm/minotaur/package.json > tmp.json && mv tmp.json npm/minotaur/package.json
+          jq --arg v "$VERSION" '.optionalDependencies = (.optionalDependencies | to_entries | map(.value = $v) | from_entries)' npm/mino/package.json > tmp.json && mv tmp.json npm/mino/package.json
 
       - name: Publish platform packages
         run: |
-          for pkg in minotaur-darwin-x64 minotaur-darwin-arm64 minotaur-linux-x64 minotaur-linux-arm64; do
+          for pkg in mino-darwin-x64 mino-darwin-arm64 mino-linux-x64 mino-linux-arm64; do
             echo "Publishing @dean0x/$pkg..."
             cd npm/$pkg
             npm publish --access public
@@ -173,8 +173,8 @@ jobs:
 
       - name: Publish main package
         run: |
-          echo "Publishing @dean0x/minotaur..."
-          cd npm/minotaur
+          echo "Publishing @dean0x/mino..."
+          cd npm/mino
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -194,4 +194,4 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.HOMEBREW_TAP_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/dean0x/homebrew-tap/dispatches \
-            -d '{"event_type":"update-formula","client_payload":{"formula":"minotaur","version":"${{ steps.version.outputs.version }}"}}'
+            -d '{"event_type":"update-formula","client_payload":{"formula":"mino","version":"${{ steps.version.outputs.version }}"}}'

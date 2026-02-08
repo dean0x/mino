@@ -1,6 +1,6 @@
 //! Audit logging for security events
 //!
-//! Writes JSON lines to `~/.local/share/minotaur/audit.log`.
+//! Writes JSON lines to `~/.local/share/mino/audit.log`.
 //! Always-on by default (security tool — audit should be opt-out, not opt-in).
 
 use crate::config::{schema::Config, ConfigManager};

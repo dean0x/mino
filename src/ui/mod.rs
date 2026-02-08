@@ -6,11 +6,11 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use minotaur::ui::{self, UiContext, TaskSpinner};
+//! use mino::ui::{self, UiContext, TaskSpinner};
 //!
 //! let ctx = UiContext::detect().with_auto_yes(args.yes);
 //!
-//! ui::intro(&ctx, "Minotaur Setup");
+//! ui::intro(&ctx, "Mino Setup");
 //!
 //! let mut spinner = TaskSpinner::new(&ctx);
 //! spinner.start("Checking prerequisites...");
@@ -39,4 +39,4 @@ pub use output::{
 };
 pub use progress::TaskSpinner;
 pub use prompts::{confirm, confirm_inline, select};
-pub use theme::{init_theme, MinotaurTheme};
+pub use theme::{init_theme, MinoTheme};

@@ -2,7 +2,7 @@
 
 use crate::config::schema::AwsConfig;
 use crate::credentials::cache::{CachedCredential, CredentialCache};
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::process::Stdio;
@@ -28,7 +28,7 @@ impl AwsCredentials {
     pub async fn get_session_token(
         config: &AwsConfig,
         cache: &CredentialCache,
-    ) -> MinotaurResult<AwsSessionCredentials> {
+    ) -> MinoResult<AwsSessionCredentials> {
         // Check cache first
         if let Some(cached) = cache.get(Self::CACHE_KEY).await? {
             debug!("Using cached AWS credentials");
@@ -63,7 +63,7 @@ impl AwsCredentials {
     /// Get session token using AWS CLI
     async fn get_session_token_internal(
         config: &AwsConfig,
-    ) -> MinotaurResult<AwsSessionCredentials> {
+    ) -> MinoResult<AwsSessionCredentials> {
         debug!("Requesting AWS session token via CLI...");
 
         let mut cmd = Command::new("aws");
@@ -87,19 +87,19 @@ impl AwsCredentials {
         let output = cmd
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("aws sts get-session-token", e))?;
+            .map_err(|e| MinoError::command_failed("aws sts get-session-token", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("Unable to locate credentials") || stderr.contains("not configured")
             {
-                return Err(MinotaurError::AwsNotConfigured);
+                return Err(MinoError::AwsNotConfigured);
             }
-            return Err(MinotaurError::AwsSts(stderr.to_string()));
+            return Err(MinoError::AwsSts(stderr.to_string()));
         }
 
         let response: StsResponse = serde_json::from_slice(&output.stdout)
-            .map_err(|e| MinotaurError::AwsSts(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| MinoError::AwsSts(format!("Failed to parse response: {}", e)))?;
 
         let expires_at = DateTime::parse_from_rfc3339(&response.credentials.expiration)
             .map(|dt| dt.with_timezone(&Utc))
@@ -114,18 +114,18 @@ impl AwsCredentials {
     }
 
     /// Assume an IAM role
-    async fn assume_role(config: &AwsConfig) -> MinotaurResult<AwsSessionCredentials> {
+    async fn assume_role(config: &AwsConfig) -> MinoResult<AwsSessionCredentials> {
         let role_arn = config
             .role_arn
             .as_ref()
-            .ok_or_else(|| MinotaurError::AwsSts("No role ARN configured".to_string()))?;
+            .ok_or_else(|| MinoError::AwsSts("No role ARN configured".to_string()))?;
 
         debug!("Assuming AWS role: {}", role_arn);
 
         let mut cmd = Command::new("aws");
         cmd.args(["sts", "assume-role"]);
         cmd.args(["--role-arn", role_arn]);
-        cmd.args(["--role-session-name", "minotaur-session"]);
+        cmd.args(["--role-session-name", "mino-session"]);
         cmd.args([
             "--duration-seconds",
             &config.session_duration_secs.to_string(),
@@ -149,15 +149,15 @@ impl AwsCredentials {
         let output = cmd
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("aws sts assume-role", e))?;
+            .map_err(|e| MinoError::command_failed("aws sts assume-role", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(MinotaurError::AwsSts(stderr.to_string()));
+            return Err(MinoError::AwsSts(stderr.to_string()));
         }
 
         let response: AssumeRoleResponse = serde_json::from_slice(&output.stdout)
-            .map_err(|e| MinotaurError::AwsSts(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| MinoError::AwsSts(format!("Failed to parse response: {}", e)))?;
 
         let expires_at = DateTime::parse_from_rfc3339(&response.credentials.expiration)
             .map(|dt| dt.with_timezone(&Utc))
@@ -171,7 +171,7 @@ impl AwsCredentials {
         })
     }
 
-    fn parse_cached(cached: &CachedCredential) -> MinotaurResult<AwsSessionCredentials> {
+    fn parse_cached(cached: &CachedCredential) -> MinoResult<AwsSessionCredentials> {
         let creds: SerializableAwsCreds = serde_json::from_str(&cached.value)?;
         Ok(AwsSessionCredentials {
             access_key_id: creds.access_key_id,

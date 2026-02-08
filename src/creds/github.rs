@@ -1,7 +1,7 @@
 //! GitHub credential provider using gh CLI
 
 use crate::config::schema::GithubConfig;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::debug;
@@ -11,7 +11,7 @@ pub struct GithubCredentials;
 
 impl GithubCredentials {
     /// Get GitHub token from gh CLI
-    pub async fn get_token(config: &GithubConfig) -> MinotaurResult<String> {
+    pub async fn get_token(config: &GithubConfig) -> MinoResult<String> {
         debug!("Getting GitHub token from gh CLI...");
 
         let mut cmd = Command::new("gh");
@@ -26,14 +26,14 @@ impl GithubCredentials {
         let output = cmd
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("gh auth token", e))?;
+            .map_err(|e| MinoError::command_failed("gh auth token", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("not logged in") || stderr.contains("gh auth login") {
-                return Err(MinotaurError::GithubNotAuthenticated);
+                return Err(MinoError::GithubNotAuthenticated);
             }
-            return Err(MinotaurError::User(format!(
+            return Err(MinoError::User(format!(
                 "gh auth token failed: {}",
                 stderr
             )));
@@ -42,7 +42,7 @@ impl GithubCredentials {
         let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if token.is_empty() {
-            return Err(MinotaurError::GithubNotAuthenticated);
+            return Err(MinoError::GithubNotAuthenticated);
         }
 
         Ok(token)
@@ -67,7 +67,7 @@ impl GithubCredentials {
     }
 
     /// Get the authenticated user
-    pub async fn get_user(config: &GithubConfig) -> MinotaurResult<Option<String>> {
+    pub async fn get_user(config: &GithubConfig) -> MinoResult<Option<String>> {
         let mut cmd = Command::new("gh");
         cmd.args(["api", "user", "--jq", ".login"]);
 
@@ -80,7 +80,7 @@ impl GithubCredentials {
             .stderr(Stdio::null())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("gh api user", e))?;
+            .map_err(|e| MinoError::command_failed("gh api user", e))?;
 
         if output.status.success() {
             let user = String::from_utf8_lossy(&output.stdout).trim().to_string();

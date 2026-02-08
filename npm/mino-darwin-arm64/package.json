@@ -1,11 +1,11 @@
 {
-  "name": "@dean0x/minotaur-darwin-arm64",
+  "name": "@dean0x/mino-darwin-arm64",
   "version": "0.1.0",
-  "description": "Minotaur binary for macOS ARM64",
+  "description": "Mino binary for macOS ARM64",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dean0x/minotaur"
+    "url": "https://github.com/dean0x/mino"
   },
   "os": ["darwin"],
   "cpu": ["arm64"],

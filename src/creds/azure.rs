@@ -2,7 +2,7 @@
 
 use crate::config::schema::AzureConfig;
 use crate::credentials::cache::{CachedCredential, CredentialCache};
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::process::Stdio;
@@ -19,7 +19,7 @@ impl AzureCredentials {
     pub async fn get_access_token(
         config: &AzureConfig,
         cache: &CredentialCache,
-    ) -> MinotaurResult<String> {
+    ) -> MinoResult<String> {
         // Check cache first
         if let Some(cached) = cache.get(Self::CACHE_KEY).await? {
             debug!("Using cached Azure access token");
@@ -39,7 +39,7 @@ impl AzureCredentials {
     /// Get access token from az CLI
     async fn get_access_token_internal(
         config: &AzureConfig,
-    ) -> MinotaurResult<(String, DateTime<Utc>)> {
+    ) -> MinoResult<(String, DateTime<Utc>)> {
         debug!("Requesting Azure access token...");
 
         let mut cmd = Command::new("az");
@@ -58,18 +58,18 @@ impl AzureCredentials {
         let output = cmd
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("az account get-access-token", e))?;
+            .map_err(|e| MinoError::command_failed("az account get-access-token", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("az login") || stderr.contains("not logged in") {
-                return Err(MinotaurError::AzureNotAuthenticated);
+                return Err(MinoError::AzureNotAuthenticated);
             }
-            return Err(MinotaurError::AzureCredential(stderr.to_string()));
+            return Err(MinoError::AzureCredential(stderr.to_string()));
         }
 
         let response: AzureTokenResponse = serde_json::from_slice(&output.stdout).map_err(|e| {
-            MinotaurError::AzureCredential(format!("Failed to parse response: {}", e))
+            MinoError::AzureCredential(format!("Failed to parse response: {}", e))
         })?;
 
         let expires_at = DateTime::parse_from_rfc3339(&response.expires_on)
@@ -92,14 +92,14 @@ impl AzureCredentials {
     }
 
     /// Get the current subscription
-    pub async fn get_subscription() -> MinotaurResult<Option<String>> {
+    pub async fn get_subscription() -> MinoResult<Option<String>> {
         let output = Command::new("az")
             .args(["account", "show", "--query", "id", "-o", "tsv"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("az account show", e))?;
+            .map_err(|e| MinoError::command_failed("az account show", e))?;
 
         if output.status.success() {
             let sub = String::from_utf8_lossy(&output.stdout).trim().to_string();

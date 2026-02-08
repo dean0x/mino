@@ -1,12 +1,12 @@
-//! Minotaur - Secure AI Agent Sandbox Wrapper
+//! Mino - Secure AI Agent Sandbox Wrapper
 //!
 //! CLI entry point that dispatches to subcommands.
 
 use clap::Parser;
 use console::style;
-use minotaur::cli::{Cli, Commands};
-use minotaur::config::ConfigManager;
-use minotaur::error::MinotaurResult;
+use mino::cli::{Cli, Commands};
+use mino::config::ConfigManager;
+use mino::error::MinoResult;
 use std::process::ExitCode;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
@@ -25,14 +25,14 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run() -> MinotaurResult<()> {
+async fn run() -> MinoResult<()> {
     let cli = Cli::parse();
 
     // Initialize logging: 0 = warn (spinners only), 1 = info, 2+ = debug
     let filter = match cli.verbose {
-        0 => EnvFilter::new("minotaur=warn"),
-        1 => EnvFilter::new("minotaur=info"),
-        _ => EnvFilter::new("minotaur=debug"),
+        0 => EnvFilter::new("mino=warn"),
+        1 => EnvFilter::new("mino=info"),
+        _ => EnvFilter::new("mino=debug"),
     };
 
     tracing_subscriber::fmt()
@@ -43,7 +43,7 @@ async fn run() -> MinotaurResult<()> {
 
     // Init command doesn't need config loading
     if let Commands::Init(args) = cli.command {
-        return minotaur::cli::commands::init(args).await;
+        return mino::cli::commands::init(args).await;
     }
 
     // Load configuration
@@ -59,7 +59,7 @@ async fn run() -> MinotaurResult<()> {
         None
     } else {
         let cwd = std::env::current_dir()
-            .map_err(|e| minotaur::error::MinotaurError::io("getting current directory", e))?;
+            .map_err(|e| mino::error::MinoError::io("getting current directory", e))?;
         let found = ConfigManager::find_local_config(&cwd);
         if let Some(ref path) = found {
             debug!("Found local config: {}", path.display());
@@ -77,13 +77,13 @@ async fn run() -> MinotaurResult<()> {
     // Dispatch to command
     match cli.command {
         Commands::Init(_) => unreachable!("Init handled above"),
-        Commands::Run(args) => minotaur::cli::commands::run(args, &config).await,
-        Commands::List(args) => minotaur::cli::commands::list(args, &config).await,
-        Commands::Stop(args) => minotaur::cli::commands::stop(args, &config).await,
-        Commands::Logs(args) => minotaur::cli::commands::logs(args, &config).await,
-        Commands::Status => minotaur::cli::commands::status(&config).await,
-        Commands::Setup(args) => minotaur::cli::commands::setup(args, &config).await,
-        Commands::Config(args) => minotaur::cli::commands::config(args, &config).await,
-        Commands::Cache(args) => minotaur::cli::commands::cache(args, &config).await,
+        Commands::Run(args) => mino::cli::commands::run(args, &config).await,
+        Commands::List(args) => mino::cli::commands::list(args, &config).await,
+        Commands::Stop(args) => mino::cli::commands::stop(args, &config).await,
+        Commands::Logs(args) => mino::cli::commands::logs(args, &config).await,
+        Commands::Status => mino::cli::commands::status(&config).await,
+        Commands::Setup(args) => mino::cli::commands::setup(args, &config).await,
+        Commands::Config(args) => mino::cli::commands::config(args, &config).await,
+        Commands::Cache(args) => mino::cli::commands::cache(args, &config).await,
     }
 }

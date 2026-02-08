@@ -1,13 +1,13 @@
-# Minotaur Rust Image
+# Mino Rust Image
 # rustup + stable toolchain + development tools
 #
-# Extends minotaur-base with Rust development tools.
+# Extends mino-base with Rust development tools.
 
-ARG BASE_IMAGE=ghcr.io/dean0x/minotaur-base:latest
+ARG BASE_IMAGE=ghcr.io/dean0x/mino-base:latest
 FROM ${BASE_IMAGE}
 
-LABEL org.opencontainers.image.source="https://github.com/dean0x/minotaur"
-LABEL org.opencontainers.image.description="Minotaur Rust development image"
+LABEL org.opencontainers.image.source="https://github.com/dean0x/mino"
+LABEL org.opencontainers.image.description="Mino Rust development image"
 
 USER root
 
@@ -22,7 +22,7 @@ RUN chmod +x /tmp/install-rust.sh && /tmp/install-rust.sh && rm /tmp/install-rus
 USER developer
 
 # Configure cargo home for caching
-# When minotaur mounts /cache, cargo will use /cache/cargo
+# When mino mounts /cache, cargo will use /cache/cargo
 ENV CARGO_HOME=/cache/cargo
 
 # Keep rustup and toolchain paths accessible

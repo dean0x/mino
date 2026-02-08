@@ -4,7 +4,7 @@
 
 use crate::config::schema::VmConfig;
 use crate::config::Config;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::orchestration::native_podman::NativePodmanRuntime;
 use crate::orchestration::orbstack_runtime::OrbStackRuntime;
 use crate::orchestration::runtime::ContainerRuntime;
@@ -48,11 +48,11 @@ impl Platform {
 /// # Returns
 /// * `Ok(Box<dyn ContainerRuntime>)` - A boxed runtime implementation
 /// * `Err` - If the platform is unsupported
-pub fn create_runtime(config: &Config) -> MinotaurResult<Box<dyn ContainerRuntime>> {
+pub fn create_runtime(config: &Config) -> MinoResult<Box<dyn ContainerRuntime>> {
     match Platform::detect() {
         Platform::MacOS => Ok(Box::new(OrbStackRuntime::new(config.vm.clone()))),
         Platform::Linux => Ok(Box::new(NativePodmanRuntime::new())),
-        Platform::Unsupported => Err(MinotaurError::UnsupportedPlatform(
+        Platform::Unsupported => Err(MinoError::UnsupportedPlatform(
             std::env::consts::OS.to_string(),
         )),
     }
@@ -62,11 +62,11 @@ pub fn create_runtime(config: &Config) -> MinotaurResult<Box<dyn ContainerRuntim
 ///
 /// This variant is useful when you need to create a runtime with specific
 /// VM configuration that may differ from the main config.
-pub fn create_runtime_with_vm(vm_config: VmConfig) -> MinotaurResult<Box<dyn ContainerRuntime>> {
+pub fn create_runtime_with_vm(vm_config: VmConfig) -> MinoResult<Box<dyn ContainerRuntime>> {
     match Platform::detect() {
         Platform::MacOS => Ok(Box::new(OrbStackRuntime::new(vm_config))),
         Platform::Linux => Ok(Box::new(NativePodmanRuntime::new())),
-        Platform::Unsupported => Err(MinotaurError::UnsupportedPlatform(
+        Platform::Unsupported => Err(MinoError::UnsupportedPlatform(
             std::env::consts::OS.to_string(),
         )),
     }

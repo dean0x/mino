@@ -1,4 +1,4 @@
-# Minotaur Container Images
+# Mino Container Images
 
 Pre-built development images with Claude Code and productivity tools.
 
@@ -6,32 +6,32 @@ Pre-built development images with Claude Code and productivity tools.
 
 | Image | Registry | Description |
 |-------|----------|-------------|
-| `minotaur-base` | `ghcr.io/dean0x/minotaur-base:latest` | Foundation with Claude Code and dev tools |
-| `minotaur-typescript` | `ghcr.io/dean0x/minotaur-typescript:latest` | TypeScript/Node.js development |
-| `minotaur-rust` | `ghcr.io/dean0x/minotaur-rust:latest` | Rust development |
+| `mino-base` | `ghcr.io/dean0x/mino-base:latest` | Foundation with Claude Code and dev tools |
+| `mino-typescript` | `ghcr.io/dean0x/mino-typescript:latest` | TypeScript/Node.js development |
+| `mino-rust` | `ghcr.io/dean0x/mino-rust:latest` | Rust development |
 
 ## Quick Start
 
 ```bash
-# Use aliases with minotaur
-minotaur run --image typescript -- claude
-minotaur run --image rust -- claude
+# Use aliases with mino
+mino run --image typescript -- claude
+mino run --image rust -- claude
 
 # Or use full image paths
-minotaur run --image ghcr.io/dean0x/minotaur-typescript:latest -- claude
+mino run --image ghcr.io/dean0x/mino-typescript:latest -- claude
 ```
 
 ## Image Aliases
 
 | Alias | Image |
 |-------|-------|
-| `typescript`, `ts`, `node` | `minotaur-typescript` |
-| `rust`, `cargo` | `minotaur-rust` |
-| `base` | `minotaur-base` |
+| `typescript`, `ts`, `node` | `mino-typescript` |
+| `rust`, `cargo` | `mino-rust` |
+| `base` | `mino-base` |
 
 ## Tool Inventory
 
-### Base Image (`minotaur-base`)
+### Base Image (`mino-base`)
 
 All language images inherit these tools.
 
@@ -50,7 +50,7 @@ All language images inherit these tools.
 | **Network** | curl, wget, httpie, ssh | HTTP testing and SSH |
 | **Runtime** | Node.js 22 LTS | Required for Claude Code |
 
-### TypeScript Image (`minotaur-typescript`)
+### TypeScript Image (`mino-typescript`)
 
 | Tool | Version | Description |
 |------|---------|-------------|
@@ -69,7 +69,7 @@ PNPM_HOME=/cache/pnpm
 npm_config_cache=/cache/npm
 ```
 
-### Rust Image (`minotaur-rust`)
+### Rust Image (`mino-rust`)
 
 | Tool | Version | Description |
 |------|---------|-------------|
@@ -95,7 +95,7 @@ SCCACHE_DIR=/cache/sccache
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                  minotaur-base                           │
+│                  mino-base                           │
 │  Fedora 43 + Node 22 LTS + tools + claude-code          │
 │  Oh My Zsh + autosuggestions + history-substring-search  │
 │  nvm + eza + sd + yq + tokei                            │
@@ -104,7 +104,7 @@ SCCACHE_DIR=/cache/sccache
           ┌───────────────┴───────────────┐
           ▼                               ▼
 ┌─────────────────────┐       ┌─────────────────────┐
-│  minotaur-typescript │       │    minotaur-rust    │
+│  mino-typescript │       │    mino-rust    │
 │  pnpm, tsx, tsc      │       │  cargo, clippy      │
 │  biome, turbo, vite  │       │  nextest, sccache   │
 └─────────────────────┘       └─────────────────────┘
@@ -147,21 +147,21 @@ If you need to build manually:
 
 ```bash
 # Build base first (required by other images)
-docker build -t minotaur-base ./images/base
+docker build -t mino-base ./images/base
 
 # Build language images (reference local base)
-docker build -t minotaur-typescript --build-arg BASE_IMAGE=minotaur-base ./images/typescript
-docker build -t minotaur-rust --build-arg BASE_IMAGE=minotaur-base ./images/rust
+docker build -t mino-typescript --build-arg BASE_IMAGE=mino-base ./images/typescript
+docker build -t mino-rust --build-arg BASE_IMAGE=mino-base ./images/rust
 ```
 
 ### Interactive Testing
 
 ```bash
 # Shell into an image
-docker run --rm -it minotaur-typescript
+docker run --rm -it mino-typescript
 
 # Mount current directory
-docker run --rm -it -v $(pwd):/workspace minotaur-typescript
+docker run --rm -it -v $(pwd):/workspace mino-typescript
 ```
 
 ## CI/CD

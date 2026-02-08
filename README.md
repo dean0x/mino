@@ -1,4 +1,4 @@
-# Minotaur
+# Mino
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
@@ -7,9 +7,9 @@ Secure sandbox wrapper for AI coding agents using OrbStack + Podman rootless con
 
 Wraps **any command** in isolated containers with temporary cloud credentials and SSH agent forwarding. Works with Claude Code, Aider, Cursor, or any CLI tool.
 
-## Why Minotaur?
+## Why Mino?
 
-AI coding agents are powerful but require significant system access. Minotaur provides defense-in-depth:
+AI coding agents are powerful but require significant system access. Mino provides defense-in-depth:
 
 - **Filesystem Isolation**: Agent only sees your project directory, not `~/.ssh`, `~/.aws`, or system files
 - **Credential Scoping**: Short-lived cloud tokens instead of permanent credentials
@@ -38,42 +38,42 @@ AI coding agents are powerful but require significant system access. Minotaur pr
 ### From Source
 
 ```bash
-git clone https://github.com/yourname/minotaur.git
-cd minotaur
+git clone https://github.com/yourname/mino.git
+cd mino
 cargo install --path .
 ```
 
 ### Verify Installation
 
 ```bash
-minotaur status
+mino status
 ```
 
 ## Quick Start
 
 ```bash
 # Interactive shell in sandbox
-minotaur run
+mino run
 
 # Run Claude Code in sandbox
-minotaur run -- claude
+mino run -- claude
 
 # Run with AWS credentials
-minotaur run --aws -- bash
+mino run --aws -- bash
 
 # Run with all cloud credentials
-minotaur run --all-clouds -- bash
+mino run --all-clouds -- bash
 
 # Named session with specific project
-minotaur run -n my-feature -p ~/projects/myapp -- zsh
+mino run -n my-feature -p ~/projects/myapp -- zsh
 
 # Use a different container image
-minotaur run --image ubuntu:22.04 -- bash
+mino run --image ubuntu:22.04 -- bash
 
-# Use minotaur development images (with Claude Code pre-installed)
-minotaur run --image typescript -- claude    # TypeScript/Node.js
-minotaur run --image rust -- claude          # Rust
-minotaur run --image base -- claude          # Base tools only
+# Use mino development images (with Claude Code pre-installed)
+mino run --image typescript -- claude    # TypeScript/Node.js
+mino run --image rust -- claude          # Rust
+mino run --image base -- claude          # Base tools only
 ```
 
 ## CLI Reference
@@ -85,16 +85,16 @@ These options work with all commands:
 | Option | Description |
 |--------|-------------|
 | `-v, --verbose` | Enable verbose output |
-| `-c, --config <PATH>` | Configuration file path (env: `MINOTAUR_CONFIG`) |
+| `-c, --config <PATH>` | Configuration file path (env: `MINO_CONFIG`) |
 
 ### Commands
 
-#### `minotaur run`
+#### `mino run`
 
 Start a sandboxed session.
 
 ```bash
-minotaur run [OPTIONS] [-- COMMAND...]
+mino run [OPTIONS] [-- COMMAND...]
 ```
 
 | Option | Description |
@@ -114,12 +114,12 @@ minotaur run [OPTIONS] [-- COMMAND...]
 | `--no-cache` | Disable dependency caching |
 | `--cache-fresh` | Force fresh cache (ignore existing) |
 
-#### `minotaur list`
+#### `mino list`
 
 List sessions.
 
 ```bash
-minotaur list [OPTIONS]
+mino list [OPTIONS]
 ```
 
 | Option | Description |
@@ -127,24 +127,24 @@ minotaur list [OPTIONS]
 | `-a, --all` | Show all sessions including stopped |
 | `-f, --format <FORMAT>` | Output format: `table`, `json`, `plain` (default: table) |
 
-#### `minotaur stop`
+#### `mino stop`
 
 Stop a running session.
 
 ```bash
-minotaur stop [OPTIONS] <SESSION>
+mino stop [OPTIONS] <SESSION>
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-f, --force` | Force stop without graceful shutdown |
 
-#### `minotaur logs`
+#### `mino logs`
 
 View session logs.
 
 ```bash
-minotaur logs [OPTIONS] <SESSION>
+mino logs [OPTIONS] <SESSION>
 ```
 
 | Option | Description |
@@ -152,20 +152,20 @@ minotaur logs [OPTIONS] <SESSION>
 | `-f, --follow` | Follow log output (like `tail -f`) |
 | `-l, --lines <N>` | Number of lines to show (default: 100, 0 = all) |
 
-#### `minotaur status`
+#### `mino status`
 
 Check system health and dependencies.
 
 ```bash
-minotaur status
+mino status
 ```
 
-#### `minotaur cache`
+#### `mino cache`
 
 Manage dependency caches.
 
 ```bash
-minotaur cache <SUBCOMMAND>
+mino cache <SUBCOMMAND>
 ```
 
 | Subcommand | Description |
@@ -175,12 +175,12 @@ minotaur cache <SUBCOMMAND>
 | `gc [--days N] [--dry-run]` | Remove caches older than N days |
 | `clear --all [-y]` | Clear all caches (requires confirmation) |
 
-#### `minotaur config`
+#### `mino config`
 
 Show or edit configuration.
 
 ```bash
-minotaur config [SUBCOMMAND]
+mino config [SUBCOMMAND]
 ```
 
 | Subcommand | Description |
@@ -192,7 +192,7 @@ minotaur config [SUBCOMMAND]
 
 ## Configuration
 
-Configuration is stored at `~/.config/minotaur/config.toml`:
+Configuration is stored at `~/.config/mino/config.toml`:
 
 ```toml
 [general]
@@ -200,7 +200,7 @@ verbose = false
 log_format = "text"    # "text" or "json"
 
 [vm]
-name = "minotaur"
+name = "mino"
 distro = "fedora"
 # cpus = 4             # CPU cores (optional)
 # memory_mb = 4096     # Memory in MB (optional)
@@ -243,7 +243,7 @@ max_total_gb = 50        # Max total cache size before GC
 
 ### Configuration Keys
 
-Use `minotaur config set <key> <value>` to modify:
+Use `mino config set <key> <value>` to modify:
 
 ```
 general.verbose
@@ -270,18 +270,18 @@ cache.max_total_gb
 
 ## Dependency Caching
 
-Minotaur automatically caches package manager dependencies using content-addressed volumes. If a session crashes, the cache persists and is reused on the next run.
+Mino automatically caches package manager dependencies using content-addressed volumes. If a session crashes, the cache persists and is reused on the next run.
 
 ### How It Works
 
-1. **Lockfile Detection**: On `minotaur run`, scans for lockfiles:
-   - `package-lock.json` / `npm-shrinkwrap.json` → npm
-   - `yarn.lock` → yarn
-   - `pnpm-lock.yaml` → pnpm
-   - `Cargo.lock` → cargo
-   - `requirements.txt` / `Pipfile.lock` → pip
-   - `poetry.lock` → poetry
-   - `go.sum` → go
+1. **Lockfile Detection**: On `mino run`, scans for lockfiles:
+   - `package-lock.json` / `npm-shrinkwrap.json` -> npm
+   - `yarn.lock` -> yarn
+   - `pnpm-lock.yaml` -> pnpm
+   - `Cargo.lock` -> cargo
+   - `requirements.txt` / `Pipfile.lock` -> pip
+   - `poetry.lock` -> poetry
+   - `go.sum` -> go
 
 2. **Cache Key**: `sha256(lockfile_contents)[:12]` - same lockfile = same cache
 
@@ -310,30 +310,30 @@ Minotaur automatically caches package manager dependencies using content-address
 
 ```bash
 # View caches for current project
-minotaur cache info
+mino cache info
 
 # List all cache volumes
-minotaur cache list
+mino cache list
 
 # Remove old caches (default: 30 days)
-minotaur cache gc
+mino cache gc
 
 # Remove caches older than 7 days
-minotaur cache gc --days 7
+mino cache gc --days 7
 
 # Clear everything
-minotaur cache clear --all
+mino cache clear --all
 ```
 
 ## Container Images
 
-Minotaur provides pre-built development images with Claude Code and productivity tools.
+Mino provides pre-built development images with Claude Code and productivity tools.
 
 | Alias | Image | Includes |
 |-------|-------|----------|
-| `typescript`, `ts`, `node` | `ghcr.io/dean0x/minotaur-typescript` | Node.js 22 LTS, pnpm, tsx, TypeScript |
-| `rust`, `cargo` | `ghcr.io/dean0x/minotaur-rust` | rustup, cargo, clippy, bacon |
-| `base` | `ghcr.io/dean0x/minotaur-base` | Claude Code, git, delta, ripgrep, zoxide |
+| `typescript`, `ts`, `node` | `ghcr.io/dean0x/mino-typescript` | Node.js 22 LTS, pnpm, tsx, TypeScript |
+| `rust`, `cargo` | `ghcr.io/dean0x/mino-rust` | rustup, cargo, clippy, bacon |
+| `base` | `ghcr.io/dean0x/mino-base` | Claude Code, git, delta, ripgrep, zoxide |
 
 All images include: Claude Code CLI, git, gh CLI, delta (git diff), ripgrep, fd, bat, fzf, neovim, zsh, zoxide, mcfly.
 
@@ -343,19 +343,19 @@ See [images/README.md](images/README.md) for full tool inventory and local build
 
 ```
 macOS Host
-    │
-    ├─ minotaur CLI (Rust binary)
-    │   • Validates environment (OrbStack, Podman)
-    │   • Generates temp credentials (STS, gcloud, az)
-    │   • Manages session lifecycle
-    │
-    └─► OrbStack VM (lightweight Linux, ~200MB)
-        │
-        └─► Podman rootless container
-            • Mounted: /workspace (project dir only)
-            • SSH agent socket forwarded
-            • Temp credentials as env vars
-            • NO access to: ~/.ssh, ~/, system dirs
+    |
+    +- mino CLI (Rust binary)
+    |   - Validates environment (OrbStack, Podman)
+    |   - Generates temp credentials (STS, gcloud, az)
+    |   - Manages session lifecycle
+    |
+    +-> OrbStack VM (lightweight Linux, ~200MB)
+        |
+        +-> Podman rootless container
+            - Mounted: /workspace (project dir only)
+            - SSH agent socket forwarded
+            - Temp credentials as env vars
+            - NO access to: ~/.ssh, ~/, system dirs
 ```
 
 ## Credential Strategy
@@ -368,20 +368,20 @@ macOS Host
 | GCP | `gcloud auth print-access-token` | 1 hour |
 | Azure | `az account get-access-token` | 1 hour |
 
-Credentials are cached with TTL awareness - Minotaur automatically refreshes expired tokens.
+Credentials are cached with TTL awareness - Mino automatically refreshes expired tokens.
 
 ## State Storage
 
 ```
-~/.config/minotaur/config.toml      # User configuration
-~/.local/state/minotaur/
-├── sessions/*.json                  # Session state
-└── credentials/*.json               # Cached credentials (600 perms)
+~/.config/mino/config.toml      # User configuration
+~/.local/state/mino/
++-- sessions/*.json                  # Session state
++-- credentials/*.json               # Cached credentials (600 perms)
 ```
 
 ## Security Considerations
 
-Minotaur provides defense-in-depth but is not a complete security solution:
+Mino provides defense-in-depth but is not a complete security solution:
 
 - **Trust Boundary**: The container can access anything mounted into it
 - **Network Access**: Default `host` network mode allows outbound connections
@@ -406,7 +406,7 @@ cargo build --release
 cargo test
 
 # Run with debug logging
-RUST_LOG=minotaur=debug cargo run -- status
+RUST_LOG=mino=debug cargo run -- status
 
 # Format code
 cargo fmt

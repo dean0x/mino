@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build and test minotaur container images locally.
+# Build and test mino container images locally.
 #
 # Usage:
 #   ./build.sh              # Build all images and run tests
@@ -178,15 +178,15 @@ build_image() {
 }
 
 build_base() {
-    build_image "minotaur-base" "$SCRIPT_DIR/base"
+    build_image "mino-base" "$SCRIPT_DIR/base"
 }
 
 build_typescript() {
-    build_image "minotaur-typescript" "$SCRIPT_DIR/typescript" "--build-arg BASE_IMAGE=minotaur-base"
+    build_image "mino-typescript" "$SCRIPT_DIR/typescript" "--build-arg BASE_IMAGE=mino-base"
 }
 
 build_rust() {
-    build_image "minotaur-rust" "$SCRIPT_DIR/rust" "--build-arg BASE_IMAGE=minotaur-base"
+    build_image "mino-rust" "$SCRIPT_DIR/rust" "--build-arg BASE_IMAGE=mino-base"
 }
 
 #------------------------------------------------------------------------------
@@ -194,123 +194,123 @@ build_rust() {
 #------------------------------------------------------------------------------
 
 test_base() {
-    log_section "Testing minotaur-base"
+    log_section "Testing mino-base"
 
     echo ""
     log_info "Structure checks:"
-    check_user "minotaur-base" "developer"
-    check_workdir "minotaur-base" "/workspace"
-    check_dir "minotaur-base" "/workspace"
-    check_dir "minotaur-base" "/cache"
+    check_user "mino-base" "developer"
+    check_workdir "mino-base" "/workspace"
+    check_dir "mino-base" "/workspace"
+    check_dir "mino-base" "/cache"
 
     echo ""
     log_info "AI tools:"
-    check_tool "minotaur-base" "claude"
+    check_tool "mino-base" "claude"
 
     echo ""
     log_info "Git tools:"
-    check_tool "minotaur-base" "git"
-    check_tool "minotaur-base" "gh"
-    check_tool "minotaur-base" "delta"
+    check_tool "mino-base" "git"
+    check_tool "mino-base" "gh"
+    check_tool "mino-base" "delta"
 
     echo ""
     log_info "Search tools:"
-    check_tool "minotaur-base" "rg" "rg --version"
-    check_tool "minotaur-base" "fd"
-    check_tool "minotaur-base" "fzf"
+    check_tool "mino-base" "rg" "rg --version"
+    check_tool "mino-base" "fd"
+    check_tool "mino-base" "fzf"
 
     echo ""
     log_info "View/Edit tools:"
-    check_tool "minotaur-base" "bat"
-    check_tool "minotaur-base" "jq"
-    check_tool "minotaur-base" "nvim" "nvim --version"
-    check_tool "minotaur-base" "yq"
-    check_tool "minotaur-base" "sd"
+    check_tool "mino-base" "bat"
+    check_tool "mino-base" "jq"
+    check_tool "mino-base" "nvim" "nvim --version"
+    check_tool "mino-base" "yq"
+    check_tool "mino-base" "sd"
 
     echo ""
     log_info "Navigation tools:"
-    check_tool "minotaur-base" "zoxide"
+    check_tool "mino-base" "zoxide"
 
     echo ""
     log_info "File tools:"
-    check_tool "minotaur-base" "eza"
-    check_tool "minotaur-base" "tokei"
+    check_tool "mino-base" "eza"
+    check_tool "mino-base" "tokei"
 
     echo ""
     log_info "Network tools:"
-    check_tool "minotaur-base" "curl"
-    check_tool "minotaur-base" "http" "http --version"
+    check_tool "mino-base" "curl"
+    check_tool "mino-base" "http" "http --version"
 
     echo ""
     log_info "Runtime:"
-    check_tool "minotaur-base" "node"
+    check_tool "mino-base" "node"
 
     echo ""
     log_info "Shell environment:"
-    check_path_exists "minotaur-base" "/home/developer/.oh-my-zsh" "Oh My Zsh"
-    check_path_exists "minotaur-base" "/home/developer/.oh-my-zsh/custom/plugins/zsh-autosuggestions" "zsh-autosuggestions"
-    check_path_exists "minotaur-base" "/home/developer/.oh-my-zsh/custom/plugins/zsh-history-substring-search" "zsh-history-substring-search"
-    check_path_exists "minotaur-base" "/home/developer/.nvm/nvm.sh" "nvm"
+    check_path_exists "mino-base" "/home/developer/.oh-my-zsh" "Oh My Zsh"
+    check_path_exists "mino-base" "/home/developer/.oh-my-zsh/custom/plugins/zsh-autosuggestions" "zsh-autosuggestions"
+    check_path_exists "mino-base" "/home/developer/.oh-my-zsh/custom/plugins/zsh-history-substring-search" "zsh-history-substring-search"
+    check_path_exists "mino-base" "/home/developer/.nvm/nvm.sh" "nvm"
 
     echo ""
     log_info "Healthcheck:"
-    check_tool "minotaur-base" "minotaur-healthcheck" "minotaur-healthcheck"
+    check_tool "mino-base" "mino-healthcheck" "mino-healthcheck"
 }
 
 test_typescript() {
-    log_section "Testing minotaur-typescript"
+    log_section "Testing mino-typescript"
 
     echo ""
     log_info "Structure checks:"
-    check_user "minotaur-typescript" "developer"
-    check_workdir "minotaur-typescript" "/workspace"
-    check_env "minotaur-typescript" "PNPM_HOME" "/cache/pnpm"
-    check_env "minotaur-typescript" "npm_config_cache" "/cache/npm"
+    check_user "mino-typescript" "developer"
+    check_workdir "mino-typescript" "/workspace"
+    check_env "mino-typescript" "PNPM_HOME" "/cache/pnpm"
+    check_env "mino-typescript" "npm_config_cache" "/cache/npm"
 
     echo ""
     log_info "TypeScript tools:"
-    check_tool "minotaur-typescript" "pnpm"
-    check_tool "minotaur-typescript" "tsx"
-    check_tool "minotaur-typescript" "tsc" "tsc --version"
-    check_tool "minotaur-typescript" "ncu" "ncu --version"
-    check_tool "minotaur-typescript" "biome" "biome --version"
-    check_tool "minotaur-typescript" "turbo" "turbo --version"
-    check_tool "minotaur-typescript" "vite" "vite --version"
+    check_tool "mino-typescript" "pnpm"
+    check_tool "mino-typescript" "tsx"
+    check_tool "mino-typescript" "tsc" "tsc --version"
+    check_tool "mino-typescript" "ncu" "ncu --version"
+    check_tool "mino-typescript" "biome" "biome --version"
+    check_tool "mino-typescript" "turbo" "turbo --version"
+    check_tool "mino-typescript" "vite" "vite --version"
 
     echo ""
     log_info "Inherited from base:"
-    check_tool "minotaur-typescript" "claude"
-    check_tool "minotaur-typescript" "node"
+    check_tool "mino-typescript" "claude"
+    check_tool "mino-typescript" "node"
 }
 
 test_rust() {
-    log_section "Testing minotaur-rust"
+    log_section "Testing mino-rust"
 
     echo ""
     log_info "Structure checks:"
-    check_user "minotaur-rust" "developer"
-    check_workdir "minotaur-rust" "/workspace"
-    check_env "minotaur-rust" "CARGO_HOME" "/cache/cargo"
-    check_env "minotaur-rust" "RUSTUP_HOME" "/opt/rustup"
-    check_env "minotaur-rust" "RUSTC_WRAPPER" "sccache"
-    check_env "minotaur-rust" "SCCACHE_DIR" "/cache/sccache"
+    check_user "mino-rust" "developer"
+    check_workdir "mino-rust" "/workspace"
+    check_env "mino-rust" "CARGO_HOME" "/cache/cargo"
+    check_env "mino-rust" "RUSTUP_HOME" "/opt/rustup"
+    check_env "mino-rust" "RUSTC_WRAPPER" "sccache"
+    check_env "mino-rust" "SCCACHE_DIR" "/cache/sccache"
 
     echo ""
     log_info "Rust tools:"
-    check_tool "minotaur-rust" "rustc"
-    check_tool "minotaur-rust" "cargo"
-    check_tool "minotaur-rust" "rustfmt"
-    check_tool "minotaur-rust" "clippy" "cargo clippy --version"
-    check_tool "minotaur-rust" "bacon"
-    check_tool "minotaur-rust" "cargo-add" "cargo add --help > /dev/null"
-    check_tool "minotaur-rust" "cargo-outdated" "cargo outdated --version"
-    check_tool "minotaur-rust" "cargo-nextest" "cargo nextest --version"
-    check_tool "minotaur-rust" "sccache"
+    check_tool "mino-rust" "rustc"
+    check_tool "mino-rust" "cargo"
+    check_tool "mino-rust" "rustfmt"
+    check_tool "mino-rust" "clippy" "cargo clippy --version"
+    check_tool "mino-rust" "bacon"
+    check_tool "mino-rust" "cargo-add" "cargo add --help > /dev/null"
+    check_tool "mino-rust" "cargo-outdated" "cargo outdated --version"
+    check_tool "mino-rust" "cargo-nextest" "cargo nextest --version"
+    check_tool "mino-rust" "sccache"
 
     echo ""
     log_info "Inherited from base:"
-    check_tool "minotaur-rust" "claude"
-    check_tool "minotaur-rust" "node"
+    check_tool "mino-rust" "claude"
+    check_tool "mino-rust" "node"
 }
 
 #------------------------------------------------------------------------------
@@ -321,7 +321,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] [IMAGE]
 
-Build and test minotaur container images.
+Build and test mino container images.
 
 Options:
     --test-only     Skip build, only run tests on existing images
@@ -373,7 +373,7 @@ parse_args() {
 main() {
     parse_args "$@"
 
-    log_section "Minotaur Image Build & Test"
+    log_section "Mino Image Build & Test"
     log_info "Docker command: $DOCKER"
     log_info "Test only: $TEST_ONLY"
     log_info "Build args: ${BUILD_ARGS:-none}"
@@ -394,7 +394,7 @@ main() {
         for img in "${images[@]}"; do
             # For language images, ensure base is built first
             if [[ "$img" != "base" && ! " ${images[*]} " =~ " base " ]]; then
-                if ! $DOCKER image inspect minotaur-base > /dev/null 2>&1; then
+                if ! $DOCKER image inspect mino-base > /dev/null 2>&1; then
                     log_warn "Base image required for $img - building base first"
                     build_base || true
                 fi
@@ -439,9 +439,9 @@ main() {
 
     for img in "${images[@]}"; do
         # Verify image exists before testing
-        if ! $DOCKER image inspect "minotaur-$img" > /dev/null 2>&1; then
-            log_error "Image minotaur-$img not found - skipping tests"
-            FAILURES+=("missing: minotaur-$img")
+        if ! $DOCKER image inspect "mino-$img" > /dev/null 2>&1; then
+            log_error "Image mino-$img not found - skipping tests"
+            FAILURES+=("missing: mino-$img")
             continue
         fi
 

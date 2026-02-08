@@ -4,7 +4,7 @@
 //! using content-addressed caching. The composed image tag is derived
 //! from a SHA256 hash of the base image + all layer contents.
 
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::layer::resolve::ResolvedLayer;
 use crate::orchestration::ContainerRuntime;
 use sha2::{Digest, Sha256};
@@ -15,7 +15,7 @@ use tracing::debug;
 /// Result of composing an image from layers
 #[derive(Debug)]
 pub struct ComposedImageResult {
-    /// Full image tag (e.g., "minotaur-composed-a1b2c3d4e5f6")
+    /// Full image tag (e.g., "mino-composed-a1b2c3d4e5f6")
     pub image_tag: String,
 
     /// Merged environment variables from all layers
@@ -34,7 +34,7 @@ pub async fn compose_image(
     runtime: &dyn ContainerRuntime,
     base_image: &str,
     layers: &[ResolvedLayer],
-) -> MinotaurResult<ComposedImageResult> {
+) -> MinoResult<ComposedImageResult> {
     // Compute content-addressed hash
     let image_tag = compute_image_tag(base_image, layers).await?;
     debug!("Composed image tag: {}", image_tag);
@@ -76,7 +76,7 @@ pub async fn compose_image(
 ///
 /// Hash inputs are sorted by layer name for determinism regardless of
 /// CLI argument order. The install order follows the user's specified order.
-async fn compute_image_tag(base_image: &str, layers: &[ResolvedLayer]) -> MinotaurResult<String> {
+async fn compute_image_tag(base_image: &str, layers: &[ResolvedLayer]) -> MinoResult<String> {
     let mut hasher = Sha256::new();
 
     hasher.update(base_image.as_bytes());
@@ -98,7 +98,7 @@ async fn compute_image_tag(base_image: &str, layers: &[ResolvedLayer]) -> Minota
     let hash = hex::encode(hasher.finalize());
     let short_hash = &hash[..12];
 
-    Ok(format!("minotaur-composed-{}", short_hash))
+    Ok(format!("mino-composed-{}", short_hash))
 }
 
 /// Merge environment variables from all layers.
@@ -133,25 +133,25 @@ fn merge_env(layers: &[ResolvedLayer]) -> HashMap<String, String> {
 
 /// Prepare a build directory with Dockerfile and install scripts.
 ///
-/// Uses `~/.local/share/minotaur/builds/` so that OrbStack can access it
+/// Uses `~/.local/share/mino/builds/` so that OrbStack can access it
 /// on macOS (OrbStack auto-mounts user home).
 async fn prepare_build_dir(
     base_image: &str,
     layers: &[ResolvedLayer],
     env: &HashMap<String, String>,
-) -> MinotaurResult<PathBuf> {
+) -> MinoResult<PathBuf> {
     let state_dir = state_dir()?;
     let builds_dir = state_dir.join("builds");
     tokio::fs::create_dir_all(&builds_dir)
         .await
-        .map_err(|e| MinotaurError::io("creating builds directory", e))?;
+        .map_err(|e| MinoError::io("creating builds directory", e))?;
 
     // Use a unique temp dir under builds/
     let build_id = uuid::Uuid::new_v4().to_string();
     let build_dir = builds_dir.join(&build_id);
     tokio::fs::create_dir_all(&build_dir)
         .await
-        .map_err(|e| MinotaurError::io("creating build directory", e))?;
+        .map_err(|e| MinoError::io("creating build directory", e))?;
 
     // Write install scripts
     for layer in layers {
@@ -160,14 +160,14 @@ async fn prepare_build_dir(
         let script_path = build_dir.join(&script_name);
         tokio::fs::write(&script_path, &script_content)
             .await
-            .map_err(|e| MinotaurError::io(format!("writing {}", script_name), e))?;
+            .map_err(|e| MinoError::io(format!("writing {}", script_name), e))?;
     }
 
     // Generate and write Dockerfile
     let dockerfile = generate_dockerfile(base_image, layers, env);
     tokio::fs::write(build_dir.join("Dockerfile"), &dockerfile)
         .await
-        .map_err(|e| MinotaurError::io("writing Dockerfile", e))?;
+        .map_err(|e| MinoError::io("writing Dockerfile", e))?;
 
     Ok(build_dir)
 }
@@ -232,11 +232,11 @@ fn dockerfile_quote(value: &str) -> String {
     }
 }
 
-/// Get the minotaur state directory (`~/.local/share/minotaur/`)
-fn state_dir() -> MinotaurResult<PathBuf> {
+/// Get the mino state directory (`~/.local/share/mino/`)
+fn state_dir() -> MinoResult<PathBuf> {
     let dir = dirs::data_local_dir()
-        .ok_or_else(|| MinotaurError::Internal("Could not determine data directory".to_string()))?
-        .join("minotaur");
+        .ok_or_else(|| MinoError::Internal("Could not determine data directory".to_string()))?
+        .join("mino");
     Ok(dir)
 }
 
@@ -347,9 +347,9 @@ ONLY_B = "b_val"
     fn generate_dockerfile_structure() {
         let layers = vec![rust_layer(), ts_layer()];
         let env = merge_env(&layers);
-        let dockerfile = generate_dockerfile("ghcr.io/dean0x/minotaur-base:latest", &layers, &env);
+        let dockerfile = generate_dockerfile("ghcr.io/dean0x/mino-base:latest", &layers, &env);
 
-        assert!(dockerfile.contains("FROM ghcr.io/dean0x/minotaur-base:latest"));
+        assert!(dockerfile.contains("FROM ghcr.io/dean0x/mino-base:latest"));
         assert!(dockerfile.contains("# Layer: rust"));
         assert!(dockerfile.contains("COPY install-rust.sh /tmp/install-rust.sh"));
         assert!(dockerfile.contains("# Layer: typescript"));
