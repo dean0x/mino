@@ -587,10 +587,7 @@ impl ContainerRuntime for OrbStackRuntime {
                 let mountpoint = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !mountpoint.is_empty() {
                     // Get directory size via du
-                    let du_output = self
-                        .orbstack
-                        .exec(&["du", "-sb", &mountpoint])
-                        .await?;
+                    let du_output = self.orbstack.exec(&["du", "-sb", &mountpoint]).await?;
                     if du_output.status.success() {
                         let du_str = String::from_utf8_lossy(&du_output.stdout);
                         if let Some(size_str) = du_str.split_whitespace().next() {
