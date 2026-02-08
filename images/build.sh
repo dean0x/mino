@@ -408,6 +408,32 @@ main() {
         done
     fi
 
+    # Layer validation phase
+    log_section "Layer Validation"
+    for img in "${images[@]}"; do
+        if [[ "$img" == "base" ]]; then
+            continue
+        fi
+        local layer_dir="$SCRIPT_DIR/$img"
+        if [[ -f "$layer_dir/layer.toml" ]]; then
+            log_success "$img: layer.toml exists"
+        else
+            log_error "$img: layer.toml missing"
+            FAILURES+=("$img: layer.toml missing")
+        fi
+        if [[ -f "$layer_dir/install.sh" ]]; then
+            if [[ -x "$layer_dir/install.sh" ]]; then
+                log_success "$img: install.sh exists and is executable"
+            else
+                log_error "$img: install.sh not executable"
+                FAILURES+=("$img: install.sh not executable")
+            fi
+        else
+            log_error "$img: install.sh missing"
+            FAILURES+=("$img: install.sh missing")
+        fi
+    done
+
     # Test phase
     log_section "Test Phase"
 

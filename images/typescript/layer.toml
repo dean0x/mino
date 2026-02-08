@@ -1,0 +1,15 @@
+[layer]
+name = "typescript"
+description = "Node.js + pnpm + TypeScript toolchain"
+version = "1"
+
+[env]
+PNPM_HOME = "/cache/pnpm"
+npm_config_cache = "/cache/npm"
+NODE_ENV = "development"
+
+[env.path_prepend]
+dirs = ["/cache/pnpm"]
+
+[cache]
+paths = ["/cache/pnpm", "/cache/npm"]

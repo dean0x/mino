@@ -41,8 +41,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String>;
 
     /// Create a container without starting it. Returns container ID.
-    async fn create(&self, config: &ContainerConfig, command: &[String])
-        -> MinotaurResult<String>;
+    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String>;
 
     /// Start a created container attached to the terminal. Returns exit code.
     async fn start_attached(&self, container_id: &str) -> MinotaurResult<i32>;

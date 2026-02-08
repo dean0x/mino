@@ -22,7 +22,11 @@ pub async fn execute(args: CacheArgs, config: &Config) -> MinotaurResult<()> {
         CacheAction::List { format } => list_caches(&*runtime, format, config).await,
         CacheAction::Info { project } => show_project_info(&*runtime, project, config).await,
         CacheAction::Gc { days, dry_run } => gc_caches(&*runtime, config, days, dry_run).await,
-        CacheAction::Clear { all: _all, images, yes } => {
+        CacheAction::Clear {
+            all: _all,
+            images,
+            yes,
+        } => {
             if images {
                 clear_composed_images(&*runtime, yes).await
             } else {
@@ -502,8 +506,12 @@ async fn clear_composed_images(
     }
 
     if !skip_confirm {
-        let confirmed =
-            ui::confirm(&ctx, "Are you sure you want to clear composed images?", false).await?;
+        let confirmed = ui::confirm(
+            &ctx,
+            "Are you sure you want to clear composed images?",
+            false,
+        )
+        .await?;
         if !confirmed {
             ui::outro_warn(&ctx, "Aborted.");
             return Ok(());

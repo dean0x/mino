@@ -58,8 +58,8 @@ async fn run() -> MinotaurResult<()> {
         debug!("Local config discovery disabled (--no-local)");
         None
     } else {
-        let cwd =
-            std::env::current_dir().map_err(|e| minotaur::error::MinotaurError::io("getting current directory", e))?;
+        let cwd = std::env::current_dir()
+            .map_err(|e| minotaur::error::MinotaurError::io("getting current directory", e))?;
         let found = ConfigManager::find_local_config(&cwd);
         if let Some(ref path) = found {
             debug!("Found local config: {}", path.display());

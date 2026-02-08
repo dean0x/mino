@@ -17,6 +17,8 @@ on:
     branches: [main]
     paths:
       - 'images/**'
+      - 'images/**/layer.toml'
+      - 'images/**/install.sh'
       - '.github/workflows/images.yml'
   schedule:
     # Weekly rebuild for security updates (Mondays at 00:00 UTC)
@@ -138,10 +140,28 @@ jobs:
           cache-to: type=gha,mode=max
           no-cache: ${{ inputs.force_rebuild || false }}
 
+  validate-layers:
+    name: Validate layer structure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate layer files exist
+        run: |
+          for lang in typescript rust; do
+            echo "Checking $lang..."
+            test -f "images/$lang/layer.toml" || { echo "FAIL: images/$lang/layer.toml missing"; exit 1; }
+            test -f "images/$lang/install.sh" || { echo "FAIL: images/$lang/install.sh missing"; exit 1; }
+            test -x "images/$lang/install.sh" || { echo "FAIL: images/$lang/install.sh not executable"; exit 1; }
+            echo "  layer.toml: OK"
+            echo "  install.sh: OK (executable)"
+          done
+
   verify:
     name: Verify images
     runs-on: ubuntu-latest
-    needs: [build-base, build-language-images]
+    needs: [build-base, build-language-images, validate-layers]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

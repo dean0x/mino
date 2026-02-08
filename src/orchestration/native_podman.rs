@@ -114,7 +114,6 @@ impl NativePodmanRuntime {
             })
         }
     }
-
 }
 
 impl Default for NativePodmanRuntime {
@@ -181,11 +180,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         }
     }
 
-    async fn create(
-        &self,
-        config: &ContainerConfig,
-        command: &[String],
-    ) -> MinotaurResult<String> {
+    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String> {
         // Ensure image is available
         if !self.image_exists(&config.image).await? {
             self.pull(&config.image).await?;

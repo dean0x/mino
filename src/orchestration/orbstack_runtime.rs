@@ -76,7 +76,6 @@ impl OrbStackRuntime {
             })
         }
     }
-
 }
 
 #[async_trait]
@@ -156,11 +155,7 @@ impl ContainerRuntime for OrbStackRuntime {
         }
     }
 
-    async fn create(
-        &self,
-        config: &ContainerConfig,
-        command: &[String],
-    ) -> MinotaurResult<String> {
+    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String> {
         // Ensure image is available
         if !self.image_exists(&config.image).await? {
             self.pull(&config.image).await?;
@@ -343,10 +338,7 @@ impl ContainerRuntime for OrbStackRuntime {
     }
 
     async fn image_remove(&self, image: &str) -> MinotaurResult<()> {
-        let output = self
-            .orbstack
-            .exec(&["podman", "rmi", image])
-            .await?;
+        let output = self.orbstack.exec(&["podman", "rmi", image]).await?;
 
         if output.status.success() {
             Ok(())

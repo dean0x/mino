@@ -11,9 +11,8 @@ LABEL org.opencontainers.image.description="Minotaur TypeScript development imag
 
 USER root
 
-# Install pnpm, tsx, typescript, npm-check-updates, biome, turbo, vite
-RUN npm install -g pnpm tsx typescript npm-check-updates @biomejs/biome turbo vite \
-    && npm cache clean --force
+COPY install.sh /tmp/install-typescript.sh
+RUN chmod +x /tmp/install-typescript.sh && /tmp/install-typescript.sh && rm /tmp/install-typescript.sh
 
 USER developer
 

@@ -528,11 +528,7 @@ async fn upgrade_podman_in_vm(ctx: &UiContext, vm_name: &str, vm_distro: &str) -
 ///
 /// Note: `podman info --format {{.Host.Security.Rootless}}` returns true even when
 /// subuid/subgid aren't configured, so we must explicitly check those files.
-async fn check_rootless_mode_in_vm(
-    ctx: &UiContext,
-    args: &SetupArgs,
-    vm_name: &str,
-) -> StepResult {
+async fn check_rootless_mode_in_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &str) -> StepResult {
     // Get the username in the VM
     let whoami_output = Command::new("orb")
         .args(["-m", vm_name, "whoami"])
@@ -542,9 +538,7 @@ async fn check_rootless_mode_in_vm(
         .await;
 
     let username = match whoami_output {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         _ => {
             ui::step_error(ctx, "Could not determine VM username");
             return StepResult::Failed;
@@ -554,7 +548,14 @@ async fn check_rootless_mode_in_vm(
     // Check if subuid entry exists for the user
     // We grep for "^username:" to ensure exact match at start of line
     let subuid_check = Command::new("orb")
-        .args(["-m", vm_name, "grep", "-q", &format!("^{}:", username), "/etc/subuid"])
+        .args([
+            "-m",
+            vm_name,
+            "grep",
+            "-q",
+            &format!("^{}:", username),
+            "/etc/subuid",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -564,7 +565,14 @@ async fn check_rootless_mode_in_vm(
 
     // Check if subgid entry exists for the user
     let subgid_check = Command::new("orb")
-        .args(["-m", vm_name, "grep", "-q", &format!("^{}:", username), "/etc/subgid"])
+        .args([
+            "-m",
+            vm_name,
+            "grep",
+            "-q",
+            &format!("^{}:", username),
+            "/etc/subgid",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -587,7 +595,10 @@ async fn check_rootless_mode_in_vm(
     }
 
     ui::step_warn(ctx, "Configuring rootless Podman in VM...");
-    ui::remark(ctx, &format!("Adding subuid/subgid entries for '{}'", username));
+    ui::remark(
+        ctx,
+        &format!("Adding subuid/subgid entries for '{}'", username),
+    );
 
     if !has_subuid {
         // Add subuid entry
