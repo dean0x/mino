@@ -7,6 +7,7 @@ use crate::error::MinotaurResult;
 use crate::orchestration::podman::ContainerConfig;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Information about a container volume
 #[derive(Debug, Clone)]
@@ -66,6 +67,15 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Check if a container image exists locally
     async fn image_exists(&self, image: &str) -> MinotaurResult<bool>;
+
+    /// Build an image from a context directory
+    async fn build_image(&self, context_dir: &Path, tag: &str) -> MinotaurResult<()>;
+
+    /// Remove a container image
+    async fn image_remove(&self, image: &str) -> MinotaurResult<()>;
+
+    /// List images matching a name prefix
+    async fn image_list_prefixed(&self, prefix: &str) -> MinotaurResult<Vec<String>>;
 
     /// Get the human-readable runtime name for display
     fn runtime_name(&self) -> &'static str;

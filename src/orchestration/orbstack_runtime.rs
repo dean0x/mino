@@ -9,6 +9,7 @@ use crate::orchestration::podman::ContainerConfig;
 use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::Path;
 use tracing::debug;
 
 /// Container runtime using OrbStack VM + Podman (for macOS)
@@ -322,6 +323,70 @@ impl ContainerRuntime for OrbStackRuntime {
             .exec(&["podman", "image", "exists", image])
             .await?;
         Ok(output.status.success())
+    }
+
+    async fn build_image(&self, context_dir: &Path, tag: &str) -> MinotaurResult<()> {
+        let context_str = context_dir.display().to_string();
+        let exit_code = self
+            .orbstack
+            .exec_interactive(&["podman", "build", "-t", tag, &context_str])
+            .await?;
+
+        if exit_code != 0 {
+            return Err(MinotaurError::ImageBuild {
+                tag: tag.to_string(),
+                reason: format!("build exited with code {}", exit_code),
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn image_remove(&self, image: &str) -> MinotaurResult<()> {
+        let output = self
+            .orbstack
+            .exec(&["podman", "rmi", image])
+            .await?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("image not known") {
+                Ok(())
+            } else {
+                Err(MinotaurError::command_exec("podman rmi", stderr))
+            }
+        }
+    }
+
+    async fn image_list_prefixed(&self, prefix: &str) -> MinotaurResult<Vec<String>> {
+        let filter = format!("reference={}*", prefix);
+        let output = self
+            .orbstack
+            .exec(&[
+                "podman",
+                "images",
+                "--filter",
+                &filter,
+                "--format",
+                "{{.Repository}}:{{.Tag}}",
+            ])
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(MinotaurError::command_exec("podman images", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let images: Vec<String> = stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(String::from)
+            .collect();
+
+        Ok(images)
     }
 
     fn runtime_name(&self) -> &'static str {
