@@ -280,7 +280,7 @@ pub enum CacheAction {
     /// Clear caches
     Clear {
         /// Clear all cache volumes
-        #[arg(long, required_unless_present = "images")]
+        #[arg(long, required_unless_present = "images", conflicts_with = "images")]
         all: bool,
 
         /// Clear composed layer images only

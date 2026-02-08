@@ -22,11 +22,7 @@ pub async fn execute(args: CacheArgs, config: &Config) -> MinotaurResult<()> {
         CacheAction::List { format } => list_caches(&*runtime, format, config).await,
         CacheAction::Info { project } => show_project_info(&*runtime, project, config).await,
         CacheAction::Gc { days, dry_run } => gc_caches(&*runtime, config, days, dry_run).await,
-        CacheAction::Clear {
-            all: _all,
-            images,
-            yes,
-        } => {
+        CacheAction::Clear { images, yes, .. } => {
             if images {
                 clear_composed_images(&*runtime, yes).await
             } else {
@@ -466,15 +462,14 @@ async fn clear_all_caches(
     let mut spinner = ui::TaskSpinner::new(&ctx);
     spinner.start("Clearing caches...");
 
-    let mut removed = 0;
+    let count = volumes.len();
     for vol in volumes {
         runtime.volume_remove(&vol.name).await?;
-        removed += 1;
     }
 
     spinner.stop(&format!(
         "Cleared {} cache(s), freed {}",
-        removed,
+        count,
         format_bytes(total_size)
     ));
 
@@ -521,13 +516,11 @@ async fn clear_composed_images(
     let mut spinner = ui::TaskSpinner::new(&ctx);
     spinner.start("Clearing composed images...");
 
-    let mut removed = 0;
     for img in &images {
         runtime.image_remove(img).await?;
-        removed += 1;
     }
 
-    spinner.stop(&format!("Cleared {} composed image(s)", removed));
+    spinner.stop(&format!("Cleared {} composed image(s)", images.len()));
 
     Ok(())
 }

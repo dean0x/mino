@@ -68,15 +68,16 @@ fn resolve_layer_names(args: &RunArgs, config: &Config) -> Option<Vec<String>> {
 
 /// Resolve image from layers or single image alias.
 async fn resolve_image_or_layers(
+    layer_names: Option<Vec<String>>,
     args: &RunArgs,
     config: &Config,
     runtime: &dyn ContainerRuntime,
     project_dir: &Path,
 ) -> MinotaurResult<ImageResolution> {
-    if let Some(names) = resolve_layer_names(args, config) {
+    if let Some(names) = layer_names {
         let resolved = resolve_layers(&names, project_dir).await?;
         let base_image = resolve_image_alias(&config.container.image);
-        let result = compose_image(runtime, &base_image, &resolved, project_dir).await?;
+        let result = compose_image(runtime, &base_image, &resolved).await?;
 
         if result.was_cached {
             debug!("Using cached composed image: {}", result.image_tag);
@@ -127,10 +128,12 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
     runtime.ensure_ready().await?;
 
     // Resolve image or compose from layers
-    if resolve_layer_names(&args, config).is_some() {
+    let layer_names = resolve_layer_names(&args, config);
+    if layer_names.is_some() {
         spinner.message("Resolving layers...");
     }
-    let resolution = resolve_image_or_layers(&args, config, &*runtime, &project_dir).await?;
+    let resolution =
+        resolve_image_or_layers(layer_names, &args, config, &*runtime, &project_dir).await?;
 
     // Setup caching (if enabled)
     spinner.message("Setting up caches...");

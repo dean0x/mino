@@ -9,7 +9,7 @@ use crate::layer::resolve::ResolvedLayer;
 use crate::orchestration::ContainerRuntime;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::debug;
 
 /// Result of composing an image from layers
@@ -34,7 +34,6 @@ pub async fn compose_image(
     runtime: &dyn ContainerRuntime,
     base_image: &str,
     layers: &[ResolvedLayer],
-    _project_dir: &Path,
 ) -> MinotaurResult<ComposedImageResult> {
     // Compute content-addressed hash
     let image_tag = compute_image_tag(base_image, layers).await?;
@@ -54,7 +53,7 @@ pub async fn compose_image(
     }
 
     // Build the image
-    let build_dir = prepare_build_dir(base_image, layers).await?;
+    let build_dir = prepare_build_dir(base_image, layers, &env).await?;
 
     let result = runtime.build_image(&build_dir, &image_tag).await;
 
@@ -133,7 +132,11 @@ fn merge_env(layers: &[ResolvedLayer]) -> HashMap<String, String> {
 ///
 /// Uses `~/.local/share/minotaur/builds/` so that OrbStack can access it
 /// on macOS (OrbStack auto-mounts user home).
-async fn prepare_build_dir(base_image: &str, layers: &[ResolvedLayer]) -> MinotaurResult<PathBuf> {
+async fn prepare_build_dir(
+    base_image: &str,
+    layers: &[ResolvedLayer],
+    env: &HashMap<String, String>,
+) -> MinotaurResult<PathBuf> {
     let state_dir = state_dir()?;
     let builds_dir = state_dir.join("builds");
     tokio::fs::create_dir_all(&builds_dir)
@@ -158,7 +161,7 @@ async fn prepare_build_dir(base_image: &str, layers: &[ResolvedLayer]) -> Minota
     }
 
     // Generate and write Dockerfile
-    let dockerfile = generate_dockerfile(base_image, layers);
+    let dockerfile = generate_dockerfile(base_image, layers, env);
     tokio::fs::write(build_dir.join("Dockerfile"), &dockerfile)
         .await
         .map_err(|e| MinotaurError::io("writing Dockerfile", e))?;
@@ -170,7 +173,7 @@ async fn prepare_build_dir(base_image: &str, layers: &[ResolvedLayer]) -> Minota
 ///
 /// Each layer gets its own RUN instruction for Podman build cache
 /// granularity. ENV vars are set after all layers are installed.
-fn generate_dockerfile(base_image: &str, layers: &[ResolvedLayer]) -> String {
+fn generate_dockerfile(base_image: &str, layers: &[ResolvedLayer], env: &HashMap<String, String>) -> String {
     let mut lines = Vec::new();
 
     lines.push(format!("FROM {}", base_image));
@@ -194,7 +197,6 @@ fn generate_dockerfile(base_image: &str, layers: &[ResolvedLayer]) -> String {
     lines.push("USER developer".to_string());
 
     // Set merged environment variables
-    let env = merge_env(layers);
     let mut env_keys: Vec<&String> = env.keys().collect();
     env_keys.sort();
 
@@ -212,10 +214,12 @@ fn generate_dockerfile(base_image: &str, layers: &[ResolvedLayer]) -> String {
 
 /// Quote a value for Dockerfile ENV instruction.
 /// Values containing $ (variable references) must be quoted properly.
+/// Embedded double quotes and backslashes are escaped to prevent injection.
 fn dockerfile_quote(value: &str) -> String {
-    if value.contains('$') || value.contains(' ') || value.contains('"') {
-        // Use double quotes, which allow variable expansion
-        format!("\"{}\"", value)
+    if value.contains('$') || value.contains(' ') || value.contains('"') || value.contains('\\') {
+        // Escape backslashes first, then double quotes
+        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{}\"", escaped)
     } else {
         value.to_string()
     }
@@ -235,7 +239,7 @@ mod tests {
     use crate::layer::manifest::LayerManifest;
     use crate::layer::resolve::{LayerScript, LayerSource, ResolvedLayer};
 
-    fn make_layer(_name: &str, manifest_toml: &str, script: &'static str) -> ResolvedLayer {
+    fn make_layer(manifest_toml: &str, script: &'static str) -> ResolvedLayer {
         ResolvedLayer {
             manifest: LayerManifest::parse(manifest_toml).unwrap(),
             install_script: LayerScript::Embedded(script),
@@ -245,7 +249,6 @@ mod tests {
 
     fn rust_layer() -> ResolvedLayer {
         make_layer(
-            "rust",
             r#"
 [layer]
 name = "rust"
@@ -268,7 +271,6 @@ paths = ["/cache/cargo"]
 
     fn ts_layer() -> ResolvedLayer {
         make_layer(
-            "typescript",
             r#"
 [layer]
 name = "typescript"
@@ -292,7 +294,6 @@ paths = ["/cache/pnpm"]
     #[test]
     fn merge_env_last_wins() {
         let layer_a = make_layer(
-            "a",
             r#"
 [layer]
 name = "a"
@@ -306,7 +307,6 @@ ONLY_A = "a_val"
         );
 
         let layer_b = make_layer(
-            "b",
             r#"
 [layer]
 name = "b"
@@ -339,7 +339,8 @@ ONLY_B = "b_val"
     #[test]
     fn generate_dockerfile_structure() {
         let layers = vec![rust_layer(), ts_layer()];
-        let dockerfile = generate_dockerfile("ghcr.io/dean0x/minotaur-base:latest", &layers);
+        let env = merge_env(&layers);
+        let dockerfile = generate_dockerfile("ghcr.io/dean0x/minotaur-base:latest", &layers, &env);
 
         assert!(dockerfile.contains("FROM ghcr.io/dean0x/minotaur-base:latest"));
         assert!(dockerfile.contains("# Layer: rust"));
@@ -400,6 +401,22 @@ ONLY_B = "b_val"
         assert_eq!(
             dockerfile_quote("/opt/cargo/bin:${PATH}"),
             "\"/opt/cargo/bin:${PATH}\""
+        );
+    }
+
+    #[test]
+    fn dockerfile_quote_escapes_embedded_quotes() {
+        assert_eq!(
+            dockerfile_quote("value with \"quotes\""),
+            "\"value with \\\"quotes\\\"\""
+        );
+    }
+
+    #[test]
+    fn dockerfile_quote_escapes_backslashes() {
+        assert_eq!(
+            dockerfile_quote("path\\with\\backslashes"),
+            "\"path\\\\with\\\\backslashes\""
         );
     }
 }
