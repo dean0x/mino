@@ -13,6 +13,7 @@ const INIT_TEMPLATE: &str = r#"# Minotaur project configuration
 
 [container]
 # image = "typescript"
+# layers = ["rust", "typescript"]
 # network = "host"
 # workdir = "/workspace"
 

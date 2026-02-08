@@ -22,7 +22,13 @@ pub async fn execute(args: CacheArgs, config: &Config) -> MinotaurResult<()> {
         CacheAction::List { format } => list_caches(&*runtime, format, config).await,
         CacheAction::Info { project } => show_project_info(&*runtime, project, config).await,
         CacheAction::Gc { days, dry_run } => gc_caches(&*runtime, config, days, dry_run).await,
-        CacheAction::Clear { all: _, yes } => clear_all_caches(&*runtime, yes).await,
+        CacheAction::Clear { all: _all, images, yes } => {
+            if images {
+                clear_composed_images(&*runtime, yes).await
+            } else {
+                clear_all_caches(&*runtime, yes).await
+            }
+        }
     }
 }
 
@@ -467,6 +473,53 @@ async fn clear_all_caches(
         removed,
         format_bytes(total_size)
     ));
+
+    Ok(())
+}
+
+/// Clear composed layer images
+async fn clear_composed_images(
+    runtime: &dyn ContainerRuntime,
+    skip_confirm: bool,
+) -> MinotaurResult<()> {
+    let ctx = UiContext::detect();
+    let images = runtime.image_list_prefixed("minotaur-composed-").await?;
+
+    if images.is_empty() {
+        ui::intro(&ctx, "Clear Composed Images");
+        ui::step_info(&ctx, "No composed images found.");
+        return Ok(());
+    }
+
+    ui::intro(&ctx, "Clear Composed Images");
+    ui::step_warn(
+        &ctx,
+        &format!("This will remove {} composed image(s)", images.len()),
+    );
+
+    for img in &images {
+        ui::remark(&ctx, img);
+    }
+
+    if !skip_confirm {
+        let confirmed =
+            ui::confirm(&ctx, "Are you sure you want to clear composed images?", false).await?;
+        if !confirmed {
+            ui::outro_warn(&ctx, "Aborted.");
+            return Ok(());
+        }
+    }
+
+    let mut spinner = ui::TaskSpinner::new(&ctx);
+    spinner.start("Clearing composed images...");
+
+    let mut removed = 0;
+    for img in &images {
+        runtime.image_remove(img).await?;
+        removed += 1;
+    }
+
+    spinner.stop(&format!("Cleared {} composed image(s)", removed));
 
     Ok(())
 }

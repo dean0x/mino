@@ -91,6 +91,10 @@ pub struct ContainerConfig {
 
     /// Working directory inside container
     pub workdir: String,
+
+    /// Composable layers (overrides image when non-empty)
+    #[serde(default)]
+    pub layers: Vec<String>,
 }
 
 impl Default for ContainerConfig {
@@ -101,6 +105,7 @@ impl Default for ContainerConfig {
             volumes: vec![],
             network: "host".to_string(),
             workdir: "/workspace".to_string(),
+            layers: vec![],
         }
     }
 }
