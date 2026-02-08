@@ -3,6 +3,9 @@
 /// Image registry prefix for minotaur images
 const IMAGE_REGISTRY: &str = "ghcr.io/dean0x";
 
+/// Default base image for layer composition (requires developer user, zsh, etc.)
+const LAYER_BASE_IMAGE: &str = "ghcr.io/dean0x/minotaur-base:latest";
+
 use crate::audit::AuditLog;
 use crate::cache::{
     detect_lockfiles, format_bytes, gb_to_bytes, labels, CacheMount, CacheSizeStatus, CacheState,
@@ -76,8 +79,10 @@ async fn resolve_image_or_layers(
 ) -> MinotaurResult<ImageResolution> {
     if let Some(names) = layer_names {
         let resolved = resolve_layers(&names, project_dir).await?;
-        let base_image = resolve_image_alias(&config.container.image);
-        let result = compose_image(runtime, &base_image, &resolved).await?;
+        // Layers compose on top of minotaur-base (which has developer user, zsh, etc.)
+        // not the user's config image (which may be bare fedora/alpine)
+        let base_image = LAYER_BASE_IMAGE;
+        let result = compose_image(runtime, base_image, &resolved).await?;
 
         if result.was_cached {
             debug!("Using cached composed image: {}", result.image_tag);

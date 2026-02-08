@@ -39,21 +39,23 @@ pub async fn compose_image(
     let image_tag = compute_image_tag(base_image, layers).await?;
     debug!("Composed image tag: {}", image_tag);
 
-    // Merge environment variables (last layer wins for conflicts)
-    let env = merge_env(layers);
+    // Merge environment variables for the Dockerfile (baked into image)
+    let build_env = merge_env(layers);
 
     // Check if image already exists
     if runtime.image_exists(&image_tag).await.unwrap_or(false) {
         debug!("Composed image already cached: {}", image_tag);
         return Ok(ComposedImageResult {
             image_tag,
-            env,
+            // Env vars are baked into the image via Dockerfile ENV instructions.
+            // Do NOT re-inject at runtime — ${PATH} expansion only works in Dockerfile.
+            env: HashMap::new(),
             was_cached: true,
         });
     }
 
     // Build the image
-    let build_dir = prepare_build_dir(base_image, layers, &env).await?;
+    let build_dir = prepare_build_dir(base_image, layers, &build_env).await?;
 
     let result = runtime.build_image(&build_dir, &image_tag).await;
 
@@ -64,7 +66,8 @@ pub async fn compose_image(
 
     Ok(ComposedImageResult {
         image_tag,
-        env,
+        // Env vars are baked into the image via Dockerfile ENV instructions.
+        env: HashMap::new(),
         was_cached: false,
     })
 }
@@ -173,7 +176,11 @@ async fn prepare_build_dir(
 ///
 /// Each layer gets its own RUN instruction for Podman build cache
 /// granularity. ENV vars are set after all layers are installed.
-fn generate_dockerfile(base_image: &str, layers: &[ResolvedLayer], env: &HashMap<String, String>) -> String {
+fn generate_dockerfile(
+    base_image: &str,
+    layers: &[ResolvedLayer],
+    env: &HashMap<String, String>,
+) -> String {
     let mut lines = Vec::new();
 
     lines.push(format!("FROM {}", base_image));

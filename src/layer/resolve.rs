@@ -86,7 +86,9 @@ pub async fn resolve_layers(
 /// Validate that a layer name is safe (no path traversal, no special characters).
 fn validate_layer_name(name: &str) -> MinotaurResult<()> {
     if name.is_empty() {
-        return Err(MinotaurError::User("Layer name cannot be empty".to_string()));
+        return Err(MinotaurError::User(
+            "Layer name cannot be empty".to_string(),
+        ));
     }
     if name.contains('/') || name.contains('\\') || name.contains("..") || name.contains('\0') {
         return Err(MinotaurError::User(format!(
@@ -111,8 +113,7 @@ async fn resolve_single(name: &str, project_dir: &Path) -> MinotaurResult<Resolv
     validate_layer_name(name)?;
 
     let project_layer_dir = project_dir.join(".minotaur").join("layers").join(name);
-    let global_layer_dir = dirs::config_dir()
-        .map(|d| d.join("minotaur").join("layers").join(name));
+    let global_layer_dir = dirs::config_dir().map(|d| d.join("minotaur").join("layers").join(name));
 
     // 1. Project-local
     if let Some(layer) = try_resolve_from_dir(&project_layer_dir, LayerSource::ProjectLocal).await?
