@@ -101,7 +101,7 @@ mino run [OPTIONS] [-- COMMAND...]
 |--------|-------------|
 | `-n, --name <NAME>` | Session name (auto-generated if omitted) |
 | `-p, --project <PATH>` | Project directory to mount (default: current dir) |
-| `--image <IMAGE>` | Container image (default: fedora:41). Aliases: `typescript`/`ts`/`node`, `rust`/`cargo`, `base` |
+| `--image <IMAGE>` | Container image (default: fedora:43). Aliases: `typescript`/`ts`/`node`, `rust`/`cargo`, `base` |
 | `--aws` | Include AWS credentials |
 | `--gcp` | Include GCP credentials |
 | `--azure` | Include Azure credentials |
@@ -206,7 +206,7 @@ distro = "fedora"
 # memory_mb = 4096     # Memory in MB (optional)
 
 [container]
-image = "fedora:41"
+image = "fedora:43"
 workdir = "/workspace"
 network = "host"
 packages = ["git", "curl", "which"]  # Installed on first run

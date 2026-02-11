@@ -100,7 +100,7 @@ pub struct ContainerConfig {
 impl Default for ContainerConfig {
     fn default() -> Self {
         Self {
-            image: "fedora:41".to_string(),
+            image: "fedora:43".to_string(),
             env: HashMap::new(),
             volumes: vec![],
             network: "host".to_string(),
@@ -281,6 +281,6 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.vm.name, "custom-vm");
-        assert_eq!(config.container.image, "fedora:41"); // default preserved
+        assert_eq!(config.container.image, "fedora:43"); // default preserved
     }
 }

@@ -282,7 +282,7 @@ mod tests {
         let base: Value = toml::from_str(
             r#"
             [container]
-            image = "fedora:41"
+            image = "fedora:43"
             network = "host"
             "#,
         )
@@ -306,7 +306,7 @@ mod tests {
         let base: Value = toml::from_str(
             r#"
             [container]
-            image = "fedora:41"
+            image = "fedora:43"
             "#,
         )
         .unwrap();
@@ -325,7 +325,7 @@ mod tests {
             table["container"].as_table().unwrap()["image"]
                 .as_str()
                 .unwrap(),
-            "fedora:41"
+            "fedora:43"
         );
         // Overlay credentials added
         let aws = table["credentials"].as_table().unwrap()["aws"]
@@ -374,7 +374,7 @@ mod tests {
         let base: Value = toml::from_str(
             r#"
             [container]
-            image = "fedora:41"
+            image = "fedora:43"
             "#,
         )
         .unwrap();
@@ -440,7 +440,7 @@ mod tests {
             &global_path,
             r#"
             [container]
-            image = "fedora:41"
+            image = "fedora:43"
             network = "host"
 
             [session]

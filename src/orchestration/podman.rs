@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn container_config_default() {
         let config = ContainerConfig {
-            image: "fedora:41".to_string(),
+            image: "fedora:43".to_string(),
             workdir: "/workspace".to_string(),
             volumes: vec![],
             env: HashMap::new(),
@@ -53,6 +53,6 @@ mod tests {
             tty: true,
         };
 
-        assert_eq!(config.image, "fedora:41");
+        assert_eq!(config.image, "fedora:43");
     }
 }

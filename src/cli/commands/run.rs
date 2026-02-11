@@ -843,8 +843,8 @@ mod tests {
             "ghcr.io/custom/image:v1"
         );
         assert_eq!(
-            resolve_image_alias("docker.io/library/fedora:41"),
-            "docker.io/library/fedora:41"
+            resolve_image_alias("docker.io/library/fedora:43"),
+            "docker.io/library/fedora:43"
         );
     }
 
