@@ -1,17 +1,17 @@
-//! Configuration management for Minotaur
+//! Configuration management for Mino
 
 pub mod schema;
 
 pub use schema::Config;
 
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use toml::Value;
 use tracing::debug;
 
 /// Local config filename
-const LOCAL_CONFIG_FILENAME: &str = ".minotaur.toml";
+const LOCAL_CONFIG_FILENAME: &str = ".mino.toml";
 
 /// Configuration manager
 pub struct ConfigManager {
@@ -35,7 +35,7 @@ impl ConfigManager {
     pub fn default_config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("minotaur")
+            .join("mino")
             .join("config.toml")
     }
 
@@ -44,7 +44,7 @@ impl ConfigManager {
         dirs::state_dir()
             .or_else(dirs::data_local_dir)
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("minotaur")
+            .join("mino")
     }
 
     /// Get the sessions directory path
@@ -62,7 +62,7 @@ impl ConfigManager {
         Self::state_dir().join("audit.log")
     }
 
-    /// Search from `start_dir` upward for `.minotaur.toml`.
+    /// Search from `start_dir` upward for `.mino.toml`.
     /// Stops at filesystem root. Returns the path if found.
     pub fn find_local_config(start_dir: &Path) -> Option<PathBuf> {
         let mut current = start_dir.to_path_buf();
@@ -99,20 +99,20 @@ impl ConfigManager {
 
     /// Load merged configuration: global config merged with optional local config.
     ///
-    /// Precedence: local `.minotaur.toml` > global `~/.config/minotaur/config.toml` > defaults.
+    /// Precedence: local `.mino.toml` > global `~/.config/mino/config.toml` > defaults.
     /// (CLI flags override the result separately at the call site.)
-    pub async fn load_merged(&self, local_path: Option<&Path>) -> MinotaurResult<Config> {
+    pub async fn load_merged(&self, local_path: Option<&Path>) -> MinoResult<Config> {
         // Load global as raw TOML value (empty table if file missing)
         let global_value = if self.config_path.exists() {
             let content = fs::read_to_string(&self.config_path).await.map_err(|e| {
-                MinotaurError::io(
+                MinoError::io(
                     format!("reading config from {}", self.config_path.display()),
                     e,
                 )
             })?;
             content
                 .parse::<Value>()
-                .map_err(|e| MinotaurError::ConfigInvalid {
+                .map_err(|e| MinoError::ConfigInvalid {
                     path: self.config_path.clone(),
                     reason: e.to_string(),
                 })?
@@ -125,12 +125,12 @@ impl ConfigManager {
         let merged_value = match local_path {
             Some(path) => {
                 let content = fs::read_to_string(path).await.map_err(|e| {
-                    MinotaurError::io(format!("reading local config from {}", path.display()), e)
+                    MinoError::io(format!("reading local config from {}", path.display()), e)
                 })?;
                 let local_value =
                     content
                         .parse::<Value>()
-                        .map_err(|e| MinotaurError::ConfigInvalid {
+                        .map_err(|e| MinoError::ConfigInvalid {
                             path: path.to_path_buf(),
                             reason: e.to_string(),
                         })?;
@@ -152,14 +152,14 @@ impl ConfigManager {
 
         merged_value
             .try_into()
-            .map_err(|e: toml::de::Error| MinotaurError::ConfigInvalid {
+            .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
                 path: local_path.unwrap_or(&self.config_path).to_path_buf(),
                 reason: format!("{} (source: {})", e, config_source),
             })
     }
 
     /// Load configuration, creating default if not exists
-    pub async fn load(&self) -> MinotaurResult<Config> {
+    pub async fn load(&self) -> MinoResult<Config> {
         if !self.config_path.exists() {
             debug!("Config file not found, using defaults");
             return Ok(Config::default());
@@ -169,24 +169,24 @@ impl ConfigManager {
     }
 
     /// Load configuration from a specific file
-    pub async fn load_from_file(&self, path: &Path) -> MinotaurResult<Config> {
+    pub async fn load_from_file(&self, path: &Path) -> MinoResult<Config> {
         let content = fs::read_to_string(path)
             .await
-            .map_err(|e| MinotaurError::io(format!("reading config from {}", path.display()), e))?;
+            .map_err(|e| MinoError::io(format!("reading config from {}", path.display()), e))?;
 
-        toml::from_str(&content).map_err(|e| MinotaurError::ConfigInvalid {
+        toml::from_str(&content).map_err(|e| MinoError::ConfigInvalid {
             path: path.to_path_buf(),
             reason: e.to_string(),
         })
     }
 
     /// Save configuration to file
-    pub async fn save(&self, config: &Config) -> MinotaurResult<()> {
+    pub async fn save(&self, config: &Config) -> MinoResult<()> {
         self.ensure_config_dir().await?;
 
         let content = toml::to_string_pretty(config)?;
         fs::write(&self.config_path, content).await.map_err(|e| {
-            MinotaurError::io(
+            MinoError::io(
                 format!("writing config to {}", self.config_path.display()),
                 e,
             )
@@ -197,11 +197,11 @@ impl ConfigManager {
     }
 
     /// Ensure the config directory exists
-    async fn ensure_config_dir(&self) -> MinotaurResult<()> {
+    async fn ensure_config_dir(&self) -> MinoResult<()> {
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .map_err(|e| MinotaurError::ConfigDirCreate {
+                .map_err(|e| MinoError::ConfigDirCreate {
                     path: parent.to_path_buf(),
                     source: e,
                 })?;
@@ -210,7 +210,7 @@ impl ConfigManager {
     }
 
     /// Ensure all state directories exist
-    pub async fn ensure_state_dirs() -> MinotaurResult<()> {
+    pub async fn ensure_state_dirs() -> MinoResult<()> {
         let dirs = [
             Self::state_dir(),
             Self::sessions_dir(),
@@ -219,7 +219,7 @@ impl ConfigManager {
 
         for dir in &dirs {
             fs::create_dir_all(dir).await.map_err(|e| {
-                MinotaurError::io(format!("creating directory {}", dir.display()), e)
+                MinoError::io(format!("creating directory {}", dir.display()), e)
             })?;
         }
 
@@ -229,7 +229,7 @@ impl ConfigManager {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o700);
             std::fs::set_permissions(Self::credentials_dir(), perms)
-                .map_err(|e| MinotaurError::io("setting credentials dir permissions", e))?;
+                .map_err(|e| MinoError::io("setting credentials dir permissions", e))?;
         }
 
         Ok(())
@@ -259,7 +259,7 @@ mod tests {
         let manager = ConfigManager::with_path(path);
 
         let config = manager.load().await.unwrap();
-        assert_eq!(config.vm.name, "minotaur");
+        assert_eq!(config.vm.name, "mino");
     }
 
     #[tokio::test]
@@ -408,9 +408,9 @@ mod tests {
     #[test]
     fn find_local_config_in_cwd() {
         let temp = TempDir::new().unwrap();
-        std::fs::write(temp.path().join(".minotaur.toml"), "# local config").unwrap();
+        std::fs::write(temp.path().join(".mino.toml"), "# local config").unwrap();
         let found = ConfigManager::find_local_config(temp.path());
-        assert_eq!(found.unwrap(), temp.path().join(".minotaur.toml"));
+        assert_eq!(found.unwrap(), temp.path().join(".mino.toml"));
     }
 
     #[test]
@@ -418,9 +418,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let child = temp.path().join("sub").join("deep");
         std::fs::create_dir_all(&child).unwrap();
-        std::fs::write(temp.path().join(".minotaur.toml"), "# parent config").unwrap();
+        std::fs::write(temp.path().join(".mino.toml"), "# parent config").unwrap();
         let found = ConfigManager::find_local_config(&child);
-        assert_eq!(found.unwrap(), temp.path().join(".minotaur.toml"));
+        assert_eq!(found.unwrap(), temp.path().join(".mino.toml"));
     }
 
     #[test]
@@ -450,7 +450,7 @@ mod tests {
         .unwrap();
 
         // Write local config
-        let local_path = temp.path().join(".minotaur.toml");
+        let local_path = temp.path().join(".mino.toml");
         std::fs::write(
             &local_path,
             r#"
@@ -499,7 +499,7 @@ mod tests {
     async fn load_merged_no_global() {
         let temp = TempDir::new().unwrap();
         let global_path = temp.path().join("nonexistent.toml");
-        let local_path = temp.path().join(".minotaur.toml");
+        let local_path = temp.path().join(".mino.toml");
         std::fs::write(
             &local_path,
             r#"
@@ -513,6 +513,6 @@ mod tests {
         let config = manager.load_merged(Some(&local_path)).await.unwrap();
         assert_eq!(config.container.image, "typescript");
         // Defaults fill in the rest
-        assert_eq!(config.vm.name, "minotaur");
+        assert_eq!(config.vm.name, "mino");
     }
 }

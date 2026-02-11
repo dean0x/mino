@@ -3,12 +3,12 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-/// Minotaur - Secure AI Agent Sandbox
+/// Mino - Secure AI Agent Sandbox
 ///
 /// Wraps any command in rootless containers with temporary cloud
 /// credentials and SSH agent forwarding.
 #[derive(Parser, Debug)]
-#[command(name = "minotaur")]
+#[command(name = "mino")]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 pub struct Cli {
@@ -21,10 +21,10 @@ pub struct Cli {
     pub verbose: u8,
 
     /// Configuration file path
-    #[arg(short, long, global = true, env = "MINOTAUR_CONFIG")]
+    #[arg(short, long, global = true, env = "MINO_CONFIG")]
     pub config: Option<PathBuf>,
 
-    /// Skip local .minotaur.toml discovery
+    /// Skip local .mino.toml discovery
     #[arg(long, global = true)]
     pub no_local: bool,
 }
@@ -35,7 +35,7 @@ pub enum Commands {
     /// Start a sandboxed session
     Run(RunArgs),
 
-    /// Initialize a project-local .minotaur.toml config
+    /// Initialize a project-local .mino.toml config
     Init(InitArgs),
 
     /// List active sessions
@@ -79,7 +79,7 @@ pub struct SetupArgs {
 /// Arguments for the init command
 #[derive(Parser, Debug)]
 pub struct InitArgs {
-    /// Overwrite existing .minotaur.toml
+    /// Overwrite existing .mino.toml
     #[arg(short, long)]
     pub force: bool,
 
@@ -224,7 +224,7 @@ pub enum ConfigAction {
         key: String,
         /// Value to set
         value: String,
-        /// Write to project-local .minotaur.toml instead of global config
+        /// Write to project-local .mino.toml instead of global config
         #[arg(long)]
         local: bool,
     },
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn cli_parses_run() {
-        let cli = Cli::parse_from(["minotaur", "run", "--aws", "--", "bash"]);
+        let cli = Cli::parse_from(["mino", "run", "--aws", "--", "bash"]);
         match cli.command {
             Commands::Run(args) => {
                 assert!(args.aws);
@@ -338,13 +338,13 @@ mod tests {
 
     #[test]
     fn cli_parses_status() {
-        let cli = Cli::parse_from(["minotaur", "status"]);
+        let cli = Cli::parse_from(["mino", "status"]);
         assert!(matches!(cli.command, Commands::Status));
     }
 
     #[test]
     fn cli_parses_setup() {
-        let cli = Cli::parse_from(["minotaur", "setup"]);
+        let cli = Cli::parse_from(["mino", "setup"]);
         match cli.command {
             Commands::Setup(args) => {
                 assert!(!args.yes);
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn cli_parses_setup_with_flags() {
-        let cli = Cli::parse_from(["minotaur", "setup", "--yes", "--check"]);
+        let cli = Cli::parse_from(["mino", "setup", "--yes", "--check"]);
         match cli.command {
             Commands::Setup(args) => {
                 assert!(args.yes);
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn cli_parses_setup_upgrade() {
-        let cli = Cli::parse_from(["minotaur", "setup", "--upgrade"]);
+        let cli = Cli::parse_from(["mino", "setup", "--upgrade"]);
         match cli.command {
             Commands::Setup(args) => {
                 assert!(!args.yes);
@@ -382,13 +382,13 @@ mod tests {
 
     #[test]
     fn cli_parses_init() {
-        let cli = Cli::parse_from(["minotaur", "init"]);
+        let cli = Cli::parse_from(["mino", "init"]);
         assert!(matches!(cli.command, Commands::Init(_)));
     }
 
     #[test]
     fn cli_parses_init_force() {
-        let cli = Cli::parse_from(["minotaur", "init", "--force"]);
+        let cli = Cli::parse_from(["mino", "init", "--force"]);
         match cli.command {
             Commands::Init(args) => assert!(args.force),
             _ => panic!("expected Init command"),
@@ -397,19 +397,19 @@ mod tests {
 
     #[test]
     fn cli_no_local_flag() {
-        let cli = Cli::parse_from(["minotaur", "--no-local", "status"]);
+        let cli = Cli::parse_from(["mino", "--no-local", "status"]);
         assert!(cli.no_local);
     }
 
     #[test]
     fn cli_verbose_levels() {
-        let cli = Cli::parse_from(["minotaur", "status"]);
+        let cli = Cli::parse_from(["mino", "status"]);
         assert_eq!(cli.verbose, 0);
 
-        let cli = Cli::parse_from(["minotaur", "-v", "status"]);
+        let cli = Cli::parse_from(["mino", "-v", "status"]);
         assert_eq!(cli.verbose, 1);
 
-        let cli = Cli::parse_from(["minotaur", "-vv", "status"]);
+        let cli = Cli::parse_from(["mino", "-vv", "status"]);
         assert_eq!(cli.verbose, 2);
     }
 }

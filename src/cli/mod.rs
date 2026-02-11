@@ -1,4 +1,4 @@
-//! CLI module for Minotaur
+//! CLI module for Mino
 
 pub mod args;
 pub mod commands;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Minotaur Rust layer install script
+# Mino Rust layer install script
 # Installs: rustup, stable toolchain, rustfmt, clippy, cargo-binstall,
 #           bacon, cargo-edit, cargo-outdated, cargo-nextest, sccache
 #

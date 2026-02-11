@@ -1,6 +1,6 @@
-//! Configuration schema for Minotaur
+//! Configuration schema for Mino
 //!
-//! Configuration is stored at `~/.config/minotaur/config.toml`
+//! Configuration is stored at `~/.config/mino/config.toml`
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -67,7 +67,7 @@ pub struct VmConfig {
 impl Default for VmConfig {
     fn default() -> Self {
         Self {
-            name: "minotaur".to_string(),
+            name: "mino".to_string(),
             distro: "fedora".to_string(),
         }
     }
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn config_deserializes_empty() {
         let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.vm.name, "minotaur");
+        assert_eq!(config.vm.name, "mino");
     }
 
     #[test]

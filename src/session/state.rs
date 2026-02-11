@@ -1,7 +1,7 @@
 //! Session state persistence
 
 use crate::config::ConfigManager;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -77,7 +77,7 @@ impl Session {
     }
 
     /// Load session from file
-    pub async fn load(name: &str) -> MinotaurResult<Option<Self>> {
+    pub async fn load(name: &str) -> MinoResult<Option<Self>> {
         let path = ConfigManager::sessions_dir().join(format!("{}.json", name));
 
         if !path.exists() {
@@ -85,7 +85,7 @@ impl Session {
         }
 
         let content = fs::read_to_string(&path).await.map_err(|e| {
-            MinotaurError::io(format!("reading session file {}", path.display()), e)
+            MinoError::io(format!("reading session file {}", path.display()), e)
         })?;
 
         let session: Session = serde_json::from_str(&content)?;
@@ -95,13 +95,13 @@ impl Session {
     /// Create session file atomically — fails if file already exists.
     /// Uses O_CREAT | O_EXCL for kernel-level atomic create-or-fail,
     /// eliminating the TOCTOU race in load-then-save.
-    pub async fn create_file(&self) -> MinotaurResult<()> {
+    pub async fn create_file(&self) -> MinoResult<()> {
         let path = self.file_path();
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .map_err(|e| MinotaurError::io("creating sessions directory", e))?;
+                .map_err(|e| MinoError::io("creating sessions directory", e))?;
         }
 
         let content = serde_json::to_string_pretty(self)?;
@@ -113,52 +113,52 @@ impl Session {
             .await
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    MinotaurError::SessionExists(self.name.clone())
+                    MinoError::SessionExists(self.name.clone())
                 } else {
-                    MinotaurError::io(format!("creating session file {}", path.display()), e)
+                    MinoError::io(format!("creating session file {}", path.display()), e)
                 }
             })?;
 
         use tokio::io::AsyncWriteExt;
         file.write_all(content.as_bytes()).await.map_err(|e| {
-            MinotaurError::io(format!("writing session file {}", path.display()), e)
+            MinoError::io(format!("writing session file {}", path.display()), e)
         })?;
 
         Ok(())
     }
 
     /// Save session to file (overwrites existing). Use for status updates.
-    pub async fn save(&self) -> MinotaurResult<()> {
+    pub async fn save(&self) -> MinoResult<()> {
         let path = self.file_path();
 
         // Ensure directory exists
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .await
-                .map_err(|e| MinotaurError::io("creating sessions directory", e))?;
+                .map_err(|e| MinoError::io("creating sessions directory", e))?;
         }
 
         let content = serde_json::to_string_pretty(self)?;
         fs::write(&path, content).await.map_err(|e| {
-            MinotaurError::io(format!("writing session file {}", path.display()), e)
+            MinoError::io(format!("writing session file {}", path.display()), e)
         })?;
 
         Ok(())
     }
 
     /// Delete session file
-    pub async fn delete(&self) -> MinotaurResult<()> {
+    pub async fn delete(&self) -> MinoResult<()> {
         let path = self.file_path();
         if path.exists() {
             fs::remove_file(&path).await.map_err(|e| {
-                MinotaurError::io(format!("deleting session file {}", path.display()), e)
+                MinoError::io(format!("deleting session file {}", path.display()), e)
             })?;
         }
         Ok(())
     }
 
     /// List all sessions
-    pub async fn list_all() -> MinotaurResult<Vec<Session>> {
+    pub async fn list_all() -> MinoResult<Vec<Session>> {
         let sessions_dir = ConfigManager::sessions_dir();
 
         if !sessions_dir.exists() {
@@ -168,12 +168,12 @@ impl Session {
         let mut sessions = vec![];
         let mut entries = fs::read_dir(&sessions_dir)
             .await
-            .map_err(|e| MinotaurError::io("reading sessions directory", e))?;
+            .map_err(|e| MinoError::io("reading sessions directory", e))?;
 
         while let Some(entry) = entries
             .next_entry()
             .await
-            .map_err(|e| MinotaurError::io("reading session entry", e))?
+            .map_err(|e| MinoError::io("reading session entry", e))?
         {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "json") {

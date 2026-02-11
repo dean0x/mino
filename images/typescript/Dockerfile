@@ -1,13 +1,13 @@
-# Minotaur TypeScript Image
+# Mino TypeScript Image
 # Node.js 22 LTS + pnpm + TypeScript toolchain
 #
-# Extends minotaur-base with TypeScript/Node development tools.
+# Extends mino-base with TypeScript/Node development tools.
 
-ARG BASE_IMAGE=ghcr.io/dean0x/minotaur-base:latest
+ARG BASE_IMAGE=ghcr.io/dean0x/mino-base:latest
 FROM ${BASE_IMAGE}
 
-LABEL org.opencontainers.image.source="https://github.com/dean0x/minotaur"
-LABEL org.opencontainers.image.description="Minotaur TypeScript development image"
+LABEL org.opencontainers.image.source="https://github.com/dean0x/mino"
+LABEL org.opencontainers.image.description="Mino TypeScript development image"
 
 USER root
 
@@ -17,7 +17,7 @@ RUN chmod +x /tmp/install-typescript.sh && /tmp/install-typescript.sh && rm /tmp
 USER developer
 
 # Configure cache directories
-# These will be overridden when minotaur mounts /cache
+# These will be overridden when mino mounts /cache
 ENV PNPM_HOME=/cache/pnpm
 ENV npm_config_cache=/cache/npm
 ENV NODE_ENV=development

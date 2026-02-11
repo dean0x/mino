@@ -1,7 +1,7 @@
 //! Setup command - interactive prerequisite installation
 
 use crate::config::Config;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{OrbStack, Platform};
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
@@ -25,25 +25,25 @@ enum StepResult {
 }
 
 /// Execute the setup command
-pub async fn execute(args: SetupArgs, config: &Config) -> MinotaurResult<()> {
+pub async fn execute(args: SetupArgs, config: &Config) -> MinoResult<()> {
     let ctx = UiContext::detect().with_auto_yes(args.yes);
 
     if args.check {
-        ui::intro(&ctx, "Minotaur Setup (check only)");
+        ui::intro(&ctx, "Mino Setup (check only)");
     } else {
-        ui::intro(&ctx, "Minotaur Setup");
+        ui::intro(&ctx, "Mino Setup");
     }
 
     match Platform::detect() {
         Platform::MacOS => setup_macos(&ctx, &args, config).await,
         Platform::Linux => setup_linux(&ctx, &args).await,
-        Platform::Unsupported => Err(MinotaurError::UnsupportedPlatform(
+        Platform::Unsupported => Err(MinoError::UnsupportedPlatform(
             std::env::consts::OS.to_string(),
         )),
     }
 }
 
-async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> MinotaurResult<()> {
+async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> MinoResult<()> {
     ui::section(ctx, "Checking prerequisites...");
 
     let mut issues = 0;
@@ -88,7 +88,7 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
     {
         check_vm(ctx, args, vm_name, vm_distro).await
     } else {
-        ui::step_blocked(ctx, &format!("Minotaur VM ({})", vm_name), "OrbStack");
+        ui::step_blocked(ctx, &format!("Mino VM ({})", vm_name), "OrbStack");
         StepResult::Blocked
     };
     if vm_result == StepResult::Failed || vm_result == StepResult::Skipped {
@@ -125,7 +125,7 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
             ui::outro_warn(
                 ctx,
                 &format!(
-                    "{} issue(s) found. Run 'minotaur setup' to install.",
+                    "{} issue(s) found. Run 'mino setup' to install.",
                     issues
                 ),
             );
@@ -135,14 +135,14 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
     } else {
         ui::outro_success(
             ctx,
-            "Setup complete! Run 'minotaur run -- <command>' to start.",
+            "Setup complete! Run 'mino run -- <command>' to start.",
         );
     }
 
     Ok(())
 }
 
-async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinotaurResult<()> {
+async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
     ui::section(ctx, "Checking prerequisites...");
 
     let mut issues = 0;
@@ -183,7 +183,7 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinotaurResult<()> {
             ui::outro_warn(
                 ctx,
                 &format!(
-                    "{} issue(s) found. Run 'minotaur setup' to install.",
+                    "{} issue(s) found. Run 'mino setup' to install.",
                     issues
                 ),
             );
@@ -193,7 +193,7 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinotaurResult<()> {
     } else {
         ui::outro_success(
             ctx,
-            "Setup complete! Run 'minotaur run -- <command>' to start.",
+            "Setup complete! Run 'mino run -- <command>' to start.",
         );
     }
 
@@ -354,16 +354,16 @@ async fn check_orbstack_running(ctx: &UiContext, args: &SetupArgs) -> StepResult
 
 async fn check_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &str, vm_distro: &str) -> StepResult {
     if vm_exists(vm_name).await {
-        ui::step_ok_detail(ctx, "Minotaur VM exists", vm_name);
+        ui::step_ok_detail(ctx, "Mino VM exists", vm_name);
         return StepResult::AlreadyOk;
     }
 
     if args.check {
-        ui::step_error_detail(ctx, "Minotaur VM not found", vm_name);
+        ui::step_error_detail(ctx, "Mino VM not found", vm_name);
         return StepResult::Failed;
     }
 
-    ui::step_warn_hint(ctx, "Minotaur VM not found", vm_name);
+    ui::step_warn_hint(ctx, "Mino VM not found", vm_name);
 
     if ui::confirm_inline(&format!("Create {} VM '{}'?", vm_distro, vm_name), args.yes) {
         ui::remark(ctx, "Creating VM...");
@@ -379,7 +379,7 @@ async fn check_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &str, vm_distro: &
             ui::step_error(ctx, "VM creation failed");
             ui::remark(
                 ctx,
-                &format!("Try: orb delete {} && minotaur setup", vm_name),
+                &format!("Try: orb delete {} && mino setup", vm_name),
             );
             StepResult::Failed
         }

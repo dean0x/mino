@@ -2,13 +2,13 @@
 
 use crate::cli::args::{ListArgs, OutputFormat};
 use crate::config::Config;
-use crate::error::MinotaurResult;
+use crate::error::MinoResult;
 use crate::session::{SessionManager, SessionStatus};
 use crate::ui::{self, UiContext};
 use console::style;
 
 /// Execute the list command
-pub async fn execute(args: ListArgs, _config: &Config) -> MinotaurResult<()> {
+pub async fn execute(args: ListArgs, _config: &Config) -> MinoResult<()> {
     let manager = SessionManager::new().await?;
     let sessions = manager.list().await?;
 
@@ -80,7 +80,7 @@ fn print_table(sessions: &[crate::session::Session]) {
     println!("{} session(s)", sessions.len());
 }
 
-fn print_json(sessions: &[crate::session::Session]) -> MinotaurResult<()> {
+fn print_json(sessions: &[crate::session::Session]) -> MinoResult<()> {
     let json = serde_json::to_string_pretty(sessions)?;
     println!("{}", json);
     Ok(())

@@ -1,7 +1,7 @@
 //! Credential caching with TTL support
 
 use crate::config::ConfigManager;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -45,11 +45,11 @@ pub struct CredentialCache {
 
 impl CredentialCache {
     /// Create a new credential cache
-    pub async fn new() -> MinotaurResult<Self> {
+    pub async fn new() -> MinoResult<Self> {
         let cache_dir = ConfigManager::credentials_dir();
         fs::create_dir_all(&cache_dir)
             .await
-            .map_err(|e| MinotaurError::io("creating credentials cache dir", e))?;
+            .map_err(|e| MinoError::io("creating credentials cache dir", e))?;
 
         // Set restrictive permissions
         #[cfg(unix)]
@@ -57,14 +57,14 @@ impl CredentialCache {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o700);
             std::fs::set_permissions(&cache_dir, perms)
-                .map_err(|e| MinotaurError::io("setting credentials dir permissions", e))?;
+                .map_err(|e| MinoError::io("setting credentials dir permissions", e))?;
         }
 
         Ok(Self { cache_dir })
     }
 
     /// Get a cached credential if valid
-    pub async fn get(&self, key: &str) -> MinotaurResult<Option<CachedCredential>> {
+    pub async fn get(&self, key: &str) -> MinoResult<Option<CachedCredential>> {
         let path = self.cache_path(key);
 
         if !path.exists() {
@@ -73,7 +73,7 @@ impl CredentialCache {
 
         let content = fs::read_to_string(&path)
             .await
-            .map_err(|e| MinotaurError::io(format!("reading cache file {}", path.display()), e))?;
+            .map_err(|e| MinoError::io(format!("reading cache file {}", path.display()), e))?;
 
         let cred: CachedCredential = serde_json::from_str(&content)?;
 
@@ -88,13 +88,13 @@ impl CredentialCache {
     }
 
     /// Store a credential in cache
-    pub async fn set(&self, key: &str, cred: &CachedCredential) -> MinotaurResult<()> {
+    pub async fn set(&self, key: &str, cred: &CachedCredential) -> MinoResult<()> {
         let path = self.cache_path(key);
         let content = serde_json::to_string_pretty(cred)?;
 
         fs::write(&path, content)
             .await
-            .map_err(|e| MinotaurError::io(format!("writing cache file {}", path.display()), e))?;
+            .map_err(|e| MinoError::io(format!("writing cache file {}", path.display()), e))?;
 
         // Set restrictive permissions on credential file
         #[cfg(unix)]
@@ -102,7 +102,7 @@ impl CredentialCache {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
             std::fs::set_permissions(&path, perms)
-                .map_err(|e| MinotaurError::io("setting cache file permissions", e))?;
+                .map_err(|e| MinoError::io("setting cache file permissions", e))?;
         }
 
         debug!("Cached credential {} until {}", key, cred.expires_at);
@@ -110,31 +110,31 @@ impl CredentialCache {
     }
 
     /// Remove a cached credential
-    pub async fn remove(&self, key: &str) -> MinotaurResult<()> {
+    pub async fn remove(&self, key: &str) -> MinoResult<()> {
         let path = self.cache_path(key);
         if path.exists() {
             fs::remove_file(&path).await.map_err(|e| {
-                MinotaurError::io(format!("removing cache file {}", path.display()), e)
+                MinoError::io(format!("removing cache file {}", path.display()), e)
             })?;
         }
         Ok(())
     }
 
     /// Clear all cached credentials
-    pub async fn clear(&self) -> MinotaurResult<()> {
+    pub async fn clear(&self) -> MinoResult<()> {
         let mut entries = fs::read_dir(&self.cache_dir)
             .await
-            .map_err(|e| MinotaurError::io("reading cache directory", e))?;
+            .map_err(|e| MinoError::io("reading cache directory", e))?;
 
         while let Some(entry) = entries
             .next_entry()
             .await
-            .map_err(|e| MinotaurError::io("reading cache entry", e))?
+            .map_err(|e| MinoError::io("reading cache entry", e))?
         {
             if entry.path().extension().is_some_and(|ext| ext == "json") {
                 fs::remove_file(entry.path())
                     .await
-                    .map_err(|e| MinotaurError::io("removing cache file", e))?;
+                    .map_err(|e| MinoError::io("removing cache file", e))?;
             }
         }
 

@@ -2,12 +2,12 @@
 
 use crate::cli::args::{ConfigAction, ConfigArgs};
 use crate::config::{Config, ConfigManager};
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::ui::{self, UiContext};
 use tokio::fs;
 
 /// Execute the config command
-pub async fn execute(args: ConfigArgs, config: &Config) -> MinotaurResult<()> {
+pub async fn execute(args: ConfigArgs, config: &Config) -> MinoResult<()> {
     let manager = ConfigManager::new();
 
     match args.action {
@@ -36,7 +36,7 @@ fn show_path(manager: &ConfigManager) {
     println!("{}", manager.path().display());
 }
 
-async fn init_config(manager: &ConfigManager, force: bool) -> MinotaurResult<()> {
+async fn init_config(manager: &ConfigManager, force: bool) -> MinoResult<()> {
     let ctx = UiContext::detect();
     let path = manager.path();
 
@@ -66,7 +66,7 @@ async fn set_value(
     config: &Config,
     key: &str,
     value: &str,
-) -> MinotaurResult<()> {
+) -> MinoResult<()> {
     let ctx = UiContext::detect();
     let mut config = config.clone();
 
@@ -129,12 +129,12 @@ async fn set_value(
     Ok(())
 }
 
-async fn set_local_value(key: &str, value: &str) -> MinotaurResult<()> {
+async fn set_local_value(key: &str, value: &str) -> MinoResult<()> {
     let ctx = UiContext::detect();
 
     let cwd =
-        std::env::current_dir().map_err(|e| MinotaurError::io("getting current directory", e))?;
-    let local_path = cwd.join(".minotaur.toml");
+        std::env::current_dir().map_err(|e| MinoError::io("getting current directory", e))?;
+    let local_path = cwd.join(".mino.toml");
 
     // Validate the key before touching the file
     validate_config_key(key)?;
@@ -143,10 +143,10 @@ async fn set_local_value(key: &str, value: &str) -> MinotaurResult<()> {
     let mut doc: toml::Value = if local_path.exists() {
         let content = fs::read_to_string(&local_path)
             .await
-            .map_err(|e| MinotaurError::io(format!("reading {}", local_path.display()), e))?;
+            .map_err(|e| MinoError::io(format!("reading {}", local_path.display()), e))?;
         content
             .parse()
-            .map_err(|e: toml::de::Error| MinotaurError::ConfigInvalid {
+            .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
                 path: local_path.clone(),
                 reason: e.to_string(),
             })?
@@ -161,7 +161,7 @@ async fn set_local_value(key: &str, value: &str) -> MinotaurResult<()> {
     let content = toml::to_string_pretty(&doc)?;
     fs::write(&local_path, content)
         .await
-        .map_err(|e| MinotaurError::io(format!("writing {}", local_path.display()), e))?;
+        .map_err(|e| MinoError::io(format!("writing {}", local_path.display()), e))?;
 
     ui::step_ok(
         &ctx,
@@ -172,7 +172,7 @@ async fn set_local_value(key: &str, value: &str) -> MinotaurResult<()> {
 }
 
 /// Validate that a config key is one we recognise.
-fn validate_config_key(key: &str) -> MinotaurResult<()> {
+fn validate_config_key(key: &str) -> MinoResult<()> {
     let parts: Vec<&str> = key.split('.').collect();
     match parts.as_slice() {
         ["general", "verbose" | "log_format" | "audit_log"]
@@ -182,12 +182,12 @@ fn validate_config_key(key: &str) -> MinotaurResult<()> {
         | ["credentials", "gcp", "enabled" | "project"]
         | ["credentials", "azure", "enabled" | "subscription" | "tenant"]
         | ["session", "shell" | "auto_cleanup_hours"] => Ok(()),
-        _ => Err(MinotaurError::User(format!("Unknown config key: {}", key))),
+        _ => Err(MinoError::User(format!("Unknown config key: {}", key))),
     }
 }
 
 /// Set a dot-separated key in a TOML value tree, creating intermediate tables as needed.
-fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinotaurResult<()> {
+fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinoResult<()> {
     let parts: Vec<&str> = key.split('.').collect();
     let mut current = doc;
 
@@ -195,7 +195,7 @@ fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinotaurResu
     for &part in &parts[..parts.len() - 1] {
         current = current
             .as_table_mut()
-            .ok_or_else(|| MinotaurError::User(format!("Expected table at key: {}", part)))?
+            .ok_or_else(|| MinoError::User(format!("Expected table at key: {}", part)))?
             .entry(part)
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
     }
@@ -203,7 +203,7 @@ fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinotaurResu
     let leaf = parts.last().unwrap();
     let table = current
         .as_table_mut()
-        .ok_or_else(|| MinotaurError::User(format!("Expected table for key: {}", key)))?;
+        .ok_or_else(|| MinoError::User(format!("Expected table for key: {}", key)))?;
 
     // Infer TOML type from the value string
     let toml_value = if value == "true" || value == "false" {
@@ -218,21 +218,21 @@ fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinotaurResu
     Ok(())
 }
 
-fn parse_bool(value: &str) -> MinotaurResult<bool> {
+fn parse_bool(value: &str) -> MinoResult<bool> {
     match value.to_lowercase().as_str() {
         "true" | "1" | "yes" => Ok(true),
         "false" | "0" | "no" => Ok(false),
-        _ => Err(crate::error::MinotaurError::User(format!(
+        _ => Err(crate::error::MinoError::User(format!(
             "Invalid boolean value: {}. Use true/false",
             value
         ))),
     }
 }
 
-fn parse_u32(value: &str) -> MinotaurResult<u32> {
+fn parse_u32(value: &str) -> MinoResult<u32> {
     value
         .parse()
-        .map_err(|_| crate::error::MinotaurError::User(format!("Invalid number: {}", value)))
+        .map_err(|_| crate::error::MinoError::User(format!("Invalid number: {}", value)))
 }
 
 fn print_valid_keys() {

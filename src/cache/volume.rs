@@ -69,16 +69,16 @@ impl CacheSizeStatus {
 
 /// Volume label keys used to track cache metadata
 pub mod labels {
-    /// Marks volume as a minotaur cache
-    pub const MINOTAUR_CACHE: &str = "io.minotaur.cache";
+    /// Marks volume as a mino cache
+    pub const MINO_CACHE: &str = "io.mino.cache";
     /// The ecosystem (npm, cargo, etc.)
-    pub const ECOSYSTEM: &str = "io.minotaur.cache.ecosystem";
+    pub const ECOSYSTEM: &str = "io.mino.cache.ecosystem";
     /// The lockfile hash
-    pub const HASH: &str = "io.minotaur.cache.hash";
+    pub const HASH: &str = "io.mino.cache.hash";
     /// Cache state (building, complete)
-    pub const STATE: &str = "io.minotaur.cache.state";
+    pub const STATE: &str = "io.mino.cache.state";
     /// Creation timestamp (RFC3339)
-    pub const CREATED_AT: &str = "io.minotaur.cache.created_at";
+    pub const CREATED_AT: &str = "io.mino.cache.created_at";
 }
 
 /// State of a cache volume
@@ -131,7 +131,7 @@ impl fmt::Display for CacheState {
 /// Information about a cache volume
 #[derive(Debug, Clone)]
 pub struct CacheVolume {
-    /// Volume name (minotaur-cache-{ecosystem}-{hash})
+    /// Volume name (mino-cache-{ecosystem}-{hash})
     pub name: String,
     /// The ecosystem this cache belongs to
     pub ecosystem: Ecosystem,
@@ -149,7 +149,7 @@ impl CacheVolume {
     /// Create a new cache volume record
     pub fn new(ecosystem: Ecosystem, hash: String, state: CacheState) -> Self {
         Self {
-            name: format!("minotaur-cache-{}-{}", ecosystem, hash),
+            name: format!("mino-cache-{}-{}", ecosystem, hash),
             ecosystem,
             hash,
             state,
@@ -166,7 +166,7 @@ impl CacheVolume {
     /// Generate labels for volume creation
     pub fn labels(&self) -> HashMap<String, String> {
         let mut labels = HashMap::new();
-        labels.insert(labels::MINOTAUR_CACHE.to_string(), "true".to_string());
+        labels.insert(labels::MINO_CACHE.to_string(), "true".to_string());
         labels.insert(labels::ECOSYSTEM.to_string(), self.ecosystem.to_string());
         labels.insert(labels::HASH.to_string(), self.hash.clone());
         labels.insert(labels::STATE.to_string(), self.state.as_label().to_string());
@@ -190,8 +190,8 @@ impl CacheVolume {
 
     /// Try to parse from volume labels
     pub fn from_labels(name: &str, labels: &HashMap<String, String>) -> Option<Self> {
-        // Must be a minotaur cache
-        if labels.get(labels::MINOTAUR_CACHE) != Some(&"true".to_string()) {
+        // Must be a mino cache
+        if labels.get(labels::MINO_CACHE) != Some(&"true".to_string()) {
             return None;
         }
 
@@ -303,7 +303,7 @@ mod tests {
             CacheState::Building,
         );
 
-        assert_eq!(vol.name, "minotaur-cache-npm-abc123def456");
+        assert_eq!(vol.name, "mino-cache-npm-abc123def456");
         assert_eq!(vol.ecosystem, Ecosystem::Npm);
         assert_eq!(vol.state, CacheState::Building);
     }
@@ -318,7 +318,7 @@ mod tests {
 
         let vol = CacheVolume::from_lockfile(&info, CacheState::Complete);
 
-        assert_eq!(vol.name, "minotaur-cache-cargo-a1b2c3d4e5f6");
+        assert_eq!(vol.name, "mino-cache-cargo-a1b2c3d4e5f6");
         assert_eq!(vol.ecosystem, Ecosystem::Cargo);
     }
 
@@ -328,7 +328,7 @@ mod tests {
         let labels = vol.labels();
 
         assert_eq!(
-            labels.get(labels::MINOTAUR_CACHE),
+            labels.get(labels::MINO_CACHE),
             Some(&"true".to_string())
         );
         assert_eq!(labels.get(labels::ECOSYSTEM), Some(&"npm".to_string()));
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn cache_volume_from_labels() {
         let mut labels = HashMap::new();
-        labels.insert(labels::MINOTAUR_CACHE.to_string(), "true".to_string());
+        labels.insert(labels::MINO_CACHE.to_string(), "true".to_string());
         labels.insert(labels::ECOSYSTEM.to_string(), "cargo".to_string());
         labels.insert(labels::HASH.to_string(), "xyz789".to_string());
         labels.insert(labels::STATE.to_string(), "complete".to_string());
@@ -348,7 +348,7 @@ mod tests {
             "2024-01-15T10:00:00Z".to_string(),
         );
 
-        let vol = CacheVolume::from_labels("minotaur-cache-cargo-xyz789", &labels).unwrap();
+        let vol = CacheVolume::from_labels("mino-cache-cargo-xyz789", &labels).unwrap();
 
         assert_eq!(vol.ecosystem, Ecosystem::Cargo);
         assert_eq!(vol.hash, "xyz789");
@@ -358,19 +358,19 @@ mod tests {
     #[test]
     fn cache_mount_volume_arg() {
         let mount = CacheMount {
-            volume_name: "minotaur-cache-npm-abc123".to_string(),
+            volume_name: "mino-cache-npm-abc123".to_string(),
             container_path: "/cache".to_string(),
             readonly: true,
             ecosystem: Ecosystem::Npm,
         };
 
-        assert_eq!(mount.volume_arg(), "minotaur-cache-npm-abc123:/cache:ro");
+        assert_eq!(mount.volume_arg(), "mino-cache-npm-abc123:/cache:ro");
 
         let mount_rw = CacheMount {
             readonly: false,
             ..mount
         };
-        assert_eq!(mount_rw.volume_arg(), "minotaur-cache-npm-abc123:/cache");
+        assert_eq!(mount_rw.volume_arg(), "mino-cache-npm-abc123:/cache");
     }
 
     #[test]
@@ -399,7 +399,7 @@ mod tests {
 
         let mut states = HashMap::new();
         states.insert(
-            "minotaur-cache-npm-abc123def456".to_string(),
+            "mino-cache-npm-abc123def456".to_string(),
             CacheState::Complete,
         );
 

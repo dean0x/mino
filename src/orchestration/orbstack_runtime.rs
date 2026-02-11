@@ -3,7 +3,7 @@
 //! Implements the ContainerRuntime trait using OrbStack VM + Podman.
 
 use crate::config::schema::VmConfig;
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::orchestration::orbstack::OrbStack;
 use crate::orchestration::podman::ContainerConfig;
 use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
@@ -26,13 +26,13 @@ impl OrbStackRuntime {
     }
 
     /// Check if Podman is available in the VM
-    async fn podman_available(&self) -> MinotaurResult<bool> {
+    async fn podman_available(&self) -> MinoResult<bool> {
         let output = self.orbstack.exec(&["which", "podman"]).await?;
         Ok(output.status.success())
     }
 
     /// Install Podman in the VM if not present
-    async fn ensure_podman(&self) -> MinotaurResult<()> {
+    async fn ensure_podman(&self) -> MinoResult<()> {
         if self.podman_available().await? {
             return Ok(());
         }
@@ -53,7 +53,7 @@ impl OrbStackRuntime {
                 .await?;
 
             if !apt_result.status.success() {
-                return Err(MinotaurError::PodmanNotFound);
+                return Err(MinoError::PodmanNotFound);
             }
         }
 
@@ -61,7 +61,7 @@ impl OrbStackRuntime {
     }
 
     /// Pull an image
-    async fn pull(&self, image: &str) -> MinotaurResult<()> {
+    async fn pull(&self, image: &str) -> MinoResult<()> {
         debug!("Pulling image: {}", image);
 
         let output = self.orbstack.exec(&["podman", "pull", image]).await?;
@@ -70,7 +70,7 @@ impl OrbStackRuntime {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::ImagePull {
+            Err(MinoError::ImagePull {
                 image: image.to_string(),
                 reason: stderr.to_string(),
             })
@@ -80,7 +80,7 @@ impl OrbStackRuntime {
 
 #[async_trait]
 impl ContainerRuntime for OrbStackRuntime {
-    async fn is_available(&self) -> MinotaurResult<bool> {
+    async fn is_available(&self) -> MinoResult<bool> {
         if !OrbStack::is_installed().await {
             return Ok(false);
         }
@@ -90,12 +90,12 @@ impl ContainerRuntime for OrbStackRuntime {
         self.podman_available().await
     }
 
-    async fn ensure_ready(&self) -> MinotaurResult<()> {
+    async fn ensure_ready(&self) -> MinoResult<()> {
         self.orbstack.ensure_vm_running().await?;
         self.ensure_podman().await
     }
 
-    async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String> {
+    async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
         // Ensure image is available
         if !self.image_exists(&config.image).await? {
             self.pull(&config.image).await?;
@@ -151,11 +151,11 @@ impl ContainerRuntime for OrbStackRuntime {
             Ok(container_id)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::ContainerStart(stderr.to_string()))
+            Err(MinoError::ContainerStart(stderr.to_string()))
         }
     }
 
-    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String> {
+    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
         // Ensure image is available
         if !self.image_exists(&config.image).await? {
             self.pull(&config.image).await?;
@@ -211,11 +211,11 @@ impl ContainerRuntime for OrbStackRuntime {
             Ok(container_id)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::ContainerStart(stderr.to_string()))
+            Err(MinoError::ContainerStart(stderr.to_string()))
         }
     }
 
-    async fn start_attached(&self, container_id: &str) -> MinotaurResult<i32> {
+    async fn start_attached(&self, container_id: &str) -> MinoResult<i32> {
         debug!("Starting container attached: {}", container_id);
 
         let exit_code = self
@@ -226,7 +226,7 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(exit_code)
     }
 
-    async fn attach(&self, container_id: &str) -> MinotaurResult<i32> {
+    async fn attach(&self, container_id: &str) -> MinoResult<i32> {
         debug!("Attaching to container: {}", container_id);
 
         let exit_code = self
@@ -237,7 +237,7 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(exit_code)
     }
 
-    async fn stop(&self, container_id: &str) -> MinotaurResult<()> {
+    async fn stop(&self, container_id: &str) -> MinoResult<()> {
         debug!("Stopping container: {}", container_id);
 
         let output = self
@@ -249,11 +249,11 @@ impl ContainerRuntime for OrbStackRuntime {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::command_exec("podman stop", stderr))
+            Err(MinoError::command_exec("podman stop", stderr))
         }
     }
 
-    async fn kill(&self, container_id: &str) -> MinotaurResult<()> {
+    async fn kill(&self, container_id: &str) -> MinoResult<()> {
         debug!("Killing container: {}", container_id);
 
         let output = self
@@ -265,11 +265,11 @@ impl ContainerRuntime for OrbStackRuntime {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::command_exec("podman kill", stderr))
+            Err(MinoError::command_exec("podman kill", stderr))
         }
     }
 
-    async fn remove(&self, container_id: &str) -> MinotaurResult<()> {
+    async fn remove(&self, container_id: &str) -> MinoResult<()> {
         debug!("Removing container: {}", container_id);
 
         let output = self
@@ -285,12 +285,12 @@ impl ContainerRuntime for OrbStackRuntime {
             if stderr.contains("no such container") {
                 Ok(())
             } else {
-                Err(MinotaurError::command_exec("podman rm", stderr))
+                Err(MinoError::command_exec("podman rm", stderr))
             }
         }
     }
 
-    async fn logs(&self, container_id: &str, lines: u32) -> MinotaurResult<String> {
+    async fn logs(&self, container_id: &str, lines: u32) -> MinoResult<String> {
         let tail_arg = if lines == 0 {
             "all".to_string()
         } else {
@@ -305,14 +305,14 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    async fn logs_follow(&self, container_id: &str) -> MinotaurResult<()> {
+    async fn logs_follow(&self, container_id: &str) -> MinoResult<()> {
         self.orbstack
             .exec_interactive(&["podman", "logs", "-f", container_id])
             .await?;
         Ok(())
     }
 
-    async fn image_exists(&self, image: &str) -> MinotaurResult<bool> {
+    async fn image_exists(&self, image: &str) -> MinoResult<bool> {
         let output = self
             .orbstack
             .exec(&["podman", "image", "exists", image])
@@ -320,7 +320,7 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(output.status.success())
     }
 
-    async fn build_image(&self, context_dir: &Path, tag: &str) -> MinotaurResult<()> {
+    async fn build_image(&self, context_dir: &Path, tag: &str) -> MinoResult<()> {
         let context_str = context_dir.display().to_string();
         let exit_code = self
             .orbstack
@@ -328,7 +328,7 @@ impl ContainerRuntime for OrbStackRuntime {
             .await?;
 
         if exit_code != 0 {
-            return Err(MinotaurError::ImageBuild {
+            return Err(MinoError::ImageBuild {
                 tag: tag.to_string(),
                 reason: format!("build exited with code {}", exit_code),
             });
@@ -337,7 +337,7 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(())
     }
 
-    async fn image_remove(&self, image: &str) -> MinotaurResult<()> {
+    async fn image_remove(&self, image: &str) -> MinoResult<()> {
         let output = self.orbstack.exec(&["podman", "rmi", image]).await?;
 
         if output.status.success() {
@@ -347,12 +347,12 @@ impl ContainerRuntime for OrbStackRuntime {
             if stderr.contains("image not known") {
                 Ok(())
             } else {
-                Err(MinotaurError::command_exec("podman rmi", stderr))
+                Err(MinoError::command_exec("podman rmi", stderr))
             }
         }
     }
 
-    async fn image_list_prefixed(&self, prefix: &str) -> MinotaurResult<Vec<String>> {
+    async fn image_list_prefixed(&self, prefix: &str) -> MinoResult<Vec<String>> {
         let filter = format!("reference={}*", prefix);
         let output = self
             .orbstack
@@ -368,7 +368,7 @@ impl ContainerRuntime for OrbStackRuntime {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(MinotaurError::command_exec("podman images", stderr));
+            return Err(MinoError::command_exec("podman images", stderr));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -389,7 +389,7 @@ impl ContainerRuntime for OrbStackRuntime {
         &self,
         name: &str,
         labels: &HashMap<String, String>,
-    ) -> MinotaurResult<()> {
+    ) -> MinoResult<()> {
         debug!("Creating volume: {}", name);
 
         let mut args = vec!["podman", "volume", "create", "--ignore"];
@@ -412,11 +412,11 @@ impl ContainerRuntime for OrbStackRuntime {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::command_exec("podman volume create", stderr))
+            Err(MinoError::command_exec("podman volume create", stderr))
         }
     }
 
-    async fn volume_exists(&self, name: &str) -> MinotaurResult<bool> {
+    async fn volume_exists(&self, name: &str) -> MinoResult<bool> {
         let output = self
             .orbstack
             .exec(&["podman", "volume", "exists", name])
@@ -424,7 +424,7 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(output.status.success())
     }
 
-    async fn volume_remove(&self, name: &str) -> MinotaurResult<()> {
+    async fn volume_remove(&self, name: &str) -> MinoResult<()> {
         debug!("Removing volume: {}", name);
 
         let output = self
@@ -440,12 +440,12 @@ impl ContainerRuntime for OrbStackRuntime {
             if stderr.contains("no such volume") {
                 Ok(())
             } else {
-                Err(MinotaurError::command_exec("podman volume rm", stderr))
+                Err(MinoError::command_exec("podman volume rm", stderr))
             }
         }
     }
 
-    async fn volume_list(&self, prefix: &str) -> MinotaurResult<Vec<VolumeInfo>> {
+    async fn volume_list(&self, prefix: &str) -> MinoResult<Vec<VolumeInfo>> {
         // Use JSON format for reliable parsing
         let output = self
             .orbstack
@@ -454,7 +454,7 @@ impl ContainerRuntime for OrbStackRuntime {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(MinotaurError::command_exec("podman volume ls", stderr));
+            return Err(MinoError::command_exec("podman volume ls", stderr));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -464,7 +464,7 @@ impl ContainerRuntime for OrbStackRuntime {
 
         // Parse JSON array of volumes
         let volumes: Vec<serde_json::Value> =
-            serde_json::from_str(&stdout).map_err(|e| MinotaurError::Internal(e.to_string()))?;
+            serde_json::from_str(&stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
 
         let mut result = Vec::new();
         for vol in volumes {
@@ -497,7 +497,7 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(result)
     }
 
-    async fn volume_inspect(&self, name: &str) -> MinotaurResult<Option<VolumeInfo>> {
+    async fn volume_inspect(&self, name: &str) -> MinoResult<Option<VolumeInfo>> {
         let output = self
             .orbstack
             .exec(&["podman", "volume", "inspect", name, "--format", "json"])
@@ -508,14 +508,14 @@ impl ContainerRuntime for OrbStackRuntime {
             if stderr.contains("no such volume") {
                 return Ok(None);
             }
-            return Err(MinotaurError::command_exec("podman volume inspect", stderr));
+            return Err(MinoError::command_exec("podman volume inspect", stderr));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         // Parse JSON array (inspect returns array even for single volume)
         let volumes: Vec<serde_json::Value> =
-            serde_json::from_str(&stdout).map_err(|e| MinotaurError::Internal(e.to_string()))?;
+            serde_json::from_str(&stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
 
         let vol = match volumes.first() {
             Some(v) => v,
@@ -545,13 +545,13 @@ impl ContainerRuntime for OrbStackRuntime {
         &self,
         name: &str,
         labels: &HashMap<String, String>,
-    ) -> MinotaurResult<()> {
+    ) -> MinoResult<()> {
         debug!("Updating volume labels: {} (recreating)", name);
 
         // First check if volume exists
         let existing = self.volume_inspect(name).await?;
         if existing.is_none() {
-            return Err(MinotaurError::Internal(format!(
+            return Err(MinoError::Internal(format!(
                 "Volume not found: {}",
                 name
             )));
@@ -564,7 +564,7 @@ impl ContainerRuntime for OrbStackRuntime {
         self.volume_create(name, labels).await
     }
 
-    async fn volume_disk_usage(&self, prefix: &str) -> MinotaurResult<HashMap<String, u64>> {
+    async fn volume_disk_usage(&self, prefix: &str) -> MinoResult<HashMap<String, u64>> {
         // Get volume sizes by inspecting each volume individually.
         // Note: `podman system df -v --format json` is not supported (flags conflict).
         let volumes = self.volume_list(prefix).await?;

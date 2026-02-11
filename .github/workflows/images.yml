@@ -1,9 +1,9 @@
-# Build and push minotaur container images to GHCR
+# Build and push mino container images to GHCR
 #
 # Builds multi-arch images (linux/amd64 + linux/arm64) for:
-# - minotaur-base: Foundation with Claude Code and dev tools
-# - minotaur-typescript: TypeScript/Node.js development
-# - minotaur-rust: Rust development
+# - mino-base: Foundation with Claude Code and dev tools
+# - mino-typescript: TypeScript/Node.js development
+# - mino-rust: Rust development
 #
 # Triggers:
 # - Push to images/** directory
@@ -33,7 +33,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/minotaur
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/mino
 
 jobs:
   build-base:
@@ -174,9 +174,9 @@ jobs:
 
       - name: Tag images for local testing
         run: |
-          docker tag ${{ env.IMAGE_PREFIX }}-base:latest minotaur-base
-          docker tag ${{ env.IMAGE_PREFIX }}-typescript:latest minotaur-typescript
-          docker tag ${{ env.IMAGE_PREFIX }}-rust:latest minotaur-rust
+          docker tag ${{ env.IMAGE_PREFIX }}-base:latest mino-base
+          docker tag ${{ env.IMAGE_PREFIX }}-typescript:latest mino-typescript
+          docker tag ${{ env.IMAGE_PREFIX }}-rust:latest mino-rust
 
       - name: Run verification tests
         run: ./images/build.sh --test-only

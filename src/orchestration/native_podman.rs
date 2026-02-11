@@ -3,7 +3,7 @@
 //! Implements the ContainerRuntime trait using direct Podman execution
 //! without a VM layer. Requires rootless Podman to be properly configured.
 
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::orchestration::podman::ContainerConfig;
 use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use async_trait::async_trait;
@@ -35,7 +35,7 @@ impl NativePodmanRuntime {
     }
 
     /// Check if rootless Podman is properly configured
-    async fn rootless_configured() -> MinotaurResult<bool> {
+    async fn rootless_configured() -> MinoResult<bool> {
         // Check if user namespaces are available
         let output = Command::new("podman")
             .args(["info", "--format", "{{.Host.Security.Rootless}}"])
@@ -43,14 +43,14 @@ impl NativePodmanRuntime {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("podman info", e))?;
+            .map_err(|e| MinoError::command_failed("podman info", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(stdout.trim() == "true")
     }
 
     /// Execute a Podman command and return the output
-    async fn exec(&self, args: &[&str]) -> MinotaurResult<std::process::Output> {
+    async fn exec(&self, args: &[&str]) -> MinoResult<std::process::Output> {
         debug!("Executing: podman {:?}", args);
 
         Command::new("podman")
@@ -59,11 +59,11 @@ impl NativePodmanRuntime {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed(format!("podman {:?}", args), e))
+            .map_err(|e| MinoError::command_failed(format!("podman {:?}", args), e))
     }
 
     /// Execute a Podman command interactively
-    async fn exec_interactive(&self, args: &[&str]) -> MinotaurResult<i32> {
+    async fn exec_interactive(&self, args: &[&str]) -> MinoResult<i32> {
         debug!("Executing interactively: podman {:?}", args);
 
         let status = Command::new("podman")
@@ -73,7 +73,7 @@ impl NativePodmanRuntime {
             .stderr(Stdio::inherit())
             .status()
             .await
-            .map_err(|e| MinotaurError::command_failed(format!("podman {:?}", args), e))?;
+            .map_err(|e| MinoError::command_failed(format!("podman {:?}", args), e))?;
 
         Ok(status.code().unwrap_or(-1))
     }
@@ -99,7 +99,7 @@ impl NativePodmanRuntime {
     }
 
     /// Pull an image
-    async fn pull(&self, image: &str) -> MinotaurResult<()> {
+    async fn pull(&self, image: &str) -> MinoResult<()> {
         debug!("Pulling image: {}", image);
 
         let output = self.exec(&["pull", image]).await?;
@@ -108,7 +108,7 @@ impl NativePodmanRuntime {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::ImagePull {
+            Err(MinoError::ImagePull {
                 image: image.to_string(),
                 reason: stderr.to_string(),
             })
@@ -124,20 +124,20 @@ impl Default for NativePodmanRuntime {
 
 #[async_trait]
 impl ContainerRuntime for NativePodmanRuntime {
-    async fn is_available(&self) -> MinotaurResult<bool> {
+    async fn is_available(&self) -> MinoResult<bool> {
         if !Self::podman_installed().await {
             return Ok(false);
         }
         Self::rootless_configured().await
     }
 
-    async fn ensure_ready(&self) -> MinotaurResult<()> {
+    async fn ensure_ready(&self) -> MinoResult<()> {
         if !Self::podman_installed().await {
-            return Err(MinotaurError::PodmanNotFound);
+            return Err(MinoError::PodmanNotFound);
         }
 
         if !Self::rootless_configured().await? {
-            return Err(MinotaurError::PodmanRootlessSetup {
+            return Err(MinoError::PodmanRootlessSetup {
                 reason: "Rootless Podman not configured. Run: podman system migrate".to_string(),
             });
         }
@@ -145,7 +145,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         Ok(())
     }
 
-    async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String> {
+    async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
         // Ensure image is available
         if !self.image_exists(&config.image).await? {
             self.pull(&config.image).await?;
@@ -176,11 +176,11 @@ impl ContainerRuntime for NativePodmanRuntime {
             Ok(container_id)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::ContainerStart(stderr.to_string()))
+            Err(MinoError::ContainerStart(stderr.to_string()))
         }
     }
 
-    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinotaurResult<String> {
+    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
         // Ensure image is available
         if !self.image_exists(&config.image).await? {
             self.pull(&config.image).await?;
@@ -211,22 +211,22 @@ impl ContainerRuntime for NativePodmanRuntime {
             Ok(container_id)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::ContainerStart(stderr.to_string()))
+            Err(MinoError::ContainerStart(stderr.to_string()))
         }
     }
 
-    async fn start_attached(&self, container_id: &str) -> MinotaurResult<i32> {
+    async fn start_attached(&self, container_id: &str) -> MinoResult<i32> {
         debug!("Starting container attached: {}", container_id);
         self.exec_interactive(&["start", "--attach", container_id])
             .await
     }
 
-    async fn attach(&self, container_id: &str) -> MinotaurResult<i32> {
+    async fn attach(&self, container_id: &str) -> MinoResult<i32> {
         debug!("Attaching to container: {}", container_id);
         self.exec_interactive(&["attach", container_id]).await
     }
 
-    async fn stop(&self, container_id: &str) -> MinotaurResult<()> {
+    async fn stop(&self, container_id: &str) -> MinoResult<()> {
         debug!("Stopping container: {}", container_id);
 
         let output = self.exec(&["stop", container_id]).await?;
@@ -235,11 +235,11 @@ impl ContainerRuntime for NativePodmanRuntime {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::command_exec("podman stop", stderr))
+            Err(MinoError::command_exec("podman stop", stderr))
         }
     }
 
-    async fn kill(&self, container_id: &str) -> MinotaurResult<()> {
+    async fn kill(&self, container_id: &str) -> MinoResult<()> {
         debug!("Killing container: {}", container_id);
 
         let output = self.exec(&["kill", container_id]).await?;
@@ -248,11 +248,11 @@ impl ContainerRuntime for NativePodmanRuntime {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::command_exec("podman kill", stderr))
+            Err(MinoError::command_exec("podman kill", stderr))
         }
     }
 
-    async fn remove(&self, container_id: &str) -> MinotaurResult<()> {
+    async fn remove(&self, container_id: &str) -> MinoResult<()> {
         debug!("Removing container: {}", container_id);
 
         let output = self.exec(&["rm", "-f", container_id]).await?;
@@ -265,12 +265,12 @@ impl ContainerRuntime for NativePodmanRuntime {
             if stderr.contains("no such container") {
                 Ok(())
             } else {
-                Err(MinotaurError::command_exec("podman rm", stderr))
+                Err(MinoError::command_exec("podman rm", stderr))
             }
         }
     }
 
-    async fn logs(&self, container_id: &str, lines: u32) -> MinotaurResult<String> {
+    async fn logs(&self, container_id: &str, lines: u32) -> MinoResult<String> {
         let tail_arg = if lines == 0 {
             "all".to_string()
         } else {
@@ -284,24 +284,24 @@ impl ContainerRuntime for NativePodmanRuntime {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    async fn logs_follow(&self, container_id: &str) -> MinotaurResult<()> {
+    async fn logs_follow(&self, container_id: &str) -> MinoResult<()> {
         self.exec_interactive(&["logs", "-f", container_id]).await?;
         Ok(())
     }
 
-    async fn image_exists(&self, image: &str) -> MinotaurResult<bool> {
+    async fn image_exists(&self, image: &str) -> MinoResult<bool> {
         let output = self.exec(&["image", "exists", image]).await?;
         Ok(output.status.success())
     }
 
-    async fn build_image(&self, context_dir: &Path, tag: &str) -> MinotaurResult<()> {
+    async fn build_image(&self, context_dir: &Path, tag: &str) -> MinoResult<()> {
         let context_str = context_dir.display().to_string();
         let exit_code = self
             .exec_interactive(&["build", "-t", tag, &context_str])
             .await?;
 
         if exit_code != 0 {
-            return Err(MinotaurError::ImageBuild {
+            return Err(MinoError::ImageBuild {
                 tag: tag.to_string(),
                 reason: format!("build exited with code {}", exit_code),
             });
@@ -310,7 +310,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         Ok(())
     }
 
-    async fn image_remove(&self, image: &str) -> MinotaurResult<()> {
+    async fn image_remove(&self, image: &str) -> MinoResult<()> {
         let output = self.exec(&["rmi", image]).await?;
 
         if output.status.success() {
@@ -320,12 +320,12 @@ impl ContainerRuntime for NativePodmanRuntime {
             if stderr.contains("image not known") {
                 Ok(())
             } else {
-                Err(MinotaurError::command_exec("podman rmi", stderr))
+                Err(MinoError::command_exec("podman rmi", stderr))
             }
         }
     }
 
-    async fn image_list_prefixed(&self, prefix: &str) -> MinotaurResult<Vec<String>> {
+    async fn image_list_prefixed(&self, prefix: &str) -> MinoResult<Vec<String>> {
         let filter = format!("reference={}*", prefix);
         let output = self
             .exec(&[
@@ -339,7 +339,7 @@ impl ContainerRuntime for NativePodmanRuntime {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(MinotaurError::command_exec("podman images", stderr));
+            return Err(MinoError::command_exec("podman images", stderr));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -360,7 +360,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         &self,
         name: &str,
         labels: &HashMap<String, String>,
-    ) -> MinotaurResult<()> {
+    ) -> MinoResult<()> {
         debug!("Creating volume: {}", name);
 
         let mut args = vec!["volume", "create", "--ignore"];
@@ -383,16 +383,16 @@ impl ContainerRuntime for NativePodmanRuntime {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(MinotaurError::command_exec("podman volume create", stderr))
+            Err(MinoError::command_exec("podman volume create", stderr))
         }
     }
 
-    async fn volume_exists(&self, name: &str) -> MinotaurResult<bool> {
+    async fn volume_exists(&self, name: &str) -> MinoResult<bool> {
         let output = self.exec(&["volume", "exists", name]).await?;
         Ok(output.status.success())
     }
 
-    async fn volume_remove(&self, name: &str) -> MinotaurResult<()> {
+    async fn volume_remove(&self, name: &str) -> MinoResult<()> {
         debug!("Removing volume: {}", name);
 
         let output = self.exec(&["volume", "rm", "-f", name]).await?;
@@ -405,18 +405,18 @@ impl ContainerRuntime for NativePodmanRuntime {
             if stderr.contains("no such volume") {
                 Ok(())
             } else {
-                Err(MinotaurError::command_exec("podman volume rm", stderr))
+                Err(MinoError::command_exec("podman volume rm", stderr))
             }
         }
     }
 
-    async fn volume_list(&self, prefix: &str) -> MinotaurResult<Vec<VolumeInfo>> {
+    async fn volume_list(&self, prefix: &str) -> MinoResult<Vec<VolumeInfo>> {
         // Use JSON format for reliable parsing
         let output = self.exec(&["volume", "ls", "--format", "json"]).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(MinotaurError::command_exec("podman volume ls", stderr));
+            return Err(MinoError::command_exec("podman volume ls", stderr));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -426,7 +426,7 @@ impl ContainerRuntime for NativePodmanRuntime {
 
         // Parse JSON array of volumes
         let volumes: Vec<serde_json::Value> =
-            serde_json::from_str(&stdout).map_err(|e| MinotaurError::Internal(e.to_string()))?;
+            serde_json::from_str(&stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
 
         let mut result = Vec::new();
         for vol in volumes {
@@ -459,7 +459,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         Ok(result)
     }
 
-    async fn volume_inspect(&self, name: &str) -> MinotaurResult<Option<VolumeInfo>> {
+    async fn volume_inspect(&self, name: &str) -> MinoResult<Option<VolumeInfo>> {
         let output = self
             .exec(&["volume", "inspect", name, "--format", "json"])
             .await?;
@@ -469,14 +469,14 @@ impl ContainerRuntime for NativePodmanRuntime {
             if stderr.contains("no such volume") {
                 return Ok(None);
             }
-            return Err(MinotaurError::command_exec("podman volume inspect", stderr));
+            return Err(MinoError::command_exec("podman volume inspect", stderr));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         // Parse JSON array (inspect returns array even for single volume)
         let volumes: Vec<serde_json::Value> =
-            serde_json::from_str(&stdout).map_err(|e| MinotaurError::Internal(e.to_string()))?;
+            serde_json::from_str(&stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
 
         let vol = match volumes.first() {
             Some(v) => v,
@@ -506,7 +506,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         &self,
         name: &str,
         labels: &HashMap<String, String>,
-    ) -> MinotaurResult<()> {
+    ) -> MinoResult<()> {
         // Podman doesn't support updating labels directly
         // We need to note the limitations here - this is only safe for
         // metadata updates, not for volumes with data
@@ -515,7 +515,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         // First check if volume exists and get current info
         let existing = self.volume_inspect(name).await?;
         if existing.is_none() {
-            return Err(MinotaurError::Internal(format!(
+            return Err(MinoError::Internal(format!(
                 "Volume not found: {}",
                 name
             )));
@@ -528,7 +528,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         self.volume_create(name, labels).await
     }
 
-    async fn volume_disk_usage(&self, prefix: &str) -> MinotaurResult<HashMap<String, u64>> {
+    async fn volume_disk_usage(&self, prefix: &str) -> MinoResult<HashMap<String, u64>> {
         // Get volume sizes by inspecting each volume individually.
         // Note: `podman system df -v --format json` is not supported (flags conflict).
         let volumes = self.volume_list(prefix).await?;
@@ -553,7 +553,7 @@ impl ContainerRuntime for NativePodmanRuntime {
                         .args(["-sb", &mountpoint])
                         .output()
                         .await
-                        .map_err(|e| MinotaurError::io("du", e))?;
+                        .map_err(|e| MinoError::io("du", e))?;
 
                     if du_output.status.success() {
                         let du_str = String::from_utf8_lossy(&du_output.stdout);

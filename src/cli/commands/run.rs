@@ -1,10 +1,10 @@
 //! Run command - start a sandboxed session
 
-/// Image registry prefix for minotaur images
+/// Image registry prefix for mino images
 const IMAGE_REGISTRY: &str = "ghcr.io/dean0x";
 
 /// Default base image for layer composition (requires developer user, zsh, etc.)
-const LAYER_BASE_IMAGE: &str = "ghcr.io/dean0x/minotaur-base:latest";
+const LAYER_BASE_IMAGE: &str = "ghcr.io/dean0x/mino-base:latest";
 
 use crate::audit::AuditLog;
 use crate::cache::{
@@ -16,7 +16,7 @@ use crate::config::Config;
 use crate::credentials::{
     AwsCredentials, AzureCredentials, CredentialCache, GcpCredentials, GithubCredentials,
 };
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use crate::layer::{compose_image, resolve_layers};
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
@@ -76,10 +76,10 @@ async fn resolve_image_or_layers(
     config: &Config,
     runtime: &dyn ContainerRuntime,
     project_dir: &Path,
-) -> MinotaurResult<ImageResolution> {
+) -> MinoResult<ImageResolution> {
     if let Some(names) = layer_names {
         let resolved = resolve_layers(&names, project_dir).await?;
-        // Layers compose on top of minotaur-base (which has developer user, zsh, etc.)
+        // Layers compose on top of mino-base (which has developer user, zsh, etc.)
         // not the user's config image (which may be bare fedora/alpine)
         let base_image = LAYER_BASE_IMAGE;
         let result = compose_image(runtime, base_image, &resolved).await?;
@@ -110,7 +110,7 @@ async fn resolve_image_or_layers(
 }
 
 /// Execute the run command
-pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
+pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     let ctx = UiContext::detect();
     let mut spinner = TaskSpinner::new(&ctx);
 
@@ -276,12 +276,12 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinotaurResult<()> {
             style(&session_name).cyan(),
             &container_id[..12]
         );
-        println!("  Attach with: minotaur logs {}", session_name);
-        println!("  Stop with:   minotaur stop {}", session_name);
+        println!("  Attach with: mino logs {}", session_name);
+        println!("  Stop with:   mino stop {}", session_name);
 
         if !cache_session.volumes_to_finalize.is_empty() {
             println!(
-                "  {} Cache finalization requires: minotaur stop {}",
+                "  {} Cache finalization requires: mino stop {}",
                 style("!").yellow(),
                 session_name
             );
@@ -368,7 +368,7 @@ async fn setup_caches(
     args: &RunArgs,
     config: &Config,
     project_dir: &Path,
-) -> MinotaurResult<(Vec<CacheMount>, HashMap<String, String>, CacheSession)> {
+) -> MinoResult<(Vec<CacheMount>, HashMap<String, String>, CacheSession)> {
     let mut cache_session = CacheSession::new();
     let mut cache_mounts = Vec::new();
     let mut cache_env = HashMap::new();
@@ -418,7 +418,7 @@ async fn setup_cache_for_lockfile(
     runtime: &dyn ContainerRuntime,
     info: &LockfileInfo,
     force_fresh: bool,
-) -> MinotaurResult<(CacheMount, bool)> {
+) -> MinoResult<(CacheMount, bool)> {
     let volume_name = info.volume_name();
 
     // Check existing volume state
@@ -528,7 +528,7 @@ async fn finalize_caches(runtime: &dyn ContainerRuntime, cache_session: &CacheSe
 
 /// Check cache size and print warning if approaching or exceeding limit
 async fn check_cache_size_warning(runtime: &dyn ContainerRuntime, config: &Config) {
-    let sizes = match runtime.volume_disk_usage("minotaur-cache-").await {
+    let sizes = match runtime.volume_disk_usage("mino-cache-").await {
         Ok(s) => s,
         Err(_) => return, // Silently skip if we can't get sizes
     };
@@ -547,7 +547,7 @@ async fn check_cache_size_warning(runtime: &dyn ContainerRuntime, config: &Confi
         CacheSizeStatus::Ok => {}
         CacheSizeStatus::Warning => {
             eprintln!(
-                "{} Cache usage at {:.0}% ({} / {}). Consider running: minotaur cache gc",
+                "{} Cache usage at {:.0}% ({} / {}). Consider running: mino cache gc",
                 style("!").yellow(),
                 percent,
                 format_bytes(total_size),
@@ -556,7 +556,7 @@ async fn check_cache_size_warning(runtime: &dyn ContainerRuntime, config: &Confi
         }
         CacheSizeStatus::Exceeded => {
             eprintln!(
-                "{} Cache limit exceeded! {:.0}% ({} / {}). Run: minotaur cache gc",
+                "{} Cache limit exceeded! {:.0}% ({} / {}). Run: mino cache gc",
                 style("!").red().bold(),
                 percent,
                 format_bytes(total_size),
@@ -566,23 +566,23 @@ async fn check_cache_size_warning(runtime: &dyn ContainerRuntime, config: &Confi
     }
 }
 
-async fn validate_environment() -> MinotaurResult<()> {
+async fn validate_environment() -> MinoResult<()> {
     match Platform::detect() {
         Platform::MacOS => {
             // On macOS, check OrbStack
             use crate::orchestration::OrbStack;
             if !OrbStack::is_installed().await {
-                return Err(MinotaurError::OrbStackNotFound);
+                return Err(MinoError::OrbStackNotFound);
             }
             if !OrbStack::is_running().await? {
-                return Err(MinotaurError::OrbStackNotRunning);
+                return Err(MinoError::OrbStackNotRunning);
             }
         }
         Platform::Linux => {
             // On Linux, basic checks are done in ensure_ready()
         }
         Platform::Unsupported => {
-            return Err(MinotaurError::UnsupportedPlatform(
+            return Err(MinoError::UnsupportedPlatform(
                 std::env::consts::OS.to_string(),
             ));
         }
@@ -590,10 +590,10 @@ async fn validate_environment() -> MinotaurResult<()> {
     Ok(())
 }
 
-fn resolve_project_dir(args: &RunArgs, config: &Config) -> MinotaurResult<PathBuf> {
+fn resolve_project_dir(args: &RunArgs, config: &Config) -> MinoResult<PathBuf> {
     if let Some(ref path) = args.project {
         let canonical = path.canonicalize().map_err(|e| {
-            MinotaurError::io(format!("resolving project path {}", path.display()), e)
+            MinoError::io(format!("resolving project path {}", path.display()), e)
         })?;
         return Ok(canonical);
     }
@@ -604,14 +604,14 @@ fn resolve_project_dir(args: &RunArgs, config: &Config) -> MinotaurResult<PathBu
         }
     }
 
-    env::current_dir().map_err(|e| MinotaurError::io("getting current directory", e))
+    env::current_dir().map_err(|e| MinoError::io("getting current directory", e))
 }
 
 /// Returns (env_vars, list of successfully loaded provider names)
 async fn gather_credentials(
     args: &RunArgs,
     config: &Config,
-) -> MinotaurResult<(HashMap<String, String>, Vec<String>)> {
+) -> MinoResult<(HashMap<String, String>, Vec<String>)> {
     let mut env_vars = HashMap::new();
     let mut providers = Vec::new();
     let cache = CredentialCache::new().await?;
@@ -714,7 +714,7 @@ fn build_container_config(
     env_vars: HashMap<String, String>,
     cache_mounts: &[CacheMount],
     cache_env: HashMap<String, String>,
-) -> MinotaurResult<ContainerConfig> {
+) -> MinoResult<ContainerConfig> {
     let image = resolution.image.clone();
 
     let mut volumes = vec![
@@ -773,10 +773,10 @@ fn generate_session_name() -> String {
 
 /// Resolve image aliases to full registry paths
 ///
-/// Supports short aliases for minotaur images:
-/// - `typescript`, `ts`, `node` -> minotaur-typescript
-/// - `rust`, `cargo` -> minotaur-rust
-/// - `base` -> minotaur-base
+/// Supports short aliases for mino images:
+/// - `typescript`, `ts`, `node` -> mino-typescript
+/// - `rust`, `cargo` -> mino-rust
+/// - `base` -> mino-base
 ///
 /// Full image paths (containing `/` or `:`) are passed through unchanged.
 fn resolve_image_alias(image: &str) -> String {
@@ -786,9 +786,9 @@ fn resolve_image_alias(image: &str) -> String {
     }
 
     let image_name = match image {
-        "typescript" | "ts" | "node" => "minotaur-typescript",
-        "rust" | "cargo" => "minotaur-rust",
-        "base" => "minotaur-base",
+        "typescript" | "ts" | "node" => "mino-typescript",
+        "rust" | "cargo" => "mino-rust",
+        "base" => "mino-base",
         // Not a known alias, pass through (user might have a local image)
         other => return other.to_string(),
     };
@@ -804,15 +804,15 @@ mod tests {
     fn resolve_image_alias_typescript() {
         assert_eq!(
             resolve_image_alias("typescript"),
-            "ghcr.io/dean0x/minotaur-typescript:latest"
+            "ghcr.io/dean0x/mino-typescript:latest"
         );
         assert_eq!(
             resolve_image_alias("ts"),
-            "ghcr.io/dean0x/minotaur-typescript:latest"
+            "ghcr.io/dean0x/mino-typescript:latest"
         );
         assert_eq!(
             resolve_image_alias("node"),
-            "ghcr.io/dean0x/minotaur-typescript:latest"
+            "ghcr.io/dean0x/mino-typescript:latest"
         );
     }
 
@@ -820,11 +820,11 @@ mod tests {
     fn resolve_image_alias_rust() {
         assert_eq!(
             resolve_image_alias("rust"),
-            "ghcr.io/dean0x/minotaur-rust:latest"
+            "ghcr.io/dean0x/mino-rust:latest"
         );
         assert_eq!(
             resolve_image_alias("cargo"),
-            "ghcr.io/dean0x/minotaur-rust:latest"
+            "ghcr.io/dean0x/mino-rust:latest"
         );
     }
 
@@ -832,7 +832,7 @@ mod tests {
     fn resolve_image_alias_base() {
         assert_eq!(
             resolve_image_alias("base"),
-            "ghcr.io/dean0x/minotaur-base:latest"
+            "ghcr.io/dean0x/mino-base:latest"
         );
     }
 

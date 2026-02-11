@@ -3,7 +3,7 @@
 //! Each layer has a `layer.toml` manifest describing its metadata,
 //! environment variables, and cache paths.
 
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -69,16 +69,16 @@ pub struct LayerCache {
 
 impl LayerManifest {
     /// Parse a manifest from a TOML file on disk
-    pub async fn from_file(path: &Path) -> MinotaurResult<Self> {
+    pub async fn from_file(path: &Path) -> MinoResult<Self> {
         let content = tokio::fs::read_to_string(path).await.map_err(|e| {
-            MinotaurError::io(format!("reading layer manifest {}", path.display()), e)
+            MinoError::io(format!("reading layer manifest {}", path.display()), e)
         })?;
         Self::parse(&content)
     }
 
     /// Parse a manifest from a TOML string (for embedded built-in layers)
-    pub fn parse(content: &str) -> MinotaurResult<Self> {
-        toml::from_str(content).map_err(|e| MinotaurError::ConfigInvalid {
+    pub fn parse(content: &str) -> MinoResult<Self> {
+        toml::from_str(content).map_err(|e| MinoError::ConfigInvalid {
             path: "layer.toml".into(),
             reason: e.to_string(),
         })

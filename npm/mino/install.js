@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Postinstall fallback script for @dean0x/minotaur
+ * Postinstall fallback script for @dean0x/mino
  *
  * This script runs after npm install. If the platform-specific optional
  * dependency was installed successfully, this script does nothing.
@@ -14,17 +14,17 @@ const path = require("path");
 const zlib = require("zlib");
 const { execSync } = require("child_process");
 
-const BINARY_NAME = "minotaur";
+const BINARY_NAME = "mino";
 const PACKAGE_VERSION = require("./package.json").version;
 
 /**
  * Platform-specific package mapping
  */
 const PLATFORM_PACKAGES = {
-  "darwin-x64": "@dean0x/minotaur-darwin-x64",
-  "darwin-arm64": "@dean0x/minotaur-darwin-arm64",
-  "linux-x64": "@dean0x/minotaur-linux-x64",
-  "linux-arm64": "@dean0x/minotaur-linux-arm64",
+  "darwin-x64": "@dean0x/mino-darwin-x64",
+  "darwin-arm64": "@dean0x/mino-darwin-arm64",
+  "linux-x64": "@dean0x/mino-linux-x64",
+  "linux-arm64": "@dean0x/mino-linux-arm64",
 };
 
 /**
@@ -186,8 +186,8 @@ async function installFallback() {
  */
 async function main() {
   // Skip if running in CI or if explicitly disabled
-  if (process.env.MINOTAUR_SKIP_INSTALL) {
-    console.log("MINOTAUR_SKIP_INSTALL is set, skipping postinstall");
+  if (process.env.MINO_SKIP_INSTALL) {
+    console.log("MINO_SKIP_INSTALL is set, skipping postinstall");
     return;
   }
 

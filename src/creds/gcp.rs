@@ -2,7 +2,7 @@
 
 use crate::config::schema::GcpConfig;
 use crate::credentials::cache::{CachedCredential, CredentialCache};
-use crate::error::{MinotaurError, MinotaurResult};
+use crate::error::{MinoError, MinoResult};
 use chrono::{Duration, Utc};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -18,7 +18,7 @@ impl GcpCredentials {
     pub async fn get_access_token(
         config: &GcpConfig,
         cache: &CredentialCache,
-    ) -> MinotaurResult<String> {
+    ) -> MinoResult<String> {
         // Check cache first
         if let Some(cached) = cache.get(Self::CACHE_KEY).await? {
             debug!("Using cached GCP access token");
@@ -37,7 +37,7 @@ impl GcpCredentials {
     }
 
     /// Get access token from gcloud CLI
-    async fn get_access_token_internal(config: &GcpConfig) -> MinotaurResult<String> {
+    async fn get_access_token_internal(config: &GcpConfig) -> MinoResult<String> {
         debug!("Requesting GCP access token...");
 
         let mut cmd = Command::new("gcloud");
@@ -52,20 +52,20 @@ impl GcpCredentials {
         let output = cmd
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("gcloud auth print-access-token", e))?;
+            .map_err(|e| MinoError::command_failed("gcloud auth print-access-token", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("not logged in") || stderr.contains("no active account") {
-                return Err(MinotaurError::GcpNotAuthenticated);
+                return Err(MinoError::GcpNotAuthenticated);
             }
-            return Err(MinotaurError::GcpCredential(stderr.to_string()));
+            return Err(MinoError::GcpCredential(stderr.to_string()));
         }
 
         let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if token.is_empty() {
-            return Err(MinotaurError::GcpCredential(
+            return Err(MinoError::GcpCredential(
                 "Empty token returned".to_string(),
             ));
         }
@@ -86,14 +86,14 @@ impl GcpCredentials {
     }
 
     /// Get the current project
-    pub async fn get_project() -> MinotaurResult<Option<String>> {
+    pub async fn get_project() -> MinoResult<Option<String>> {
         let output = Command::new("gcloud")
             .args(["config", "get-value", "project"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
             .await
-            .map_err(|e| MinotaurError::command_failed("gcloud config get-value project", e))?;
+            .map_err(|e| MinoError::command_failed("gcloud config get-value project", e))?;
 
         if output.status.success() {
             let project = String::from_utf8_lossy(&output.stdout).trim().to_string();

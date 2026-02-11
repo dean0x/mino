@@ -3,11 +3,11 @@
 use cliclack::ThemeState;
 use console::Style;
 
-/// Minotaur's custom theme with cyan branding
+/// Mino's custom theme with cyan branding
 #[derive(Debug, Clone, Default)]
-pub struct MinotaurTheme;
+pub struct MinoTheme;
 
-impl cliclack::Theme for MinotaurTheme {
+impl cliclack::Theme for MinoTheme {
     fn bar_color(&self, state: &ThemeState) -> Style {
         match state {
             ThemeState::Active => Style::new().cyan(),
@@ -29,7 +29,7 @@ impl cliclack::Theme for MinotaurTheme {
 
 /// Initialize the global theme
 pub fn init_theme() {
-    cliclack::set_theme(MinotaurTheme);
+    cliclack::set_theme(MinoTheme);
 }
 
 #[cfg(test)]
@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn theme_colors() {
-        let theme = MinotaurTheme;
+        let theme = MinoTheme;
         // Just verify we can call the methods
         let _ = theme.bar_color(&ThemeState::Active);
         let _ = theme.state_symbol_color(&ThemeState::Submit);

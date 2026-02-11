@@ -1,11 +1,11 @@
 //! Interactive prompts with CI/non-interactive fallback
 
 use super::context::UiContext;
-use crate::error::MinotaurResult;
+use crate::error::MinoResult;
 use std::io::{self, Write};
 
 /// Prompt for confirmation, returns default if non-interactive or auto-yes
-pub async fn confirm(ctx: &UiContext, message: &str, default: bool) -> MinotaurResult<bool> {
+pub async fn confirm(ctx: &UiContext, message: &str, default: bool) -> MinoResult<bool> {
     // Auto-yes mode bypasses prompts
     if ctx.auto_yes() {
         println!("  {} (auto-approved)", message);
@@ -25,9 +25,9 @@ pub async fn confirm(ctx: &UiContext, message: &str, default: bool) -> MinotaurR
             .interact()
     })
     .await
-    .map_err(|e| crate::error::MinotaurError::User(format!("Prompt task failed: {}", e)))?;
+    .map_err(|e| crate::error::MinoError::User(format!("Prompt task failed: {}", e)))?;
 
-    result.map_err(|e| crate::error::MinotaurError::User(format!("Prompt failed: {}", e)))
+    result.map_err(|e| crate::error::MinoError::User(format!("Prompt failed: {}", e)))
 }
 
 /// Prompt for selection from a list of options
@@ -36,7 +36,7 @@ pub async fn select<T: Clone + Send + Eq + 'static>(
     ctx: &UiContext,
     message: &str,
     options: &[(T, &str, &str)], // (value, label, hint)
-) -> MinotaurResult<T> {
+) -> MinoResult<T> {
     // Non-interactive mode returns first option
     if !ctx.is_interactive() || ctx.auto_yes() {
         return Ok(options[0].0.clone());
@@ -60,11 +60,11 @@ pub async fn select<T: Clone + Send + Eq + 'static>(
 
     match result {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(e)) => Err(crate::error::MinotaurError::User(format!(
+        Ok(Err(e)) => Err(crate::error::MinoError::User(format!(
             "Select failed: {}",
             e
         ))),
-        Err(e) => Err(crate::error::MinotaurError::User(format!(
+        Err(e) => Err(crate::error::MinoError::User(format!(
             "Select task failed: {}",
             e
         ))),
