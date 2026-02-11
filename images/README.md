@@ -1,39 +1,56 @@
 # Mino Container Images
 
-Pre-built development images with Claude Code and productivity tools.
+## Architecture
 
-## Available Images
+Mino uses a single pre-built base image (`mino-base`) combined with a layer composition system for language toolchains.
 
-| Image | Registry | Description |
-|-------|----------|-------------|
-| `mino-base` | `ghcr.io/dean0x/mino-base:latest` | Foundation with Claude Code and dev tools |
-| `mino-typescript` | `ghcr.io/dean0x/mino-typescript:latest` | TypeScript/Node.js development |
-| `mino-rust` | `ghcr.io/dean0x/mino-rust:latest` | Rust development |
+```
+┌─────────────────────────────────────────────────────────┐
+│                    mino-base (GHCR)                     │
+│  Fedora 43 + Node 22 LTS + tools + claude-code         │
+│  Oh My Zsh + autosuggestions + history-substring-search │
+│  nvm + eza + sd + yq + tokei                           │
+└─────────────────────────────────────────────────────────┘
+                          │
+            Layer composition at runtime
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+┌─────────────────────┐       ┌─────────────────────┐
+│  typescript layer   │       │    rust layer        │
+│  pnpm, tsx, tsc     │       │  cargo, clippy       │
+│  biome, turbo, vite │       │  nextest, sccache    │
+└─────────────────────┘       └─────────────────────┘
+```
+
+Language toolchains are **not** pre-built GHCR images. Instead, they are composed at runtime using `install.sh` scripts on top of `mino-base`. This enables multi-toolchain composition (`--layers typescript,rust`) and eliminates CI flakes from language image builds.
 
 ## Quick Start
 
 ```bash
-# Use aliases with mino
+# Use aliases with mino (triggers layer composition)
 mino run --image typescript -- claude
 mino run --image rust -- claude
 
-# Or use full image paths
-mino run --image ghcr.io/dean0x/mino-typescript:latest -- claude
+# Compose multiple toolchains
+mino run --layers typescript,rust -- claude
+
+# Base image only
+mino run --image base -- claude
 ```
 
 ## Image Aliases
 
-| Alias | Image |
-|-------|-------|
-| `typescript`, `ts`, `node` | `mino-typescript` |
-| `rust`, `cargo` | `mino-rust` |
-| `base` | `mino-base` |
+| Alias | Behavior |
+|-------|----------|
+| `typescript`, `ts`, `node` | Layer composition (TypeScript toolchain on `mino-base`) |
+| `rust`, `cargo` | Layer composition (Rust toolchain on `mino-base`) |
+| `base` | Direct pull of `ghcr.io/dean0x/mino-base:latest` |
 
 ## Tool Inventory
 
 ### Base Image (`mino-base`)
 
-All language images inherit these tools.
+All layers inherit these tools.
 
 | Category | Tools | Notes |
 |----------|-------|-------|
@@ -50,11 +67,13 @@ All language images inherit these tools.
 | **Network** | curl, wget, httpie, ssh | HTTP testing and SSH |
 | **Runtime** | Node.js 22 LTS | Required for Claude Code |
 
-### TypeScript Image (`mino-typescript`)
+### TypeScript Layer
+
+Installed via `images/typescript/install.sh`, configured via `images/typescript/layer.toml`.
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| Node.js | 22 LTS | JavaScript runtime |
+| Node.js | 22 LTS | JavaScript runtime (from base) |
 | pnpm | 9.x | Fast, disk-efficient package manager |
 | tsx | latest | Run TypeScript directly |
 | typescript (tsc) | 5.x | TypeScript compiler |
@@ -69,7 +88,9 @@ PNPM_HOME=/cache/pnpm
 npm_config_cache=/cache/npm
 ```
 
-### Rust Image (`mino-rust`)
+### Rust Layer
+
+Installed via `images/rust/install.sh`, configured via `images/rust/layer.toml`.
 
 | Tool | Version | Description |
 |------|---------|-------------|
@@ -91,82 +112,69 @@ RUSTC_WRAPPER=sccache
 SCCACHE_DIR=/cache/sccache
 ```
 
-## Architecture
+## Layer System
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  mino-base                           │
-│  Fedora 43 + Node 22 LTS + tools + claude-code          │
-│  Oh My Zsh + autosuggestions + history-substring-search  │
-│  nvm + eza + sd + yq + tokei                            │
-└─────────────────────────────────────────────────────────┘
-                          │
-          ┌───────────────┴───────────────┐
-          ▼                               ▼
-┌─────────────────────┐       ┌─────────────────────┐
-│  mino-typescript │       │    mino-rust    │
-│  pnpm, tsx, tsc      │       │  cargo, clippy      │
-│  biome, turbo, vite  │       │  nextest, sccache   │
-└─────────────────────┘       └─────────────────────┘
-```
+Each language layer consists of two files:
+
+- **`layer.toml`** — Metadata (name, description, env vars, cache paths)
+- **`install.sh`** — Idempotent install script (runs as root, ends with `--version` verification)
+
+Both are compiled into the `mino` binary via `include_str!`. At runtime, `--image typescript` or `--layers typescript` triggers composition: a Dockerfile is generated from `mino-base` + `install.sh`, built, and cached as `mino-composed-{hash}`.
+
+### Adding a new language layer
+
+1. Create `images/{language}/layer.toml`:
+   ```toml
+   name = "{language}"
+   description = "Mino {language} development layer"
+
+   [env]
+   {LANG}_CACHE = "/cache/{lang}"
+
+   [cache]
+   paths = ["/cache/{lang}"]
+   ```
+
+2. Create `images/{language}/install.sh`:
+   ```bash
+   #!/usr/bin/env bash
+   set -euo pipefail
+   # Install toolchain (runs as root, must be idempotent)
+   # ...
+   # Verify installations
+   {tool} --version
+   ```
+
+3. Add `include_str!` in `src/layer/mod.rs` for the new layer.
+
+4. Add alias in `src/cli/commands/run.rs` `image_alias_to_layer()`:
+   ```rust
+   "{language}" | "{alias}" => Some("{language}"),
+   ```
+
+5. Update this README with tool inventory.
 
 ## Local Development
 
-### Build & Test Script
-
-Use `build.sh` for local development - it builds images in the correct order and runs comprehensive tests.
+### Build & Test Base Image
 
 ```bash
-# Build and test all images
+# Build and test base image
 ./images/build.sh
 
-# Test existing images (skip build)
+# Test existing image (skip build)
 ./images/build.sh --test-only
 
 # Fresh build without cache
 ./images/build.sh --no-cache
 
-# Build/test specific image only
-./images/build.sh base
-./images/build.sh typescript
-./images/build.sh rust
-
 # Use podman instead of docker
 DOCKER=podman ./images/build.sh
 ```
 
-The script validates:
-- **Structure**: User is `developer`, workdir is `/workspace`, `/cache` directory exists
-- **Environment**: Cache paths configured correctly (`PNPM_HOME`, `CARGO_HOME`, `SCCACHE_DIR`, etc.)
-- **Tools**: Every tool listed in the inventory runs `--version` successfully
-- **Shell**: Oh My Zsh, zsh-autosuggestions, zsh-history-substring-search, nvm installed
-
-### Manual Building
-
-If you need to build manually:
-
-```bash
-# Build base first (required by other images)
-docker build -t mino-base ./images/base
-
-# Build language images (reference local base)
-docker build -t mino-typescript --build-arg BASE_IMAGE=mino-base ./images/typescript
-docker build -t mino-rust --build-arg BASE_IMAGE=mino-base ./images/rust
-```
-
-### Interactive Testing
-
-```bash
-# Shell into an image
-docker run --rm -it mino-typescript
-
-# Mount current directory
-docker run --rm -it -v $(pwd):/workspace mino-typescript
-```
-
 ## CI/CD
 
-Images are automatically built and pushed to GHCR:
+The base image is automatically built and pushed to GHCR:
 
 - **Trigger**: Push to `images/**`, weekly cron (Mondays), manual dispatch
 - **Platforms**: `linux/amd64`, `linux/arm64`
@@ -175,8 +183,6 @@ Images are automatically built and pushed to GHCR:
 See `.github/workflows/images.yml` for details.
 
 ## Tool Selection Rationale
-
-### Why These Tools?
 
 | Tool | Over | Reason |
 |------|------|--------|
@@ -197,4 +203,4 @@ See `.github/workflows/images.yml` for details.
 
 - **Node.js**: LTS versions only (currently 22, becomes maintenance Apr 2027)
 - **Rust**: Stable toolchain via rustup (auto-updates)
-- **Tools**: Latest stable, rebuilt weekly for security updates
+- **Tools**: Latest stable, base image rebuilt weekly for security updates

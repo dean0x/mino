@@ -327,17 +327,19 @@ mino cache clear --all
 
 ## Container Images
 
-Mino provides pre-built development images with Claude Code and productivity tools.
+Mino uses a base image (`mino-base`) with a layer composition system for language toolchains.
 
-| Alias | Image | Includes |
-|-------|-------|----------|
-| `typescript`, `ts`, `node` | `ghcr.io/dean0x/mino-typescript` | Node.js 22 LTS, pnpm, tsx, TypeScript |
-| `rust`, `cargo` | `ghcr.io/dean0x/mino-rust` | rustup, cargo, clippy, bacon |
-| `base` | `ghcr.io/dean0x/mino-base` | Claude Code, git, delta, ripgrep, zoxide |
+| Alias | Behavior | Includes |
+|-------|----------|----------|
+| `typescript`, `ts`, `node` | Layer composition from `mino-base` | Node.js 22 LTS, pnpm, tsx, TypeScript, biome |
+| `rust`, `cargo` | Layer composition from `mino-base` | rustup, cargo, clippy, bacon, sccache |
+| `base` | Pulls `ghcr.io/dean0x/mino-base` | Claude Code, git, delta, ripgrep, zoxide |
 
-All images include: Claude Code CLI, git, gh CLI, delta (git diff), ripgrep, fd, bat, fzf, neovim, zsh, zoxide, mcfly.
+Language aliases trigger layer composition at runtime — the toolchain is installed on top of `mino-base` using `install.sh` scripts. Layers can be composed together with `--layers typescript,rust`.
 
-See [images/README.md](images/README.md) for full tool inventory and local build instructions.
+All images include: Claude Code CLI, git, gh CLI, delta (git diff), ripgrep, fd, bat, fzf, neovim, zsh, zoxide.
+
+See [images/README.md](images/README.md) for full tool inventory and layer architecture.
 
 ## Architecture
 

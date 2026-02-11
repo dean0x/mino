@@ -101,6 +101,17 @@ async fn resolve_image_or_layers(
         .image
         .clone()
         .unwrap_or_else(|| config.container.image.clone());
+
+    // Check if image name is a known layer alias — redirect to layer composition
+    if let Some(layer_name) = image_alias_to_layer(&raw_image) {
+        let resolved = resolve_layers(&[layer_name.to_string()], project_dir).await?;
+        let result = compose_image(runtime, LAYER_BASE_IMAGE, &resolved).await?;
+        return Ok(ImageResolution {
+            image: result.image_tag,
+            layer_env: result.env,
+        });
+    }
+
     let image = resolve_image_alias(&raw_image);
 
     Ok(ImageResolution {
@@ -771,12 +782,22 @@ fn generate_session_name() -> String {
     format!("session-{}", short_id)
 }
 
-/// Resolve image aliases to full registry paths
+/// Map image alias names to layer names for composition.
 ///
-/// Supports short aliases for mino images:
-/// - `typescript`, `ts`, `node` -> mino-typescript
-/// - `rust`, `cargo` -> mino-rust
-/// - `base` -> mino-base
+/// Language aliases (typescript, rust, etc.) are redirected to the layer
+/// composition system instead of pulling pre-built GHCR images.
+fn image_alias_to_layer(image: &str) -> Option<&str> {
+    match image {
+        "typescript" | "ts" | "node" => Some("typescript"),
+        "rust" | "cargo" => Some("rust"),
+        _ => None,
+    }
+}
+
+/// Resolve image aliases to full registry paths.
+///
+/// Only `base` is a direct image alias. Language aliases (typescript, rust)
+/// are handled by `image_alias_to_layer()` and redirected to layer composition.
 ///
 /// Full image paths (containing `/` or `:`) are passed through unchanged.
 fn resolve_image_alias(image: &str) -> String {
@@ -786,8 +807,6 @@ fn resolve_image_alias(image: &str) -> String {
     }
 
     let image_name = match image {
-        "typescript" | "ts" | "node" => "mino-typescript",
-        "rust" | "cargo" => "mino-rust",
         "base" => "mino-base",
         // Not a known alias, pass through (user might have a local image)
         other => return other.to_string(),
@@ -801,31 +820,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_image_alias_typescript() {
-        assert_eq!(
-            resolve_image_alias("typescript"),
-            "ghcr.io/dean0x/mino-typescript:latest"
-        );
-        assert_eq!(
-            resolve_image_alias("ts"),
-            "ghcr.io/dean0x/mino-typescript:latest"
-        );
-        assert_eq!(
-            resolve_image_alias("node"),
-            "ghcr.io/dean0x/mino-typescript:latest"
-        );
+    fn image_alias_to_layer_typescript() {
+        assert_eq!(image_alias_to_layer("typescript"), Some("typescript"));
+        assert_eq!(image_alias_to_layer("ts"), Some("typescript"));
+        assert_eq!(image_alias_to_layer("node"), Some("typescript"));
     }
 
     #[test]
-    fn resolve_image_alias_rust() {
-        assert_eq!(
-            resolve_image_alias("rust"),
-            "ghcr.io/dean0x/mino-rust:latest"
-        );
-        assert_eq!(
-            resolve_image_alias("cargo"),
-            "ghcr.io/dean0x/mino-rust:latest"
-        );
+    fn image_alias_to_layer_rust() {
+        assert_eq!(image_alias_to_layer("rust"), Some("rust"));
+        assert_eq!(image_alias_to_layer("cargo"), Some("rust"));
+    }
+
+    #[test]
+    fn image_alias_to_layer_unknown() {
+        assert_eq!(image_alias_to_layer("base"), None);
+        assert_eq!(image_alias_to_layer("fedora"), None);
+        assert_eq!(image_alias_to_layer("ghcr.io/foo/bar:latest"), None);
     }
 
     #[test]

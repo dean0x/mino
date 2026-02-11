@@ -95,52 +95,33 @@ cargo clippy            # Lints
 2. Update `Default` impl
 3. Document in README.md
 
-## Container Images
+## Container Images & Layers
 
-### Adding a new language image
+Only `mino-base` is a pre-built GHCR image. Language toolchains use the layer composition system.
 
-1. Create `images/{language}/Dockerfile`:
-   ```dockerfile
-   ARG BASE_IMAGE=ghcr.io/dean0x/mino-base:latest
-   FROM ${BASE_IMAGE}
+### Adding a new language layer
 
-   LABEL org.opencontainers.image.source="https://github.com/dean0x/mino"
-   LABEL org.opencontainers.image.description="Mino {language} development image"
+1. Create `images/{language}/layer.toml` with metadata, env vars, and cache paths
 
-   USER root
-   # Install language toolchain
-   USER developer
+2. Create `images/{language}/install.sh`:
+   - Must be idempotent, runs as root
+   - End with `--version` verification checks
+   - Mark executable: `chmod +x`
 
-   # Configure cache env vars
-   ENV {LANG}_CACHE=/cache/{lang}
+3. Add `include_str!` in `src/layer/mod.rs` for the new layer files
 
-   # Verify installations
-   RUN {tool} --version
-
-   WORKDIR /workspace
-   CMD ["/bin/zsh"]
-   ```
-
-2. Add to `.github/workflows/images.yml` matrix:
-   ```yaml
-   matrix:
-     include:
-       - image: {language}
-         context: ./images/{language}
-   ```
-
-3. Add alias in `src/cli/commands/run.rs` `resolve_image_alias()`:
+4. Add alias in `src/cli/commands/run.rs` `image_alias_to_layer()`:
    ```rust
-   "{language}" | "{alias}" => "mino-{language}",
+   "{language}" | "{alias}" => Some("{language}"),
    ```
 
-4. Update `images/README.md` with tools inventory
+5. Update `images/README.md` with tools inventory
 
-### Image design principles
+### Layer design principles
 
-- Inherit from `mino-base` (shared tools, Node for Claude Code)
-- Install toolchain as root, switch to `developer` user
+- Layers compose on top of `mino-base` (shared tools, Node for Claude Code)
+- Install scripts run as root, layer.toml configures env vars
 - Configure cache paths via env vars (CARGO_HOME, npm_config_cache, etc.)
-- Use LTS/stable versions, pin major versions in Dockerfile
-- Run verification commands at end of Dockerfile
-- Keep images minimal - don't add tools that aren't commonly needed
+- Use LTS/stable versions
+- End install.sh with `--version` verification commands
+- Keep layers minimal - don't add tools that aren't commonly needed

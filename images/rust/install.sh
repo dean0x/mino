@@ -32,3 +32,8 @@ cargo binstall -y bacon cargo-edit cargo-outdated cargo-nextest sccache
 # Fix permissions for shared access
 chmod -R a+rX "${RUSTUP_HOME}" "${CARGO_HOME}"
 chown -R developer:developer "${CARGO_HOME}" "${RUSTUP_HOME}"
+
+# Verify installations
+rustc --version
+cargo --version
+sccache --version

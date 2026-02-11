@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# Build and test mino container images locally.
+# Build and test mino-base container image locally.
+#
+# Language toolchains (TypeScript, Rust) are handled by the layer composition
+# system at runtime — see `images/{lang}/install.sh` and `images/{lang}/layer.toml`.
 #
 # Usage:
-#   ./build.sh              # Build all images and run tests
-#   ./build.sh --test-only  # Test existing images (skip build)
+#   ./build.sh              # Build base image and run tests
+#   ./build.sh --test-only  # Test existing image (skip build)
 #   ./build.sh --no-cache   # Fresh build (no docker cache)
-#   ./build.sh base         # Build/test only base image
-#   ./build.sh typescript   # Build/test only typescript image
-#   ./build.sh rust         # Build/test only rust image
 #
 # Exit codes:
 #   0 - All builds and tests passed
@@ -28,7 +28,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOCKER="${DOCKER:-docker}"
 BUILD_ARGS=""
 TEST_ONLY=false
-TARGET_IMAGE=""
 
 # Track failures
 declare -a FAILURES=()
@@ -181,14 +180,6 @@ build_base() {
     build_image "mino-base" "$SCRIPT_DIR/base"
 }
 
-build_typescript() {
-    build_image "mino-typescript" "$SCRIPT_DIR/typescript" "--build-arg BASE_IMAGE=mino-base"
-}
-
-build_rust() {
-    build_image "mino-rust" "$SCRIPT_DIR/rust" "--build-arg BASE_IMAGE=mino-base"
-}
-
 #------------------------------------------------------------------------------
 # Test functions
 #------------------------------------------------------------------------------
@@ -257,88 +248,28 @@ test_base() {
     check_tool "mino-base" "mino-healthcheck" "mino-healthcheck"
 }
 
-test_typescript() {
-    log_section "Testing mino-typescript"
-
-    echo ""
-    log_info "Structure checks:"
-    check_user "mino-typescript" "developer"
-    check_workdir "mino-typescript" "/workspace"
-    check_env "mino-typescript" "PNPM_HOME" "/cache/pnpm"
-    check_env "mino-typescript" "npm_config_cache" "/cache/npm"
-
-    echo ""
-    log_info "TypeScript tools:"
-    check_tool "mino-typescript" "pnpm"
-    check_tool "mino-typescript" "tsx"
-    check_tool "mino-typescript" "tsc" "tsc --version"
-    check_tool "mino-typescript" "ncu" "ncu --version"
-    check_tool "mino-typescript" "biome" "biome --version"
-    check_tool "mino-typescript" "turbo" "turbo --version"
-    check_tool "mino-typescript" "vite" "vite --version"
-
-    echo ""
-    log_info "Inherited from base:"
-    check_tool "mino-typescript" "claude"
-    check_tool "mino-typescript" "node"
-}
-
-test_rust() {
-    log_section "Testing mino-rust"
-
-    echo ""
-    log_info "Structure checks:"
-    check_user "mino-rust" "developer"
-    check_workdir "mino-rust" "/workspace"
-    check_env "mino-rust" "CARGO_HOME" "/cache/cargo"
-    check_env "mino-rust" "RUSTUP_HOME" "/opt/rustup"
-    check_env "mino-rust" "RUSTC_WRAPPER" "sccache"
-    check_env "mino-rust" "SCCACHE_DIR" "/cache/sccache"
-
-    echo ""
-    log_info "Rust tools:"
-    check_tool "mino-rust" "rustc"
-    check_tool "mino-rust" "cargo"
-    check_tool "mino-rust" "rustfmt"
-    check_tool "mino-rust" "clippy" "cargo clippy --version"
-    check_tool "mino-rust" "bacon"
-    check_tool "mino-rust" "cargo-add" "cargo add --help > /dev/null"
-    check_tool "mino-rust" "cargo-outdated" "cargo outdated --version"
-    check_tool "mino-rust" "cargo-nextest" "cargo nextest --version"
-    check_tool "mino-rust" "sccache"
-
-    echo ""
-    log_info "Inherited from base:"
-    check_tool "mino-rust" "claude"
-    check_tool "mino-rust" "node"
-}
-
 #------------------------------------------------------------------------------
 # Main
 #------------------------------------------------------------------------------
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [OPTIONS] [IMAGE]
+Usage: $(basename "$0") [OPTIONS]
 
-Build and test mino container images.
+Build and test mino-base container image.
+
+Language toolchains (TypeScript, Rust) are handled by the layer composition
+system at runtime. See images/{lang}/install.sh and images/{lang}/layer.toml.
 
 Options:
-    --test-only     Skip build, only run tests on existing images
+    --test-only     Skip build, only run tests on existing image
     --no-cache      Build without using cache
     -h, --help      Show this help
 
-Images:
-    base            Build/test only base image
-    typescript      Build/test only typescript image
-    rust            Build/test only rust image
-    (none)          Build/test all images in order
-
 Examples:
-    $(basename "$0")              # Build and test all images
-    $(basename "$0") --test-only  # Test existing images
-    $(basename "$0") --no-cache   # Fresh build
-    $(basename "$0") typescript   # Only typescript image
+    $(basename "\$0")              # Build and test base image
+    $(basename "\$0") --test-only  # Test existing image
+    $(basename "\$0") --no-cache   # Fresh build
 EOF
 }
 
@@ -357,10 +288,6 @@ parse_args() {
                 usage
                 exit 0
                 ;;
-            base|typescript|rust)
-                TARGET_IMAGE="$1"
-                shift
-                ;;
             *)
                 log_error "Unknown option: $1"
                 usage
@@ -373,84 +300,26 @@ parse_args() {
 main() {
     parse_args "$@"
 
-    log_section "Mino Image Build & Test"
+    log_section "Mino Base Image Build & Test"
     log_info "Docker command: $DOCKER"
     log_info "Test only: $TEST_ONLY"
     log_info "Build args: ${BUILD_ARGS:-none}"
-    log_info "Target image: ${TARGET_IMAGE:-all}"
-
-    # Determine which images to process
-    local images=()
-    if [[ -z "$TARGET_IMAGE" ]]; then
-        images=(base typescript rust)
-    else
-        images=("$TARGET_IMAGE")
-    fi
 
     # Build phase
     if [[ "$TEST_ONLY" == "false" ]]; then
         log_section "Build Phase"
-
-        for img in "${images[@]}"; do
-            # For language images, ensure base is built first
-            if [[ "$img" != "base" && ! " ${images[*]} " =~ " base " ]]; then
-                if ! $DOCKER image inspect mino-base > /dev/null 2>&1; then
-                    log_warn "Base image required for $img - building base first"
-                    build_base || true
-                fi
-            fi
-
-            case $img in
-                base) build_base || true ;;
-                typescript) build_typescript || true ;;
-                rust) build_rust || true ;;
-            esac
-        done
+        build_base || true
     fi
-
-    # Layer validation phase
-    log_section "Layer Validation"
-    for img in "${images[@]}"; do
-        if [[ "$img" == "base" ]]; then
-            continue
-        fi
-        local layer_dir="$SCRIPT_DIR/$img"
-        if [[ -f "$layer_dir/layer.toml" ]]; then
-            log_success "$img: layer.toml exists"
-        else
-            log_error "$img: layer.toml missing"
-            FAILURES+=("$img: layer.toml missing")
-        fi
-        if [[ -f "$layer_dir/install.sh" ]]; then
-            if [[ -x "$layer_dir/install.sh" ]]; then
-                log_success "$img: install.sh exists and is executable"
-            else
-                log_error "$img: install.sh not executable"
-                FAILURES+=("$img: install.sh not executable")
-            fi
-        else
-            log_error "$img: install.sh missing"
-            FAILURES+=("$img: install.sh missing")
-        fi
-    done
 
     # Test phase
     log_section "Test Phase"
 
-    for img in "${images[@]}"; do
-        # Verify image exists before testing
-        if ! $DOCKER image inspect "mino-$img" > /dev/null 2>&1; then
-            log_error "Image mino-$img not found - skipping tests"
-            FAILURES+=("missing: mino-$img")
-            continue
-        fi
-
-        case $img in
-            base) test_base ;;
-            typescript) test_typescript ;;
-            rust) test_rust ;;
-        esac
-    done
+    if ! $DOCKER image inspect "mino-base" > /dev/null 2>&1; then
+        log_error "Image mino-base not found - skipping tests"
+        FAILURES+=("missing: mino-base")
+    else
+        test_base
+    fi
 
     # Summary
     log_section "Summary"

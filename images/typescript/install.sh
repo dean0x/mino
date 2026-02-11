@@ -10,3 +10,9 @@ npm install -g pnpm tsx typescript npm-check-updates @biomejs/biome turbo vite
 
 # Clean npm cache to reduce image size
 npm cache clean --force
+
+# Verify installations
+pnpm --version
+tsx --version
+tsc --version
+biome --version
