@@ -356,11 +356,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         "Native Podman"
     }
 
-    async fn volume_create(
-        &self,
-        name: &str,
-        labels: &HashMap<String, String>,
-    ) -> MinoResult<()> {
+    async fn volume_create(&self, name: &str, labels: &HashMap<String, String>) -> MinoResult<()> {
         debug!("Creating volume: {}", name);
 
         let mut args = vec!["volume", "create", "--ignore"];
@@ -515,10 +511,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         // First check if volume exists and get current info
         let existing = self.volume_inspect(name).await?;
         if existing.is_none() {
-            return Err(MinoError::Internal(format!(
-                "Volume not found: {}",
-                name
-            )));
+            return Err(MinoError::Internal(format!("Volume not found: {}", name)));
         }
 
         // Remove old volume

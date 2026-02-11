@@ -61,9 +61,7 @@ impl AwsCredentials {
     }
 
     /// Get session token using AWS CLI
-    async fn get_session_token_internal(
-        config: &AwsConfig,
-    ) -> MinoResult<AwsSessionCredentials> {
+    async fn get_session_token_internal(config: &AwsConfig) -> MinoResult<AwsSessionCredentials> {
         debug!("Requesting AWS session token via CLI...");
 
         let mut cmd = Command::new("aws");

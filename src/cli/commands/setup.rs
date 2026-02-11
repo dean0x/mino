@@ -124,19 +124,13 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         if args.check {
             ui::outro_warn(
                 ctx,
-                &format!(
-                    "{} issue(s) found. Run 'mino setup' to install.",
-                    issues
-                ),
+                &format!("{} issue(s) found. Run 'mino setup' to install.", issues),
             );
         } else {
             ui::outro_warn(ctx, "Setup incomplete - see above for details.");
         }
     } else {
-        ui::outro_success(
-            ctx,
-            "Setup complete! Run 'mino run -- <command>' to start.",
-        );
+        ui::outro_success(ctx, "Setup complete! Run 'mino run -- <command>' to start.");
     }
 
     Ok(())
@@ -182,19 +176,13 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
         if args.check {
             ui::outro_warn(
                 ctx,
-                &format!(
-                    "{} issue(s) found. Run 'mino setup' to install.",
-                    issues
-                ),
+                &format!("{} issue(s) found. Run 'mino setup' to install.", issues),
             );
         } else {
             ui::outro_warn(ctx, "Setup incomplete - see above for details.");
         }
     } else {
-        ui::outro_success(
-            ctx,
-            "Setup complete! Run 'mino run -- <command>' to start.",
-        );
+        ui::outro_success(ctx, "Setup complete! Run 'mino run -- <command>' to start.");
     }
 
     Ok(())
@@ -377,10 +365,7 @@ async fn check_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &str, vm_distro: &
             StepResult::AlreadyOk
         } else {
             ui::step_error(ctx, "VM creation failed");
-            ui::remark(
-                ctx,
-                &format!("Try: orb delete {} && mino setup", vm_name),
-            );
+            ui::remark(ctx, &format!("Try: orb delete {} && mino setup", vm_name));
             StepResult::Failed
         }
     } else {

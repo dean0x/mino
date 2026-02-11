@@ -113,9 +113,9 @@ impl CredentialCache {
     pub async fn remove(&self, key: &str) -> MinoResult<()> {
         let path = self.cache_path(key);
         if path.exists() {
-            fs::remove_file(&path).await.map_err(|e| {
-                MinoError::io(format!("removing cache file {}", path.display()), e)
-            })?;
+            fs::remove_file(&path)
+                .await
+                .map_err(|e| MinoError::io(format!("removing cache file {}", path.display()), e))?;
         }
         Ok(())
     }

@@ -132,8 +132,7 @@ async fn set_value(
 async fn set_local_value(key: &str, value: &str) -> MinoResult<()> {
     let ctx = UiContext::detect();
 
-    let cwd =
-        std::env::current_dir().map_err(|e| MinoError::io("getting current directory", e))?;
+    let cwd = std::env::current_dir().map_err(|e| MinoError::io("getting current directory", e))?;
     let local_path = cwd.join(".mino.toml");
 
     // Validate the key before touching the file

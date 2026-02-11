@@ -82,11 +82,7 @@ pub trait ContainerRuntime: Send + Sync {
     // Volume operations for persistent caching
 
     /// Create a new volume with the given name and labels
-    async fn volume_create(
-        &self,
-        name: &str,
-        labels: &HashMap<String, String>,
-    ) -> MinoResult<()>;
+    async fn volume_create(&self, name: &str, labels: &HashMap<String, String>) -> MinoResult<()>;
 
     /// Check if a volume exists
     async fn volume_exists(&self, name: &str) -> MinoResult<bool>;

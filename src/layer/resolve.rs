@@ -86,9 +86,7 @@ pub async fn resolve_layers(
 /// Validate that a layer name is safe (no path traversal, no special characters).
 fn validate_layer_name(name: &str) -> MinoResult<()> {
     if name.is_empty() {
-        return Err(MinoError::User(
-            "Layer name cannot be empty".to_string(),
-        ));
+        return Err(MinoError::User("Layer name cannot be empty".to_string()));
     }
     if name.contains('/') || name.contains('\\') || name.contains("..") || name.contains('\0') {
         return Err(MinoError::User(format!(

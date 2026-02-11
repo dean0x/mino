@@ -1,6 +1,5 @@
 //! Init command - create project-local .mino.toml
 
-
 use crate::cli::args::InitArgs;
 use crate::error::{MinoError, MinoResult};
 use crate::ui::{self, UiContext};
@@ -40,8 +39,9 @@ pub async fn execute(args: InitArgs) -> MinoResult<()> {
 
     let target_dir = match args.path {
         Some(ref p) => p.clone(),
-        None => std::env::current_dir()
-            .map_err(|e| MinoError::io("getting current directory", e))?,
+        None => {
+            std::env::current_dir().map_err(|e| MinoError::io("getting current directory", e))?
+        }
     };
 
     let config_path = target_dir.join(".mino.toml");

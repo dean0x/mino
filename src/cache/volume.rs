@@ -327,10 +327,7 @@ mod tests {
         let vol = CacheVolume::new(Ecosystem::Npm, "abc123".to_string(), CacheState::Building);
         let labels = vol.labels();
 
-        assert_eq!(
-            labels.get(labels::MINO_CACHE),
-            Some(&"true".to_string())
-        );
+        assert_eq!(labels.get(labels::MINO_CACHE), Some(&"true".to_string()));
         assert_eq!(labels.get(labels::ECOSYSTEM), Some(&"npm".to_string()));
         assert_eq!(labels.get(labels::HASH), Some(&"abc123".to_string()));
         assert_eq!(labels.get(labels::STATE), Some(&"building".to_string()));

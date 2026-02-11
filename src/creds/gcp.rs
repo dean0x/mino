@@ -65,9 +65,7 @@ impl GcpCredentials {
         let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
         if token.is_empty() {
-            return Err(MinoError::GcpCredential(
-                "Empty token returned".to_string(),
-            ));
+            return Err(MinoError::GcpCredential("Empty token returned".to_string()));
         }
 
         Ok(token)

@@ -33,10 +33,7 @@ impl GithubCredentials {
             if stderr.contains("not logged in") || stderr.contains("gh auth login") {
                 return Err(MinoError::GithubNotAuthenticated);
             }
-            return Err(MinoError::User(format!(
-                "gh auth token failed: {}",
-                stderr
-            )));
+            return Err(MinoError::User(format!("gh auth token failed: {}", stderr)));
         }
 
         let token = String::from_utf8_lossy(&output.stdout).trim().to_string();

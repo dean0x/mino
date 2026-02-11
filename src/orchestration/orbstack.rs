@@ -84,9 +84,7 @@ impl OrbStack {
         if status.success() {
             Ok(())
         } else {
-            Err(MinoError::VmStart(
-                "Failed to start OrbStack".to_string(),
-            ))
+            Err(MinoError::VmStart("Failed to start OrbStack".to_string()))
         }
     }
 

@@ -218,9 +218,9 @@ impl ConfigManager {
         ];
 
         for dir in &dirs {
-            fs::create_dir_all(dir).await.map_err(|e| {
-                MinoError::io(format!("creating directory {}", dir.display()), e)
-            })?;
+            fs::create_dir_all(dir)
+                .await
+                .map_err(|e| MinoError::io(format!("creating directory {}", dir.display()), e))?;
         }
 
         // Set restrictive permissions on credentials directory

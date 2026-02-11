@@ -84,9 +84,9 @@ impl Session {
             return Ok(None);
         }
 
-        let content = fs::read_to_string(&path).await.map_err(|e| {
-            MinoError::io(format!("reading session file {}", path.display()), e)
-        })?;
+        let content = fs::read_to_string(&path)
+            .await
+            .map_err(|e| MinoError::io(format!("reading session file {}", path.display()), e))?;
 
         let session: Session = serde_json::from_str(&content)?;
         Ok(Some(session))
@@ -120,9 +120,9 @@ impl Session {
             })?;
 
         use tokio::io::AsyncWriteExt;
-        file.write_all(content.as_bytes()).await.map_err(|e| {
-            MinoError::io(format!("writing session file {}", path.display()), e)
-        })?;
+        file.write_all(content.as_bytes())
+            .await
+            .map_err(|e| MinoError::io(format!("writing session file {}", path.display()), e))?;
 
         Ok(())
     }
@@ -139,9 +139,9 @@ impl Session {
         }
 
         let content = serde_json::to_string_pretty(self)?;
-        fs::write(&path, content).await.map_err(|e| {
-            MinoError::io(format!("writing session file {}", path.display()), e)
-        })?;
+        fs::write(&path, content)
+            .await
+            .map_err(|e| MinoError::io(format!("writing session file {}", path.display()), e))?;
 
         Ok(())
     }

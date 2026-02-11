@@ -592,9 +592,9 @@ async fn validate_environment() -> MinoResult<()> {
 
 fn resolve_project_dir(args: &RunArgs, config: &Config) -> MinoResult<PathBuf> {
     if let Some(ref path) = args.project {
-        let canonical = path.canonicalize().map_err(|e| {
-            MinoError::io(format!("resolving project path {}", path.display()), e)
-        })?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|e| MinoError::io(format!("resolving project path {}", path.display()), e))?;
         return Ok(canonical);
     }
 

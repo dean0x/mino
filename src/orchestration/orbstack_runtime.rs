@@ -385,11 +385,7 @@ impl ContainerRuntime for OrbStackRuntime {
         "OrbStack + Podman"
     }
 
-    async fn volume_create(
-        &self,
-        name: &str,
-        labels: &HashMap<String, String>,
-    ) -> MinoResult<()> {
+    async fn volume_create(&self, name: &str, labels: &HashMap<String, String>) -> MinoResult<()> {
         debug!("Creating volume: {}", name);
 
         let mut args = vec!["podman", "volume", "create", "--ignore"];
@@ -551,10 +547,7 @@ impl ContainerRuntime for OrbStackRuntime {
         // First check if volume exists
         let existing = self.volume_inspect(name).await?;
         if existing.is_none() {
-            return Err(MinoError::Internal(format!(
-                "Volume not found: {}",
-                name
-            )));
+            return Err(MinoError::Internal(format!("Volume not found: {}", name)));
         }
 
         // Remove old volume

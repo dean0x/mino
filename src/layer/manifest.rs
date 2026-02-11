@@ -70,9 +70,9 @@ pub struct LayerCache {
 impl LayerManifest {
     /// Parse a manifest from a TOML file on disk
     pub async fn from_file(path: &Path) -> MinoResult<Self> {
-        let content = tokio::fs::read_to_string(path).await.map_err(|e| {
-            MinoError::io(format!("reading layer manifest {}", path.display()), e)
-        })?;
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| MinoError::io(format!("reading layer manifest {}", path.display()), e))?;
         Self::parse(&content)
     }
 

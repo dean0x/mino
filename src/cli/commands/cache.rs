@@ -198,9 +198,7 @@ async fn show_project_info(
 
     let project_dir = match project {
         Some(p) => p.canonicalize().unwrap_or(p),
-        None => {
-            env::current_dir().map_err(|e| MinoError::io("getting current directory", e))?
-        }
+        None => env::current_dir().map_err(|e| MinoError::io("getting current directory", e))?,
     };
 
     ui::intro(&ctx, "Project Cache Info");
@@ -413,10 +411,7 @@ async fn gc_caches(
 }
 
 /// Clear all caches
-async fn clear_all_caches(
-    runtime: &dyn ContainerRuntime,
-    skip_confirm: bool,
-) -> MinoResult<()> {
+async fn clear_all_caches(runtime: &dyn ContainerRuntime, skip_confirm: bool) -> MinoResult<()> {
     let ctx = UiContext::detect();
     let volumes = runtime.volume_list("mino-cache-").await?;
 
