@@ -1,6 +1,6 @@
 //! Network isolation for container sessions
 //!
-//! Supports three modes: host (default), none, bridge.
+//! Supports three modes: host, none, bridge.
 //! With `--network-allow`, uses bridge networking + iptables egress filtering.
 
 use crate::error::{MinoError, MinoResult};
@@ -80,6 +80,28 @@ pub fn parse_network_rule(s: &str) -> MinoResult<NetworkRule> {
     Ok(NetworkRule { host, port })
 }
 
+/// Parse a mode string ("host", "none", "bridge") into a `NetworkMode`.
+///
+/// `source` is included in error messages for context (e.g. "CLI", "config").
+fn parse_mode_str(s: &str, source: &str) -> MinoResult<NetworkMode> {
+    match s {
+        "none" => Ok(NetworkMode::None),
+        "bridge" => Ok(NetworkMode::Bridge),
+        "host" => Ok(NetworkMode::Host),
+        other => Err(MinoError::NetworkPolicy(format!(
+            "Unknown network mode '{}' in {}. Valid modes: host, none, bridge",
+            other, source
+        ))),
+    }
+}
+
+/// Parse a slice of `host:port` strings into `NetworkRule`s.
+fn parse_rules(raw: &[String]) -> MinoResult<Vec<NetworkRule>> {
+    raw.iter()
+        .map(|r| parse_network_rule(r))
+        .collect()
+}
+
 /// Resolve the effective network mode from CLI flags and config values.
 ///
 /// Precedence:
@@ -111,25 +133,12 @@ pub fn resolve_network_mode(
             );
         }
 
-        let rules: Vec<NetworkRule> = cli_allow_rules
-            .iter()
-            .map(|r| parse_network_rule(r))
-            .collect::<MinoResult<Vec<_>>>()?;
-
-        return Ok(NetworkMode::Allow(rules));
+        return Ok(NetworkMode::Allow(parse_rules(cli_allow_rules)?));
     }
 
     // CLI --network flag (without allow rules)
     if let Some(net) = cli_network {
-        return match net {
-            "none" => Ok(NetworkMode::None),
-            "bridge" => Ok(NetworkMode::Bridge),
-            "host" => Ok(NetworkMode::Host),
-            other => Err(MinoError::NetworkPolicy(format!(
-                "Unknown network mode '{}'. Valid modes: host, none, bridge",
-                other
-            ))),
-        };
+        return parse_mode_str(net, "CLI");
     }
 
     // Config allow rules (no CLI override)
@@ -143,24 +152,11 @@ pub fn resolve_network_mode(
             ));
         }
 
-        let rules: Vec<NetworkRule> = config_network_allow
-            .iter()
-            .map(|r| parse_network_rule(r))
-            .collect::<MinoResult<Vec<_>>>()?;
-
-        return Ok(NetworkMode::Allow(rules));
+        return Ok(NetworkMode::Allow(parse_rules(config_network_allow)?));
     }
 
     // Config network mode fallback
-    match config_network {
-        "none" => Ok(NetworkMode::None),
-        "bridge" => Ok(NetworkMode::Bridge),
-        "host" => Ok(NetworkMode::Host),
-        other => Err(MinoError::NetworkPolicy(format!(
-            "Unknown network mode '{}' in config. Valid modes: host, none, bridge",
-            other
-        ))),
-    }
+    parse_mode_str(config_network, "config")
 }
 
 impl NetworkMode {
@@ -169,8 +165,7 @@ impl NetworkMode {
         match self {
             NetworkMode::Host => "host",
             NetworkMode::None => "none",
-            NetworkMode::Bridge => "bridge",
-            NetworkMode::Allow(_) => "bridge",
+            NetworkMode::Bridge | NetworkMode::Allow(_) => "bridge",
         }
     }
 
