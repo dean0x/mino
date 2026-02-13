@@ -125,6 +125,11 @@ impl ContainerRuntime for OrbStackRuntime {
             .iter()
             .flat_map(|(k, v)| vec!["-e".to_string(), format!("{}={}", k, v)])
             .collect();
+        let cap_args: Vec<String> = config
+            .cap_add
+            .iter()
+            .flat_map(|c| vec!["--cap-add".to_string(), c.clone()])
+            .collect();
 
         let mut cmd_args: Vec<&str> = args.clone();
         for v in &volume_args {
@@ -132,6 +137,9 @@ impl ContainerRuntime for OrbStackRuntime {
         }
         for e in &env_args {
             cmd_args.push(e);
+        }
+        for c in &cap_args {
+            cmd_args.push(c);
         }
         cmd_args.push(&config.image);
         for c in command {
@@ -185,6 +193,11 @@ impl ContainerRuntime for OrbStackRuntime {
             .iter()
             .flat_map(|(k, v)| vec!["-e".to_string(), format!("{}={}", k, v)])
             .collect();
+        let cap_args: Vec<String> = config
+            .cap_add
+            .iter()
+            .flat_map(|c| vec!["--cap-add".to_string(), c.clone()])
+            .collect();
 
         let mut cmd_args: Vec<&str> = args.clone();
         for v in &volume_args {
@@ -192,6 +205,9 @@ impl ContainerRuntime for OrbStackRuntime {
         }
         for e in &env_args {
             cmd_args.push(e);
+        }
+        for c in &cap_args {
+            cmd_args.push(c);
         }
         cmd_args.push(&config.image);
         for c in command {

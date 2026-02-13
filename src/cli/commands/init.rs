@@ -14,7 +14,8 @@ const INIT_TEMPLATE: &str = r#"# Mino project configuration
 [container]
 # image = "typescript"
 # layers = ["rust", "typescript"]
-# network = "host"
+# network = "host"                   # host, none, bridge
+# network_allow = ["github.com:443"] # implies bridge + iptables
 # workdir = "/workspace"
 
 # [credentials.aws]

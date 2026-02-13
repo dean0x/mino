@@ -151,6 +151,15 @@ pub struct RunArgs {
     #[arg(long, conflicts_with = "no_cache")]
     pub cache_fresh: bool,
 
+    /// Network mode: host (default), none, bridge
+    #[arg(long)]
+    pub network: Option<String>,
+
+    /// Allowlisted network destinations (host:port, comma-separated).
+    /// Implies bridge networking with iptables egress filtering.
+    #[arg(long, value_delimiter = ',')]
+    pub network_allow: Vec<String>,
+
     /// Command and arguments to run (defaults to shell)
     #[arg(last = true)]
     pub command: Vec<String>,
@@ -399,6 +408,31 @@ mod tests {
     fn cli_no_local_flag() {
         let cli = Cli::parse_from(["mino", "--no-local", "status"]);
         assert!(cli.no_local);
+    }
+
+    #[test]
+    fn cli_parses_network_flags() {
+        let cli = Cli::parse_from(["mino", "run", "--network", "none", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.network.as_deref(), Some("none"));
+                assert!(args.network_allow.is_empty());
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_network_allow() {
+        let cli = Cli::parse_from([
+            "mino", "run", "--network-allow", "github.com:443,npmjs.org:443", "--", "bash",
+        ]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.network_allow, vec!["github.com:443", "npmjs.org:443"]);
+            }
+            _ => panic!("expected Run command"),
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@ use crate::credentials::{
 };
 use crate::error::{MinoError, MinoResult};
 use crate::layer::{compose_image, resolve_layers};
+use crate::network::{generate_iptables_wrapper, resolve_network_mode, NetworkMode};
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{TaskSpinner, UiContext};
@@ -151,6 +152,15 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     let resolution =
         resolve_image_or_layers(layer_names, &args, config, &*runtime, &project_dir).await?;
 
+    // Resolve network mode
+    let network_mode = resolve_network_mode(
+        args.network.as_deref(),
+        &args.network_allow,
+        &config.container.network,
+        &config.container.network_allow,
+    )?;
+    debug!("Network mode: {:?}", network_mode);
+
     // Setup caching (if enabled)
     spinner.message("Setting up caches...");
     let (cache_mounts, cache_env, cache_session) =
@@ -188,6 +198,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         credentials,
         &cache_mounts,
         cache_env,
+        &network_mode,
     )?;
 
     // Determine command to run
@@ -195,6 +206,13 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         vec![config.session.shell.clone()]
     } else {
         args.command.clone()
+    };
+
+    // Wrap command with iptables if using network allowlist
+    let command = if let NetworkMode::Allow(ref rules) = network_mode {
+        generate_iptables_wrapper(rules, &command)
+    } else {
+        command
     };
 
     // Create session record
@@ -214,6 +232,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
                 "project_dir": project_dir.display().to_string(),
                 "image": &container_config.image,
                 "command": &command,
+                "network": format!("{:?}", network_mode),
             }),
         )
         .await;
@@ -717,6 +736,7 @@ async fn gather_credentials(
     Ok((env_vars, providers))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_container_config(
     args: &RunArgs,
     config: &Config,
@@ -725,6 +745,7 @@ fn build_container_config(
     env_vars: HashMap<String, String>,
     cache_mounts: &[CacheMount],
     cache_env: HashMap<String, String>,
+    network_mode: &NetworkMode,
 ) -> MinoResult<ContainerConfig> {
     let image = resolution.image.clone();
 
@@ -771,9 +792,14 @@ fn build_container_config(
         workdir: config.container.workdir.clone(),
         volumes,
         env: final_env,
-        network: config.container.network.clone(),
+        network: network_mode.to_podman_network().to_string(),
         interactive: !args.detach,
         tty: !args.detach,
+        cap_add: if network_mode.requires_cap_net_admin() {
+            vec!["NET_ADMIN".to_string()]
+        } else {
+            vec![]
+        },
     })
 }
 

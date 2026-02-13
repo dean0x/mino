@@ -22,6 +22,8 @@ pub struct ContainerConfig {
     pub interactive: bool,
     /// Allocate a TTY
     pub tty: bool,
+    /// Linux capabilities to add (e.g., "NET_ADMIN")
+    pub cap_add: Vec<String>,
 }
 
 /// Information about a running container
@@ -51,6 +53,7 @@ mod tests {
             network: "host".to_string(),
             interactive: true,
             tty: true,
+            cap_add: vec![],
         };
 
         assert_eq!(config.image, "fedora:43");

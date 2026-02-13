@@ -14,7 +14,7 @@ AI coding agents are powerful but require significant system access. Mino provid
 
 - **Filesystem Isolation**: Agent only sees your project directory, not `~/.ssh`, `~/.aws`, or system files
 - **Credential Scoping**: Short-lived cloud tokens instead of permanent credentials
-- **Network Boundaries**: Container-level isolation via Podman (default: host networking; network policy on roadmap)
+- **Network Boundaries**: Three network modes — full host, no network, or allowlisted egress via iptables
 
 ## Features
 
@@ -23,6 +23,7 @@ AI coding agents are powerful but require significant system access. Mino provid
 - **SSH Agent Forwarding**: Git authentication without exposing private keys
 - **Persistent Caching**: Content-addressed dependency caches survive session crashes
 - **Multi-Session**: Run multiple isolated sandboxes in parallel
+- **Network Isolation**: Block all outbound traffic, or allowlist specific host:port destinations
 - **Zero Config**: Works out of the box with sensible defaults
 
 ## Requirements
@@ -128,6 +129,8 @@ mino run [OPTIONS] [-- COMMAND...]
 | `-d, --detach` | Run in background |
 | `--no-cache` | Disable dependency caching |
 | `--cache-fresh` | Force fresh cache (ignore existing) |
+| `--network <MODE>` | Network mode: `host` (default), `none`, `bridge` |
+| `--network-allow <RULES>` | Allowlisted destinations (`host:port`, comma-separated). Implies bridge + iptables |
 
 #### `mino list`
 
@@ -223,6 +226,7 @@ distro = "fedora"
 image = "fedora:43"
 workdir = "/workspace"
 network = "host"
+# network_allow = ["github.com:443"]  # Implies bridge + iptables egress filtering
 # env = { "MY_VAR" = "value" }       # Additional env vars
 # volumes = ["/host/path:/container/path"]
 # layers = ["typescript", "rust"]     # Composable language layers
@@ -272,6 +276,7 @@ vm.distro
 container.image
 container.network
 container.workdir
+container.network_allow
 credentials.aws.enabled
 credentials.aws.session_duration_secs
 credentials.aws.role_arn
@@ -343,6 +348,62 @@ mino cache gc --days 7
 mino cache clear --all
 ```
 
+## Network Isolation
+
+Mino supports three network modes for container sessions:
+
+### Modes
+
+| Mode | Flag | Behavior |
+|------|------|----------|
+| Host | `--network host` (default) | Full host networking, no restrictions |
+| None | `--network none` | No network access at all |
+| Bridge | `--network bridge` | Standard bridge networking |
+| Allowlist | `--network-allow host:port,...` | Bridge + iptables egress filtering |
+
+### Examples
+
+```bash
+# No network access (air-gapped)
+mino run --network none -- bash
+
+# Allow only GitHub and npm registry
+mino run --network-allow github.com:443,registry.npmjs.org:443 -- claude
+
+# Standard bridge networking (outbound allowed)
+mino run --network bridge -- bash
+```
+
+### Allowlist Mode
+
+When using `--network-allow`, Mino:
+
+1. Sets the container to bridge networking
+2. Adds `CAP_NET_ADMIN` capability
+3. Wraps your command with iptables rules that:
+   - DROP all outbound traffic (IPv4 + IPv6)
+   - ACCEPT loopback traffic
+   - ACCEPT established/related connections
+   - ACCEPT DNS (port 53, UDP + TCP)
+   - ACCEPT each allowlisted host:port
+
+### Configuration
+
+Set default network allowlist in config:
+
+```toml
+[container]
+network = "host"                                    # default mode
+network_allow = ["github.com:443", "npmjs.org:443"] # implies bridge + iptables
+```
+
+Or via CLI: `mino config set container.network_allow "github.com:443,npmjs.org:443"`
+
+### Known Limitations
+
+- **DNS resolution at rule time**: iptables resolves hostnames to IPs when rules are inserted. CDN hosts with rotating IPs may become unreachable during long sessions.
+- **iptables required**: The container image must include iptables. Fedora 43 and mino-base include it by default.
+
 ## Container Images
 
 Mino uses a base image (`mino-base`) with a layer composition system for language toolchains.
@@ -409,14 +470,14 @@ Credentials are cached with TTL awareness - Mino automatically refreshes expired
 Mino provides defense-in-depth but is not a complete security solution:
 
 - **Trust Boundary**: The container can access anything mounted into it
-- **Network Access**: Default `host` network mode allows outbound connections
+- **Network Access**: Default `host` mode allows outbound connections. Use `--network none` for air-gapped sessions or `--network-allow` for fine-grained egress control
 - **Credential Scope**: Temporary credentials still have the permissions of the source identity
 - **OrbStack Trust**: You're trusting OrbStack's VM isolation
 
 For maximum security:
 1. Use dedicated cloud roles with minimal permissions
 2. Use named sessions to track activity
-3. Consider network-restricted container modes for sensitive work
+3. Use `--network none` or `--network-allow` for network-restricted sessions
 
 ## Development
 

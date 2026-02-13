@@ -85,6 +85,11 @@ impl NativePodmanRuntime {
         args.push("--network".to_string());
         args.push(config.network.clone());
 
+        for cap in &config.cap_add {
+            args.push("--cap-add".to_string());
+            args.push(cap.clone());
+        }
+
         for v in &config.volumes {
             args.push("-v".to_string());
             args.push(v.clone());

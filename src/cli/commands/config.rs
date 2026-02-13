@@ -84,6 +84,13 @@ async fn set_value(
         ["container", "image"] => config.container.image = value.to_string(),
         ["container", "network"] => config.container.network = value.to_string(),
         ["container", "workdir"] => config.container.workdir = value.to_string(),
+        ["container", "network_allow"] => {
+            config.container.network_allow = value
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
 
         ["credentials", "aws", "enabled"] => config.credentials.aws.enabled = parse_bool(value)?,
         ["credentials", "aws", "session_duration_secs"] => {
@@ -176,7 +183,7 @@ fn validate_config_key(key: &str) -> MinoResult<()> {
     match parts.as_slice() {
         ["general", "verbose" | "log_format" | "audit_log"]
         | ["vm", "name" | "distro"]
-        | ["container", "image" | "network" | "workdir"]
+        | ["container", "image" | "network" | "workdir" | "network_allow"]
         | ["credentials", "aws", "enabled" | "session_duration_secs" | "role_arn" | "profile" | "region"]
         | ["credentials", "gcp", "enabled" | "project"]
         | ["credentials", "azure", "enabled" | "subscription" | "tenant"]
@@ -204,8 +211,19 @@ fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinoResult<(
         .as_table_mut()
         .ok_or_else(|| MinoError::User(format!("Expected table for key: {}", key)))?;
 
-    // Infer TOML type from the value string
-    let toml_value = if value == "true" || value == "false" {
+    // Keys that store as arrays
+    let is_list_key = key.ends_with("network_allow")
+        || key.ends_with("layers")
+        || key.ends_with("volumes");
+
+    let toml_value = if is_list_key {
+        let items: Vec<toml::Value> = value
+            .split(',')
+            .map(|s| toml::Value::String(s.trim().to_string()))
+            .filter(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false))
+            .collect();
+        toml::Value::Array(items)
+    } else if value == "true" || value == "false" {
         toml::Value::Boolean(value.parse().unwrap())
     } else if let Ok(n) = value.parse::<i64>() {
         toml::Value::Integer(n)
@@ -244,6 +262,7 @@ fn print_valid_keys() {
         "container.image",
         "container.network",
         "container.workdir",
+        "container.network_allow",
         "credentials.aws.enabled",
         "credentials.aws.session_duration_secs",
         "credentials.aws.role_arn",
