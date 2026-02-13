@@ -16,7 +16,10 @@ exclude = [
     ".github/",
     "tests/",
     "*.md",
-    "!README.md",
+    "!/README.md",
+    "npm/",
+    "images/",
+    "scripts/",
 ]
 
 [dependencies]

@@ -224,7 +224,7 @@ fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinoResult<(
             .collect();
         toml::Value::Array(items)
     } else if value == "true" || value == "false" {
-        toml::Value::Boolean(value.parse().unwrap())
+        toml::Value::Boolean(parse_bool(value)?)
     } else if let Ok(n) = value.parse::<i64>() {
         toml::Value::Integer(n)
     } else {
