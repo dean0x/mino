@@ -46,6 +46,9 @@ lcov.info
 # Launch marketing materials
 /launch/
 
+# DevFlow working files
+.docs/
+
 # Terminal demo recordings
 demo.gif
 demo.tape
