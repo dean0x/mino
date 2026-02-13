@@ -46,6 +46,7 @@ predicates = "3.1"
 [profile.release]
 lto = true
 strip = true
+codegen-units = 1
 
 [[bin]]
 name = "mino"
