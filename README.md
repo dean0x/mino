@@ -14,7 +14,7 @@ AI coding agents are powerful but require significant system access. Mino provid
 
 - **Filesystem Isolation**: Agent only sees your project directory, not `~/.ssh`, `~/.aws`, or system files
 - **Credential Scoping**: Short-lived cloud tokens instead of permanent credentials
-- **Network Boundaries**: Container-level network isolation via Podman
+- **Network Boundaries**: Container-level isolation via Podman (default: host networking; network policy on roadmap)
 
 ## Features
 

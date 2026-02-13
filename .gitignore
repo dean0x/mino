@@ -42,3 +42,10 @@ lcov.info
 
 # Local configuration (user-specific)
 .mino.local.toml
+
+# Launch marketing materials
+/launch/
+
+# Terminal demo recordings
+demo.gif
+demo.tape
