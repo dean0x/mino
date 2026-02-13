@@ -18,7 +18,6 @@ exclude = [
     "*.md",
     "!/README.md",
     "npm/",
-    "images/",
     "scripts/",
     "Formula/",
 ]
