@@ -11,6 +11,7 @@ pub mod config;
 pub mod credentials;
 pub mod error;
 pub mod layer;
+pub mod network;
 pub mod orchestration;
 pub mod session;
 pub mod ui;

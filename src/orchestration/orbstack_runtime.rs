@@ -60,6 +60,38 @@ impl OrbStackRuntime {
         Ok(())
     }
 
+    /// Build the common Podman argument list for container `run` / `create`.
+    ///
+    /// Appends workdir, network, capabilities, volumes, env, image, and command
+    /// to `args`. Mirrors `NativePodmanRuntime::push_container_args`.
+    fn push_podman_args(
+        args: &mut Vec<String>,
+        config: &ContainerConfig,
+        command: &[String],
+    ) {
+        args.push("-w".to_string());
+        args.push(config.workdir.clone());
+        args.push("--network".to_string());
+        args.push(config.network.clone());
+
+        for cap in &config.cap_add {
+            args.push("--cap-add".to_string());
+            args.push(cap.clone());
+        }
+
+        for v in &config.volumes {
+            args.push("-v".to_string());
+            args.push(v.clone());
+        }
+        for (k, v) in &config.env {
+            args.push("-e".to_string());
+            args.push(format!("{}={}", k, v));
+        }
+
+        args.push(config.image.clone());
+        args.extend(command.iter().cloned());
+    }
+
     /// Pull an image
     async fn pull(&self, image: &str) -> MinoResult<()> {
         debug!("Pulling image: {}", image);
@@ -101,46 +133,21 @@ impl ContainerRuntime for OrbStackRuntime {
             self.pull(&config.image).await?;
         }
 
-        let mut args = vec!["podman", "run", "-d"];
+        let mut args = vec!["podman".to_string(), "run".to_string(), "-d".to_string()];
 
         if config.interactive {
-            args.push("-i");
+            args.push("-i".to_string());
         }
         if config.tty {
-            args.push("-t");
+            args.push("-t".to_string());
         }
 
-        args.push("-w");
-        args.push(&config.workdir);
-        args.push("--network");
-        args.push(&config.network);
+        Self::push_podman_args(&mut args, config, command);
 
-        let volume_args: Vec<String> = config
-            .volumes
-            .iter()
-            .flat_map(|v| vec!["-v".to_string(), v.clone()])
-            .collect();
-        let env_args: Vec<String> = config
-            .env
-            .iter()
-            .flat_map(|(k, v)| vec!["-e".to_string(), format!("{}={}", k, v)])
-            .collect();
+        debug!("Running container (detached): {:?}", args);
 
-        let mut cmd_args: Vec<&str> = args.clone();
-        for v in &volume_args {
-            cmd_args.push(v);
-        }
-        for e in &env_args {
-            cmd_args.push(e);
-        }
-        cmd_args.push(&config.image);
-        for c in command {
-            cmd_args.push(c);
-        }
-
-        debug!("Running container (detached): {:?}", cmd_args);
-
-        let output = self.orbstack.exec(&cmd_args).await?;
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.orbstack.exec(&args_refs).await?;
 
         if output.status.success() {
             let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -161,46 +168,21 @@ impl ContainerRuntime for OrbStackRuntime {
             self.pull(&config.image).await?;
         }
 
-        let mut args = vec!["podman", "create"];
+        let mut args = vec!["podman".to_string(), "create".to_string()];
 
         if config.interactive {
-            args.push("-i");
+            args.push("-i".to_string());
         }
         if config.tty {
-            args.push("-t");
+            args.push("-t".to_string());
         }
 
-        args.push("-w");
-        args.push(&config.workdir);
-        args.push("--network");
-        args.push(&config.network);
+        Self::push_podman_args(&mut args, config, command);
 
-        let volume_args: Vec<String> = config
-            .volumes
-            .iter()
-            .flat_map(|v| vec!["-v".to_string(), v.clone()])
-            .collect();
-        let env_args: Vec<String> = config
-            .env
-            .iter()
-            .flat_map(|(k, v)| vec!["-e".to_string(), format!("{}={}", k, v)])
-            .collect();
+        debug!("Creating container: {:?}", args);
 
-        let mut cmd_args: Vec<&str> = args.clone();
-        for v in &volume_args {
-            cmd_args.push(v);
-        }
-        for e in &env_args {
-            cmd_args.push(e);
-        }
-        cmd_args.push(&config.image);
-        for c in command {
-            cmd_args.push(c);
-        }
-
-        debug!("Creating container: {:?}", cmd_args);
-
-        let output = self.orbstack.exec(&cmd_args).await?;
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.orbstack.exec(&args_refs).await?;
 
         if output.status.success() {
             let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();

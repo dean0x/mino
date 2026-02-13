@@ -125,6 +125,10 @@ pub enum MinoError {
     #[error("Image build failed for '{tag}': {reason}")]
     ImageBuild { tag: String, reason: String },
 
+    // Network errors
+    #[error("Network policy conflict: {0}")]
+    NetworkPolicy(String),
+
     // IO errors
     #[error("IO error: {context}")]
     Io {
@@ -218,6 +222,7 @@ impl MinoError {
             Self::GithubNotAuthenticated => Some("Run: gh auth login"),
             Self::LayerNotFound { .. } => Some("Create a layer with layer.toml + install.sh in .mino/layers/<name>/ or ~/.config/mino/layers/<name>/"),
             Self::ImageBuild { .. } => Some("Check build output above. Use -v for details."),
+            Self::NetworkPolicy(_) => Some("Use --network bridge with --network-allow, or --network none without --network-allow."),
             _ => None,
         }
     }

@@ -27,6 +27,7 @@ src/
 │   ├── orbstack.rs            # OrbStack VM management
 │   └── factory.rs             # Platform detection
 ├── session/                   # Session state (JSON files)
+├── network.rs                 # Network isolation modes + iptables
 └── creds/                     # Cloud credential providers
 ```
 
@@ -47,6 +48,12 @@ src/
 - `NativePodmanRuntime` for Linux (direct podman calls)
 - `OrbStackRuntime` for macOS (via OrbStack VM)
 - Factory pattern selects runtime based on `Platform::detect()`
+
+### Network Isolation
+- Three modes: `Host`, `None`, `Bridge`, `Allow(rules)`
+- `--network-allow` implies bridge + `CAP_NET_ADMIN` + iptables wrapper
+- `resolve_network_mode()` handles CLI/config precedence and conflict detection
+- iptables rules: DROP all → ACCEPT loopback → ACCEPT established → ACCEPT DNS → per-rule ACCEPT → exec command
 
 ### Configuration
 - TOML at `~/.config/mino/config.toml`

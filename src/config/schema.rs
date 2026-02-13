@@ -92,6 +92,10 @@ pub struct ContainerConfig {
     /// Working directory inside container
     pub workdir: String,
 
+    /// Allowlisted network destinations (host:port format)
+    #[serde(default)]
+    pub network_allow: Vec<String>,
+
     /// Composable layers (overrides image when non-empty)
     #[serde(default)]
     pub layers: Vec<String>,
@@ -105,6 +109,7 @@ impl Default for ContainerConfig {
             volumes: vec![],
             network: "host".to_string(),
             workdir: "/workspace".to_string(),
+            network_allow: vec![],
             layers: vec![],
         }
     }
