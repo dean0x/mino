@@ -60,6 +60,67 @@ impl OrbStackRuntime {
         Ok(())
     }
 
+    /// Ensure rootless Podman is configured (subuid/subgid mappings exist)
+    async fn ensure_rootless(&self) -> MinoResult<()> {
+        let whoami_output = self.orbstack.exec(&["whoami"]).await?;
+        if !whoami_output.status.success() {
+            return Err(MinoError::PodmanRootlessSetup {
+                reason: "could not determine VM username".to_string(),
+            });
+        }
+        let username = String::from_utf8_lossy(&whoami_output.stdout)
+            .trim()
+            .to_string();
+
+        let subuid_check = self
+            .orbstack
+            .exec(&["grep", "-q", &format!("^{}:", username), "/etc/subuid"])
+            .await?;
+        let subgid_check = self
+            .orbstack
+            .exec(&["grep", "-q", &format!("^{}:", username), "/etc/subgid"])
+            .await?;
+
+        if subuid_check.status.success() && subgid_check.status.success() {
+            return Ok(());
+        }
+
+        debug!("Configuring rootless Podman (subuid/subgid) for '{}'", username);
+
+        if !subuid_check.status.success() {
+            let cmd = format!("echo '{}:100000:65536' | sudo tee -a /etc/subuid", username);
+            let result = self.orbstack.exec(&["sh", "-c", &cmd]).await?;
+            if !result.status.success() {
+                return Err(MinoError::PodmanRootlessSetup {
+                    reason: "failed to configure /etc/subuid".to_string(),
+                });
+            }
+        }
+
+        if !subgid_check.status.success() {
+            let cmd = format!("echo '{}:100000:65536' | sudo tee -a /etc/subgid", username);
+            let result = self.orbstack.exec(&["sh", "-c", &cmd]).await?;
+            if !result.status.success() {
+                return Err(MinoError::PodmanRootlessSetup {
+                    reason: "failed to configure /etc/subgid".to_string(),
+                });
+            }
+        }
+
+        let migrate = self
+            .orbstack
+            .exec(&["podman", "system", "migrate"])
+            .await?;
+        if !migrate.status.success() {
+            return Err(MinoError::PodmanRootlessSetup {
+                reason: "podman system migrate failed".to_string(),
+            });
+        }
+
+        debug!("Rootless Podman configured for '{}'", username);
+        Ok(())
+    }
+
     /// Build the common Podman argument list for container `run` / `create`.
     ///
     /// Appends workdir, network, capabilities, volumes, env, image, and command
@@ -124,7 +185,8 @@ impl ContainerRuntime for OrbStackRuntime {
 
     async fn ensure_ready(&self) -> MinoResult<()> {
         self.orbstack.ensure_vm_running().await?;
-        self.ensure_podman().await
+        self.ensure_podman().await?;
+        self.ensure_rootless().await
     }
 
     async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
