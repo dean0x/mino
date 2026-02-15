@@ -221,7 +221,11 @@ impl MinoError {
             Self::AzureNotAuthenticated => Some("Run: az login"),
             Self::GithubNotAuthenticated => Some("Run: gh auth login"),
             Self::LayerNotFound { .. } => Some("Create a layer with layer.toml + install.sh in .mino/layers/<name>/ or ~/.config/mino/layers/<name>/"),
+            Self::ImageBuild { reason, .. } if reason.contains("subuid") || reason.contains("subgid") || reason.contains("insufficient UIDs") => {
+                Some("Rootless Podman not configured. Run: mino setup")
+            }
             Self::ImageBuild { .. } => Some("Check build output above. Use -v for details."),
+            Self::PodmanRootlessSetup { .. } => Some("Run: mino setup"),
             Self::NetworkPolicy(_) => Some("Use --network bridge with --network-allow, or --network none without --network-allow."),
             _ => None,
         }

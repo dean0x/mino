@@ -60,6 +60,73 @@ impl OrbStackRuntime {
         Ok(())
     }
 
+    /// Ensure rootless Podman is configured (subuid/subgid mappings exist)
+    async fn ensure_rootless(&self) -> MinoResult<()> {
+        let whoami_output = self.orbstack.exec(&["whoami"]).await?;
+        if !whoami_output.status.success() {
+            return Err(MinoError::PodmanRootlessSetup {
+                reason: "could not determine VM username".to_string(),
+            });
+        }
+        let username = String::from_utf8_lossy(&whoami_output.stdout)
+            .trim()
+            .to_string();
+
+        // Validate username to prevent shell injection via interpolated commands
+        if username.is_empty()
+            || !username
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        {
+            return Err(MinoError::PodmanRootlessSetup {
+                reason: format!("invalid VM username: '{}'", username),
+            });
+        }
+
+        let grep_pattern = format!("^{}:", username);
+        let mapping_files = ["/etc/subuid", "/etc/subgid"];
+
+        let mut needs_configure = false;
+        for file in &mapping_files {
+            let check = self
+                .orbstack
+                .exec(&["grep", "-q", &grep_pattern, file])
+                .await?;
+
+            if check.status.success() {
+                continue;
+            }
+
+            needs_configure = true;
+            debug!("Adding subordinate ID mapping for '{}' in {}", username, file);
+
+            let cmd = format!("echo '{}:100000:65536' | sudo tee -a {}", username, file);
+            let result = self.orbstack.exec(&["sh", "-c", &cmd]).await?;
+            if !result.status.success() {
+                return Err(MinoError::PodmanRootlessSetup {
+                    reason: format!("failed to configure {}", file),
+                });
+            }
+        }
+
+        if !needs_configure {
+            return Ok(());
+        }
+
+        let migrate = self
+            .orbstack
+            .exec(&["podman", "system", "migrate"])
+            .await?;
+        if !migrate.status.success() {
+            return Err(MinoError::PodmanRootlessSetup {
+                reason: "podman system migrate failed".to_string(),
+            });
+        }
+
+        debug!("Rootless Podman configured for '{}'", username);
+        Ok(())
+    }
+
     /// Build the common Podman argument list for container `run` / `create`.
     ///
     /// Appends workdir, network, capabilities, volumes, env, image, and command
@@ -124,7 +191,8 @@ impl ContainerRuntime for OrbStackRuntime {
 
     async fn ensure_ready(&self) -> MinoResult<()> {
         self.orbstack.ensure_vm_running().await?;
-        self.ensure_podman().await
+        self.ensure_podman().await?;
+        self.ensure_rootless().await
     }
 
     async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
