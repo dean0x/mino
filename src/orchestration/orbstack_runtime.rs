@@ -72,39 +72,45 @@ impl OrbStackRuntime {
             .trim()
             .to_string();
 
-        let subuid_check = self
-            .orbstack
-            .exec(&["grep", "-q", &format!("^{}:", username), "/etc/subuid"])
-            .await?;
-        let subgid_check = self
-            .orbstack
-            .exec(&["grep", "-q", &format!("^{}:", username), "/etc/subgid"])
-            .await?;
+        // Validate username to prevent shell injection via interpolated commands
+        if username.is_empty()
+            || !username
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        {
+            return Err(MinoError::PodmanRootlessSetup {
+                reason: format!("invalid VM username: '{}'", username),
+            });
+        }
 
-        if subuid_check.status.success() && subgid_check.status.success() {
+        let grep_pattern = format!("^{}:", username);
+        let mapping_files = ["/etc/subuid", "/etc/subgid"];
+
+        let mut needs_configure = false;
+        for file in &mapping_files {
+            let check = self
+                .orbstack
+                .exec(&["grep", "-q", &grep_pattern, file])
+                .await?;
+
+            if check.status.success() {
+                continue;
+            }
+
+            needs_configure = true;
+            debug!("Adding subordinate ID mapping for '{}' in {}", username, file);
+
+            let cmd = format!("echo '{}:100000:65536' | sudo tee -a {}", username, file);
+            let result = self.orbstack.exec(&["sh", "-c", &cmd]).await?;
+            if !result.status.success() {
+                return Err(MinoError::PodmanRootlessSetup {
+                    reason: format!("failed to configure {}", file),
+                });
+            }
+        }
+
+        if !needs_configure {
             return Ok(());
-        }
-
-        debug!("Configuring rootless Podman (subuid/subgid) for '{}'", username);
-
-        if !subuid_check.status.success() {
-            let cmd = format!("echo '{}:100000:65536' | sudo tee -a /etc/subuid", username);
-            let result = self.orbstack.exec(&["sh", "-c", &cmd]).await?;
-            if !result.status.success() {
-                return Err(MinoError::PodmanRootlessSetup {
-                    reason: "failed to configure /etc/subuid".to_string(),
-                });
-            }
-        }
-
-        if !subgid_check.status.success() {
-            let cmd = format!("echo '{}:100000:65536' | sudo tee -a /etc/subgid", username);
-            let result = self.orbstack.exec(&["sh", "-c", &cmd]).await?;
-            if !result.status.success() {
-                return Err(MinoError::PodmanRootlessSetup {
-                    reason: "failed to configure /etc/subgid".to_string(),
-                });
-            }
         }
 
         let migrate = self
