@@ -30,10 +30,14 @@ pub struct ComposedImageResult {
 /// Generates a Dockerfile that installs each layer in order, builds
 /// the image with a content-addressed tag, and returns the result.
 /// If the image already exists locally, the build is skipped.
+///
+/// When `on_build_output` is provided, build output is streamed line-by-line
+/// through the callback for progress reporting. Otherwise uses batch build.
 pub async fn compose_image(
     runtime: &dyn ContainerRuntime,
     base_image: &str,
     layers: &[ResolvedLayer],
+    on_build_output: Option<&(dyn Fn(String) + Send + Sync)>,
 ) -> MinoResult<ComposedImageResult> {
     // Compute content-addressed hash
     let image_tag = compute_image_tag(base_image, layers).await?;
@@ -57,7 +61,13 @@ pub async fn compose_image(
     // Build the image
     let build_dir = prepare_build_dir(base_image, layers, &build_env).await?;
 
-    let result = runtime.build_image(&build_dir, &image_tag).await;
+    let result = if let Some(callback) = on_build_output {
+        runtime
+            .build_image_with_progress(&build_dir, &image_tag, callback)
+            .await
+    } else {
+        runtime.build_image(&build_dir, &image_tag).await
+    };
 
     // Clean up build directory (best-effort)
     let _ = tokio::fs::remove_dir_all(&build_dir).await;

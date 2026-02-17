@@ -222,6 +222,29 @@ impl OrbStack {
         }
     }
 
+    /// Spawn a command in the VM with piped stdout/stderr.
+    ///
+    /// Returns the child process for streaming output. Caller is responsible
+    /// for reading stdout/stderr and waiting for exit.
+    pub fn spawn_piped(&self, command: &[&str]) -> MinoResult<tokio::process::Child> {
+        debug!(
+            "Spawning piped in VM {}: {:?}",
+            self.config.name, command
+        );
+
+        let mut cmd = Command::new("orb");
+        cmd.arg("-m").arg(&self.config.name);
+        cmd.args(command);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        cmd.spawn().map_err(|e| {
+            MinoError::command_failed(
+                format!("orb -m {} {:?}", self.config.name, command),
+                e,
+            )
+        })
+    }
+
     /// Execute a command in the VM interactively
     pub async fn exec_interactive(&self, command: &[&str]) -> MinoResult<i32> {
         debug!(

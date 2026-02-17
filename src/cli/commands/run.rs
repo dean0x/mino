@@ -21,7 +21,7 @@ use crate::layer::{compose_image, resolve_layers};
 use crate::network::{generate_iptables_wrapper, resolve_network_mode, NetworkMode};
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
-use crate::ui::{TaskSpinner, UiContext};
+use crate::ui::{BuildProgress, TaskSpinner, UiContext};
 use console::style;
 use std::collections::HashMap;
 use std::env;
@@ -70,57 +70,6 @@ fn resolve_layer_names(args: &RunArgs, config: &Config) -> Option<Vec<String>> {
     None
 }
 
-/// Resolve image from layers or single image alias.
-async fn resolve_image_or_layers(
-    layer_names: Option<Vec<String>>,
-    args: &RunArgs,
-    config: &Config,
-    runtime: &dyn ContainerRuntime,
-    project_dir: &Path,
-) -> MinoResult<ImageResolution> {
-    if let Some(names) = layer_names {
-        let resolved = resolve_layers(&names, project_dir).await?;
-        // Layers compose on top of mino-base (which has developer user, zsh, etc.)
-        // not the user's config image (which may be bare fedora/alpine)
-        let base_image = LAYER_BASE_IMAGE;
-        let result = compose_image(runtime, base_image, &resolved).await?;
-
-        if result.was_cached {
-            debug!("Using cached composed image: {}", result.image_tag);
-        } else {
-            debug!("Built new composed image: {}", result.image_tag);
-        }
-
-        return Ok(ImageResolution {
-            image: result.image_tag,
-            layer_env: result.env,
-        });
-    }
-
-    // Single image path (existing behavior)
-    let raw_image = args
-        .image
-        .clone()
-        .unwrap_or_else(|| config.container.image.clone());
-
-    // Check if image name is a known layer alias — redirect to layer composition
-    if let Some(layer_name) = image_alias_to_layer(&raw_image) {
-        let resolved = resolve_layers(&[layer_name.to_string()], project_dir).await?;
-        let result = compose_image(runtime, LAYER_BASE_IMAGE, &resolved).await?;
-        return Ok(ImageResolution {
-            image: result.image_tag,
-            layer_env: result.env,
-        });
-    }
-
-    let image = resolve_image_alias(&raw_image);
-
-    Ok(ImageResolution {
-        image,
-        layer_env: HashMap::new(),
-    })
-}
-
 /// Execute the run command
 pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     let ctx = UiContext::detect();
@@ -146,11 +95,64 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     // Resolve image or compose from layers
     let layer_names = resolve_layer_names(&args, config);
-    if layer_names.is_some() {
-        spinner.message("Resolving layers...");
-    }
-    let resolution =
-        resolve_image_or_layers(layer_names, &args, config, &*runtime, &project_dir).await?;
+
+    // Check image alias redirect (e.g., --image typescript → layer composition)
+    let layer_names = layer_names.or_else(|| {
+        let raw = args
+            .image
+            .clone()
+            .unwrap_or_else(|| config.container.image.clone());
+        image_alias_to_layer(&raw).map(|name| vec![name.to_string()])
+    });
+
+    let using_layers = layer_names.is_some();
+
+    let resolution = if let Some(names) = layer_names {
+        // Phase 1: Resolve each layer with per-layer feedback
+        let mut resolved = Vec::new();
+        for name in &names {
+            spinner.message(&format!("Resolving layer: {}...", name));
+            let mut layers = resolve_layers(std::slice::from_ref(name), &project_dir).await?;
+            resolved.append(&mut layers);
+        }
+
+        // Phase 2: Compose image (with streaming progress bar)
+        spinner.clear();
+
+        let label = names.join(", ");
+        let progress = BuildProgress::new(&ctx, &label);
+        let result = compose_image(
+            &*runtime,
+            LAYER_BASE_IMAGE,
+            &resolved,
+            Some(&|line: String| progress.on_line(line)),
+        )
+        .await;
+        progress.finish();
+        let result = result?;
+
+        if result.was_cached {
+            debug!("Using cached composed image: {}", result.image_tag);
+        } else {
+            debug!("Built new composed image: {}", result.image_tag);
+        }
+
+        ImageResolution {
+            image: result.image_tag,
+            layer_env: result.env,
+        }
+    } else {
+        // Single image path (no layers)
+        let raw = args
+            .image
+            .clone()
+            .unwrap_or_else(|| config.container.image.clone());
+        let image = resolve_image_alias(&raw);
+        ImageResolution {
+            image,
+            layer_env: HashMap::new(),
+        }
+    };
 
     // Resolve network mode
     let network_mode = resolve_network_mode(
@@ -202,8 +204,14 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     )?;
 
     // Determine command to run
+    // When using layers (composed on mino-base), default to /bin/zsh
+    // which has Oh My Zsh, plugins, and aliases configured.
     let command = if args.command.is_empty() {
-        vec![config.session.shell.clone()]
+        if using_layers {
+            vec!["/bin/zsh".to_string()]
+        } else {
+            vec![config.session.shell.clone()]
+        }
     } else {
         args.command.clone()
     };
