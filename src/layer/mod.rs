@@ -10,4 +10,4 @@ pub mod resolve;
 
 pub use compose::{compose_image, ComposedImageResult};
 pub use manifest::LayerManifest;
-pub use resolve::{resolve_layers, LayerScript, LayerSource, ResolvedLayer};
+pub use resolve::{list_available_layers, resolve_layers, AvailableLayer, LayerScript, LayerSource, ResolvedLayer};

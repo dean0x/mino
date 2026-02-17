@@ -71,6 +71,49 @@ pub async fn select<T: Clone + Send + Eq + 'static>(
     }
 }
 
+/// Prompt for multiple selections from a list of options.
+/// Returns empty vec if non-interactive.
+pub async fn multiselect<T: Clone + Send + Eq + 'static>(
+    ctx: &UiContext,
+    message: &str,
+    options: &[(T, &str, &str)], // (value, label, hint)
+    required: bool,
+) -> MinoResult<Vec<T>> {
+    // Non-interactive mode returns empty vec (caller decides default)
+    if !ctx.is_interactive() || ctx.auto_yes() {
+        return Ok(vec![]);
+    }
+
+    let message = message.to_string();
+    let items: Vec<(T, String, String)> = options
+        .iter()
+        .map(|(v, l, h)| (v.clone(), l.to_string(), h.to_string()))
+        .collect();
+
+    let result: Result<Result<Vec<T>, std::io::Error>, _> =
+        tokio::task::spawn_blocking(move || {
+            let mut ms = cliclack::multiselect(&message);
+            for (value, label, hint) in items {
+                ms = ms.item(value, label, hint);
+            }
+            ms = ms.required(required);
+            ms.interact()
+        })
+        .await;
+
+    match result {
+        Ok(Ok(values)) => Ok(values),
+        Ok(Err(e)) => Err(crate::error::MinoError::User(format!(
+            "Multiselect failed: {}",
+            e
+        ))),
+        Err(e) => Err(crate::error::MinoError::User(format!(
+            "Multiselect task failed: {}",
+            e
+        ))),
+    }
+}
+
 /// Simple inline confirmation for non-fancy mode (used by setup)
 pub fn confirm_inline(prompt: &str, auto_yes: bool) -> bool {
     if auto_yes {
@@ -109,6 +152,17 @@ mod tests {
 
         let result = confirm(&ctx, "Test?", false).await.unwrap();
         assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn multiselect_non_interactive_empty() {
+        let ctx = UiContext::non_interactive();
+        let options = vec![
+            ("a".to_string(), "Option A", "First"),
+            ("b".to_string(), "Option B", "Second"),
+        ];
+        let result = multiselect(&ctx, "Choose:", &options, false).await.unwrap();
+        assert!(result.is_empty());
     }
 
     #[tokio::test]

@@ -38,5 +38,5 @@ pub use output::{
     step_warn, step_warn_hint,
 };
 pub use progress::{BuildProgress, TaskSpinner};
-pub use prompts::{confirm, confirm_inline, select};
+pub use prompts::{confirm, confirm_inline, multiselect, select};
 pub use theme::{init_theme, MinoTheme};

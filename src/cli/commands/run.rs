@@ -16,12 +16,13 @@ use crate::config::Config;
 use crate::credentials::{
     AwsCredentials, AzureCredentials, CredentialCache, GcpCredentials, GithubCredentials,
 };
+use crate::config::ConfigManager;
 use crate::error::{MinoError, MinoResult};
-use crate::layer::{compose_image, resolve_layers};
+use crate::layer::{compose_image, list_available_layers, resolve_layers};
 use crate::network::{generate_iptables_wrapper, resolve_network_mode, NetworkMode};
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
-use crate::ui::{BuildProgress, TaskSpinner, UiContext};
+use crate::ui::{self, BuildProgress, TaskSpinner, UiContext};
 use console::style;
 use std::collections::HashMap;
 use std::env;
@@ -104,6 +105,23 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
             .unwrap_or_else(|| config.container.image.clone());
         image_alias_to_layer(&raw).map(|name| vec![name.to_string()])
     });
+
+    // Interactive layer selection when no layers/image configured
+    let layer_names = if layer_names.is_none()
+        && ctx.is_interactive()
+        && is_default_image(&args, config)
+    {
+        spinner.clear();
+        match prompt_layer_selection(&ctx, &project_dir, config).await? {
+            Some(selected) => {
+                spinner.start("Initializing sandbox...");
+                Some(selected)
+            }
+            None => None,
+        }
+    } else {
+        layer_names
+    };
 
     let using_layers = layer_names.is_some();
 
@@ -849,6 +867,168 @@ fn resolve_image_alias(image: &str) -> String {
     format!("{}/{}:latest", IMAGE_REGISTRY, image_name)
 }
 
+/// Check if no explicit image was provided and config uses the default image.
+fn is_default_image(args: &RunArgs, config: &Config) -> bool {
+    args.image.is_none() && config.container.image == "fedora:43"
+}
+
+/// Prompt user to select development tool layers interactively.
+/// Returns Some(layer_names) if layers selected, None for bare container.
+async fn prompt_layer_selection(
+    ctx: &UiContext,
+    project_dir: &Path,
+    config: &Config,
+) -> MinoResult<Option<Vec<String>>> {
+    let available = list_available_layers(project_dir).await?;
+    if available.is_empty() {
+        return Ok(None);
+    }
+
+    let options: Vec<(String, String, String)> = available
+        .iter()
+        .map(|l| (l.name.clone(), l.name.clone(), l.description.clone()))
+        .collect();
+    let option_refs: Vec<(String, &str, &str)> = options
+        .iter()
+        .map(|(v, l, h)| (v.clone(), l.as_str(), h.as_str()))
+        .collect();
+
+    let selected = ui::multiselect(
+        ctx,
+        "Select development tools (space to toggle, enter to confirm)",
+        &option_refs,
+        false,
+    )
+    .await?;
+
+    if selected.is_empty() {
+        return Ok(None);
+    }
+
+    // Ask where to save
+    prompt_save_config(ctx, &selected, project_dir, config).await?;
+
+    Ok(Some(selected))
+}
+
+/// Where to save the layer configuration
+#[derive(Clone, PartialEq, Eq)]
+enum SaveTarget {
+    Local,
+    Global,
+    None,
+}
+
+/// Prompt user to save selected layers to config.
+async fn prompt_save_config(
+    ctx: &UiContext,
+    layers: &[String],
+    project_dir: &Path,
+    _config: &Config,
+) -> MinoResult<()> {
+    let options: Vec<(SaveTarget, &str, &str)> = vec![
+        (
+            SaveTarget::Local,
+            "Save to .mino.toml",
+            "this project only",
+        ),
+        (
+            SaveTarget::Global,
+            "Save to global config",
+            "~/.config/mino/config.toml",
+        ),
+        (SaveTarget::None, "Don't save", "one-time, no persistence"),
+    ];
+
+    let target = ui::select(ctx, "Save this configuration?", &options).await?;
+
+    match target {
+        SaveTarget::Local => {
+            let path = project_dir.join(".mino.toml");
+            write_layers_to_config(&path, layers).await?;
+            println!(
+                "  {} Saved to {}",
+                style("✓").green(),
+                path.display()
+            );
+        }
+        SaveTarget::Global => {
+            let path = ConfigManager::default_config_path();
+            write_layers_to_config(&path, layers).await?;
+            println!(
+                "  {} Saved to {}",
+                style("✓").green(),
+                path.display()
+            );
+        }
+        SaveTarget::None => {}
+    }
+
+    Ok(())
+}
+
+/// Write layer selection into a TOML config file (create or merge).
+async fn write_layers_to_config(path: &Path, layers: &[String]) -> MinoResult<()> {
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| MinoError::io(format!("creating config directory {}", parent.display()), e))?;
+    }
+
+    let layers_value = toml::Value::Array(
+        layers
+            .iter()
+            .map(|l| toml::Value::String(l.clone()))
+            .collect(),
+    );
+
+    if path.exists() {
+        // Read existing, merge container.layers
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| MinoError::io(format!("reading {}", path.display()), e))?;
+        let mut doc: toml::Value = content
+            .parse()
+            .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            })?;
+
+        // Ensure container table exists and set layers
+        let table = doc.as_table_mut().ok_or_else(|| MinoError::ConfigInvalid {
+            path: path.to_path_buf(),
+            reason: "config is not a TOML table".to_string(),
+        })?;
+        let container = table
+            .entry("container")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if let Some(ct) = container.as_table_mut() {
+            ct.insert("layers".to_string(), layers_value);
+        }
+
+        let output = toml::to_string_pretty(&doc)
+            .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
+        tokio::fs::write(path, output)
+            .await
+            .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
+    } else {
+        // Write minimal config
+        let mut table = toml::map::Map::new();
+        let mut container = toml::map::Map::new();
+        container.insert("layers".to_string(), layers_value);
+        table.insert("container".to_string(), toml::Value::Table(container));
+
+        let output = toml::to_string_pretty(&toml::Value::Table(table))
+            .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
+        tokio::fs::write(path, output)
+            .await
+            .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -897,5 +1077,102 @@ mod tests {
     fn resolve_image_alias_passthrough_local() {
         assert_eq!(resolve_image_alias("my-local-image"), "my-local-image");
         assert_eq!(resolve_image_alias("fedora"), "fedora");
+    }
+
+    fn test_run_args() -> RunArgs {
+        RunArgs {
+            name: None,
+            project: None,
+            aws: false,
+            gcp: false,
+            azure: false,
+            all_clouds: false,
+            ssh_agent: true,
+            github: true,
+            image: None,
+            layers: vec![],
+            env: vec![],
+            volume: vec![],
+            detach: false,
+            no_cache: false,
+            cache_fresh: false,
+            network: None,
+            network_allow: vec![],
+            command: vec![],
+        }
+    }
+
+    #[test]
+    fn is_default_image_with_defaults() {
+        let args = test_run_args();
+        let config = Config::default();
+        assert!(is_default_image(&args, &config));
+    }
+
+    #[test]
+    fn is_default_image_with_custom_image_arg() {
+        let mut args = test_run_args();
+        args.image = Some("custom:latest".to_string());
+        let config = Config::default();
+        assert!(!is_default_image(&args, &config));
+    }
+
+    #[test]
+    fn is_default_image_with_custom_config() {
+        let args = test_run_args();
+        let mut config = Config::default();
+        config.container.image = "ubuntu:24.04".to_string();
+        assert!(!is_default_image(&args, &config));
+    }
+
+    #[tokio::test]
+    async fn write_layers_creates_new_config() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join(".mino.toml");
+
+        write_layers_to_config(&path, &["rust".to_string(), "typescript".to_string()])
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let parsed: toml::Value = content.parse().unwrap();
+        let layers = parsed["container"]["layers"].as_array().unwrap();
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].as_str().unwrap(), "rust");
+        assert_eq!(layers[1].as_str().unwrap(), "typescript");
+    }
+
+    #[tokio::test]
+    async fn write_layers_merges_existing_config() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join(".mino.toml");
+
+        // Write existing config with other settings
+        tokio::fs::write(
+            &path,
+            "[container]\nimage = \"custom:latest\"\nnetwork = \"none\"\n",
+        )
+        .await
+        .unwrap();
+
+        write_layers_to_config(&path, &["typescript".to_string()])
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let parsed: toml::Value = content.parse().unwrap();
+        // Layers added
+        let layers = parsed["container"]["layers"].as_array().unwrap();
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].as_str().unwrap(), "typescript");
+        // Existing fields preserved
+        assert_eq!(
+            parsed["container"]["image"].as_str().unwrap(),
+            "custom:latest"
+        );
+        assert_eq!(
+            parsed["container"]["network"].as_str().unwrap(),
+            "none"
+        );
     }
 }
