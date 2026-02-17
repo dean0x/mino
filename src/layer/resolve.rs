@@ -50,6 +50,14 @@ impl LayerScript {
     }
 }
 
+/// A discoverable layer with metadata (for interactive selection)
+#[derive(Debug, Clone)]
+pub struct AvailableLayer {
+    pub name: String,
+    pub description: String,
+    pub source: LayerSource,
+}
+
 /// Where a layer was resolved from
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerSource {
@@ -189,6 +197,81 @@ fn resolve_builtin(name: &str) -> MinoResult<Option<ResolvedLayer>> {
         install_script: LayerScript::Embedded(install_str),
         source: LayerSource::BuiltIn,
     }))
+}
+
+/// List all available layers from all sources (for interactive prompts).
+///
+/// Scans project-local, user-global, and built-in sources.
+/// Deduplicates by name (first source wins, matching resolution precedence).
+pub async fn list_available_layers(project_dir: &Path) -> MinoResult<Vec<AvailableLayer>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut layers = Vec::new();
+
+    // 1. Project-local layers
+    let project_layers_dir = project_dir.join(".mino").join("layers");
+    scan_layer_dir(&project_layers_dir, LayerSource::ProjectLocal, &mut seen, &mut layers).await;
+
+    // 2. User-global layers
+    if let Some(global_dir) = dirs::config_dir().map(|d| d.join("mino").join("layers")) {
+        scan_layer_dir(&global_dir, LayerSource::UserGlobal, &mut seen, &mut layers).await;
+    }
+
+    // 3. Built-in layers
+    for (name, manifest_str) in &[
+        ("typescript", BUILTIN_TS_MANIFEST),
+        ("rust", BUILTIN_RUST_MANIFEST),
+    ] {
+        if seen.contains(*name) {
+            continue;
+        }
+        if let Ok(manifest) = LayerManifest::parse(manifest_str) {
+            seen.insert(name.to_string());
+            layers.push(AvailableLayer {
+                name: manifest.layer.name.clone(),
+                description: manifest.layer.description.clone(),
+                source: LayerSource::BuiltIn,
+            });
+        }
+    }
+
+    Ok(layers)
+}
+
+/// Scan a directory for layer subdirectories containing layer.toml
+async fn scan_layer_dir(
+    dir: &Path,
+    source: LayerSource,
+    seen: &mut std::collections::HashSet<String>,
+    layers: &mut Vec<AvailableLayer>,
+) {
+    let entries = match tokio::fs::read_dir(dir).await {
+        Ok(e) => e,
+        Err(_) => return, // Directory doesn't exist, skip
+    };
+
+    let mut entries = entries;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let manifest_path = path.join("layer.toml");
+        if !manifest_path.exists() {
+            continue;
+        }
+        if let Ok(manifest) = LayerManifest::from_file(&manifest_path).await {
+            let name = manifest.layer.name.clone();
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.insert(name.clone());
+            layers.push(AvailableLayer {
+                name,
+                description: manifest.layer.description.clone(),
+                source: source.clone(),
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -346,5 +429,54 @@ version = "99"
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Invalid layer name"));
+    }
+
+    #[tokio::test]
+    async fn list_available_includes_builtins() {
+        let temp = TempDir::new().unwrap();
+        let layers = list_available_layers(temp.path()).await.unwrap();
+
+        let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+        assert!(names.contains(&"typescript"));
+        assert!(names.contains(&"rust"));
+        assert!(layers.iter().all(|l| l.source == LayerSource::BuiltIn));
+    }
+
+    #[tokio::test]
+    async fn list_available_includes_project_local() {
+        let temp = TempDir::new().unwrap();
+        let layer_dir = temp.path().join(".mino").join("layers").join("python");
+        std::fs::create_dir_all(&layer_dir).unwrap();
+        std::fs::write(
+            layer_dir.join("layer.toml"),
+            "[layer]\nname = \"python\"\ndescription = \"Python 3\"\nversion = \"1\"\n",
+        )
+        .unwrap();
+        std::fs::write(layer_dir.join("install.sh"), "#!/bin/bash\necho ok").unwrap();
+
+        let layers = list_available_layers(temp.path()).await.unwrap();
+        let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+        assert!(names.contains(&"python"));
+    }
+
+    #[tokio::test]
+    async fn list_available_deduplicates_by_name() {
+        let temp = TempDir::new().unwrap();
+        // Create a project-local "rust" layer (should shadow built-in)
+        let layer_dir = temp.path().join(".mino").join("layers").join("rust");
+        std::fs::create_dir_all(&layer_dir).unwrap();
+        std::fs::write(
+            layer_dir.join("layer.toml"),
+            "[layer]\nname = \"rust\"\ndescription = \"Custom Rust\"\nversion = \"99\"\n",
+        )
+        .unwrap();
+        std::fs::write(layer_dir.join("install.sh"), "#!/bin/bash\necho ok").unwrap();
+
+        let layers = list_available_layers(temp.path()).await.unwrap();
+        let rust_layers: Vec<&AvailableLayer> =
+            layers.iter().filter(|l| l.name == "rust").collect();
+        assert_eq!(rust_layers.len(), 1);
+        assert_eq!(rust_layers[0].source, LayerSource::ProjectLocal);
+        assert_eq!(rust_layers[0].description, "Custom Rust");
     }
 }

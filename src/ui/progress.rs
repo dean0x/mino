@@ -104,11 +104,13 @@ impl BuildProgress {
             let bar = ProgressBar::new(0);
             bar.set_style(
                 ProgressStyle::default_bar()
-                    .template("  Building {prefix}: {bar:30.cyan/dim} {pos}/{len} {msg:.dim}")
+                    .template("  {spinner:.cyan} Building {prefix}  {bar:20.cyan/dim} {pos}/{len} {msg:.dim}  {elapsed:.dim}")
                     .unwrap()
+                    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ")
                     .progress_chars("━╸─"),
             );
             bar.set_prefix(label.to_string());
+            bar.enable_steady_tick(std::time::Duration::from_millis(120));
             Some(bar)
         } else {
             println!("Building {}...", label);
@@ -127,15 +129,34 @@ impl BuildProgress {
             } else {
                 println!("  STEP {}/{}: {}", n, total, instruction);
             }
+        } else if let Some(ref bar) = self.bar {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && !is_build_noise(trimmed) {
+                let display = if trimmed.len() > 60 {
+                    format!("{}...", &trimmed[..57])
+                } else {
+                    trimmed.to_string()
+                };
+                bar.set_message(display);
+            }
         }
     }
 
     /// Finish and clear the progress bar.
     pub fn finish(&self) {
         if let Some(ref bar) = self.bar {
+            bar.disable_steady_tick();
             bar.finish_and_clear();
         }
     }
+}
+
+/// Filter out Podman internal build lines that aren't useful to display.
+fn is_build_noise(line: &str) -> bool {
+    line.starts_with("--->")
+        || line.starts_with("-->")
+        || line.starts_with("Removing intermediate")
+        || line.starts_with("COMMIT")
 }
 
 /// Parse a Podman build step line like `STEP N/M: INSTRUCTION args...`
@@ -194,7 +215,19 @@ mod tests {
         let progress = BuildProgress::new(&ctx, "typescript");
         progress.on_line("STEP 1/5: FROM base:latest".to_string());
         progress.on_line("---> abc123".to_string());
+        progress.on_line("downloading rustup-init".to_string());
         progress.finish();
         // Should not panic
+    }
+
+    #[test]
+    fn is_build_noise_filters_podman_internals() {
+        assert!(is_build_noise("---> abc123def"));
+        assert!(is_build_noise("--> Using cache abc123"));
+        assert!(is_build_noise("Removing intermediate container abc123"));
+        assert!(is_build_noise("COMMIT mino-composed-abc123"));
+        assert!(!is_build_noise("downloading rustup-init"));
+        assert!(!is_build_noise("Compiling mino v1.0.0"));
+        assert!(!is_build_noise(""));
     }
 }
