@@ -287,14 +287,19 @@ pub enum CacheAction {
     },
 
     /// Clear caches
+    #[command(group(clap::ArgGroup::new("target").required(true).args(["volumes", "images", "all"])))]
     Clear {
-        /// Clear all cache volumes
-        #[arg(long, required_unless_present = "images", conflicts_with = "images")]
-        all: bool,
+        /// Clear cache volumes
+        #[arg(long)]
+        volumes: bool,
 
-        /// Clear composed layer images only
-        #[arg(long, required_unless_present = "all")]
+        /// Clear composed layer images
+        #[arg(long)]
         images: bool,
+
+        /// Clear all artifacts (volumes + images)
+        #[arg(long, conflicts_with_all = ["volumes", "images"])]
+        all: bool,
 
         /// Skip confirmation prompt
         #[arg(short, long)]

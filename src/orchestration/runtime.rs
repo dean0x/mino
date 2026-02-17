@@ -58,6 +58,9 @@ pub trait ContainerRuntime: Send + Sync {
     /// Remove a container
     async fn remove(&self, container_id: &str) -> MinoResult<()>;
 
+    /// Remove all stopped containers
+    async fn container_prune(&self) -> MinoResult<()>;
+
     /// Get container logs
     async fn logs(&self, container_id: &str, lines: u32) -> MinoResult<String>;
 
@@ -69,6 +72,17 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Build an image from a context directory
     async fn build_image(&self, context_dir: &Path, tag: &str) -> MinoResult<()>;
+
+    /// Build an image with line-by-line progress reporting.
+    ///
+    /// Each line of build output (stdout + stderr) is passed to `on_output`
+    /// as an owned String. Falls back to the same error handling as `build_image`.
+    async fn build_image_with_progress(
+        &self,
+        context_dir: &Path,
+        tag: &str,
+        on_output: &(dyn Fn(String) + Send + Sync),
+    ) -> MinoResult<()>;
 
     /// Remove a container image
     async fn image_remove(&self, image: &str) -> MinoResult<()>;

@@ -22,12 +22,13 @@ pub async fn execute(args: CacheArgs, config: &Config) -> MinoResult<()> {
         CacheAction::List { format } => list_caches(&*runtime, format, config).await,
         CacheAction::Info { project } => show_project_info(&*runtime, project, config).await,
         CacheAction::Gc { days, dry_run } => gc_caches(&*runtime, config, days, dry_run).await,
-        CacheAction::Clear { images, yes, .. } => {
-            if images {
-                clear_composed_images(&*runtime, yes).await
-            } else {
-                clear_all_caches(&*runtime, yes).await
-            }
+        CacheAction::Clear {
+            all,
+            volumes,
+            images,
+            yes,
+        } => {
+            clear_artifacts(&*runtime, all || volumes, all || images, yes).await
         }
     }
 }
@@ -410,44 +411,81 @@ async fn gc_caches(
     Ok(())
 }
 
-/// Clear all caches
-async fn clear_all_caches(runtime: &dyn ContainerRuntime, skip_confirm: bool) -> MinoResult<()> {
+/// Clear cache artifacts (volumes, images, or both)
+async fn clear_artifacts(
+    runtime: &dyn ContainerRuntime,
+    clear_volumes: bool,
+    clear_images: bool,
+    skip_confirm: bool,
+) -> MinoResult<()> {
     let ctx = UiContext::detect();
-    let volumes = runtime.volume_list("mino-cache-").await?;
 
-    if volumes.is_empty() {
+    // Gather what will be deleted
+    let volumes = if clear_volumes {
+        runtime.volume_list("mino-cache-").await?
+    } else {
+        vec![]
+    };
+
+    let sizes = if !volumes.is_empty() {
+        runtime.volume_disk_usage("mino-cache-").await?
+    } else {
+        std::collections::HashMap::new()
+    };
+    let total_volume_size: u64 = volumes
+        .iter()
+        .map(|v| sizes.get(&v.name).copied().unwrap_or(0))
+        .sum();
+
+    let images = if clear_images {
+        runtime.image_list_prefixed("mino-composed-").await?
+    } else {
+        vec![]
+    };
+
+    if volumes.is_empty() && images.is_empty() {
         ui::intro(&ctx, "Cache Clear");
-        ui::step_info(&ctx, "No cache volumes to clear.");
+        ui::step_info(&ctx, "Nothing to clear.");
         return Ok(());
     }
 
-    // Get sizes
-    let sizes = runtime.volume_disk_usage("mino-cache-").await?;
-    let total_size: u64 = sizes.values().sum();
-
+    // Show summary
     ui::intro(&ctx, "Cache Clear");
-    ui::step_warn(
-        &ctx,
-        &format!(
-            "This will remove {} cache volume(s) ({})",
-            volumes.len(),
-            format_bytes(total_size)
-        ),
-    );
 
-    for vol in &volumes {
-        let size = sizes.get(&vol.name).copied().unwrap_or(0);
-        let size_str = if size > 0 {
-            format!(" ({})", format_bytes(size))
-        } else {
-            String::new()
-        };
-        ui::remark(&ctx, &format!("{}{}", vol.name, size_str));
+    if !volumes.is_empty() {
+        ui::step_warn(
+            &ctx,
+            &format!(
+                "This will remove {} cache volume(s) ({})",
+                volumes.len(),
+                format_bytes(total_volume_size)
+            ),
+        );
+        for vol in &volumes {
+            let size = sizes.get(&vol.name).copied().unwrap_or(0);
+            let size_str = if size > 0 {
+                format!(" ({})", format_bytes(size))
+            } else {
+                String::new()
+            };
+            ui::remark(&ctx, &format!("{}{}", vol.name, size_str));
+        }
     }
 
+    if !images.is_empty() {
+        ui::step_warn(
+            &ctx,
+            &format!("This will remove {} composed image(s)", images.len()),
+        );
+        for img in &images {
+            ui::remark(&ctx, img);
+        }
+    }
+
+    // Single confirmation
     if !skip_confirm {
         let confirmed =
-            ui::confirm(&ctx, "Are you sure you want to clear all caches?", false).await?;
+            ui::confirm(&ctx, "Are you sure you want to proceed?", false).await?;
         if !confirmed {
             ui::outro_warn(&ctx, "Aborted.");
             return Ok(());
@@ -455,67 +493,36 @@ async fn clear_all_caches(runtime: &dyn ContainerRuntime, skip_confirm: bool) ->
     }
 
     let mut spinner = ui::TaskSpinner::new(&ctx);
-    spinner.start("Clearing caches...");
+    spinner.start("Clearing...");
 
-    let count = volumes.len();
+    // Remove volumes
+    let vol_count = volumes.len();
     for vol in volumes {
         runtime.volume_remove(&vol.name).await?;
     }
 
-    spinner.stop(&format!(
-        "Cleared {} cache(s), freed {}",
-        count,
-        format_bytes(total_size)
-    ));
-
-    Ok(())
-}
-
-/// Clear composed layer images
-async fn clear_composed_images(
-    runtime: &dyn ContainerRuntime,
-    skip_confirm: bool,
-) -> MinoResult<()> {
-    let ctx = UiContext::detect();
-    let images = runtime.image_list_prefixed("mino-composed-").await?;
-
-    if images.is_empty() {
-        ui::intro(&ctx, "Clear Composed Images");
-        ui::step_info(&ctx, "No composed images found.");
-        return Ok(());
-    }
-
-    ui::intro(&ctx, "Clear Composed Images");
-    ui::step_warn(
-        &ctx,
-        &format!("This will remove {} composed image(s)", images.len()),
-    );
-
-    for img in &images {
-        ui::remark(&ctx, img);
-    }
-
-    if !skip_confirm {
-        let confirmed = ui::confirm(
-            &ctx,
-            "Are you sure you want to clear composed images?",
-            false,
-        )
-        .await?;
-        if !confirmed {
-            ui::outro_warn(&ctx, "Aborted.");
-            return Ok(());
+    // Remove images (prune containers first so rmi doesn't fail)
+    let img_count = images.len();
+    if !images.is_empty() {
+        runtime.container_prune().await?;
+        for img in &images {
+            runtime.image_remove(img).await?;
         }
     }
 
-    let mut spinner = ui::TaskSpinner::new(&ctx);
-    spinner.start("Clearing composed images...");
-
-    for img in &images {
-        runtime.image_remove(img).await?;
+    // Summary
+    let mut parts = Vec::new();
+    if vol_count > 0 {
+        parts.push(format!(
+            "{} volume(s) ({})",
+            vol_count,
+            format_bytes(total_volume_size)
+        ));
     }
-
-    spinner.stop(&format!("Cleared {} composed image(s)", images.len()));
+    if img_count > 0 {
+        parts.push(format!("{} image(s)", img_count));
+    }
+    spinner.stop(&format!("Cleared {}", parts.join(" + ")));
 
     Ok(())
 }

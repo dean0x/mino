@@ -37,6 +37,6 @@ pub use output::{
     section, step_blocked, step_error, step_error_detail, step_info, step_ok, step_ok_detail,
     step_warn, step_warn_hint,
 };
-pub use progress::TaskSpinner;
+pub use progress::{BuildProgress, TaskSpinner};
 pub use prompts::{confirm, confirm_inline, select};
 pub use theme::{init_theme, MinoTheme};
