@@ -52,6 +52,16 @@ struct ImageResolution {
     layer_env: HashMap<String, String>,
 }
 
+/// Parse a comma-separated layer string into a list of layer names.
+///
+/// Trims whitespace and filters empty segments.
+fn parse_layers_env(val: &str) -> Vec<String> {
+    val.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 /// Determine which layers to compose (if any).
 ///
 /// Returns None for single-image mode, Some(names) for layer composition.
@@ -59,13 +69,23 @@ struct ImageResolution {
 /// Precedence:
 /// 1. CLI `--layers` → compose from layers
 /// 2. CLI `--image` → use single image (overrides config layers)
-/// 3. Config `container.layers` (non-empty) → compose from config layers
-/// 4. Config `container.image` / default → use single image
+/// 3. `MINO_LAYERS` env var (comma-separated) → compose from env layers
+/// 4. Config `container.layers` (non-empty) → compose from config layers
+/// 5. Config `container.image` / default → use single image
 fn resolve_layer_names(args: &RunArgs, config: &Config) -> Option<Vec<String>> {
     if !args.layers.is_empty() {
         return Some(args.layers.clone());
     }
-    if args.image.is_none() && !config.container.layers.is_empty() {
+    if args.image.is_some() {
+        return None;
+    }
+    if let Ok(val) = std::env::var("MINO_LAYERS") {
+        let layers = parse_layers_env(&val);
+        if !layers.is_empty() {
+            return Some(layers);
+        }
+    }
+    if !config.container.layers.is_empty() {
         return Some(config.container.layers.clone());
     }
     None
@@ -1140,6 +1160,74 @@ mod tests {
         assert_eq!(layers.len(), 2);
         assert_eq!(layers[0].as_str().unwrap(), "rust");
         assert_eq!(layers[1].as_str().unwrap(), "typescript");
+    }
+
+    #[test]
+    fn parse_layers_env_basic() {
+        assert_eq!(parse_layers_env("rust,typescript"), vec!["rust", "typescript"]);
+    }
+
+    #[test]
+    fn parse_layers_env_whitespace() {
+        assert_eq!(parse_layers_env(" rust , typescript "), vec!["rust", "typescript"]);
+    }
+
+    #[test]
+    fn parse_layers_env_empty_segments() {
+        assert_eq!(parse_layers_env("rust,,typescript,"), vec!["rust", "typescript"]);
+    }
+
+    #[test]
+    fn parse_layers_env_empty_string() {
+        let result = parse_layers_env("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_layers_env_single() {
+        assert_eq!(parse_layers_env("rust"), vec!["rust"]);
+    }
+
+    #[test]
+    fn resolve_layer_names_cli_wins() {
+        let mut args = test_run_args();
+        args.layers = vec!["typescript".to_string()];
+        let mut config = Config::default();
+        config.container.layers = vec!["rust".to_string()];
+        assert_eq!(
+            resolve_layer_names(&args, &config),
+            Some(vec!["typescript".to_string()])
+        );
+    }
+
+    #[test]
+    fn resolve_layer_names_image_blocks_all() {
+        let mut args = test_run_args();
+        args.image = Some("fedora:43".to_string());
+        let mut config = Config::default();
+        config.container.layers = vec!["rust".to_string()];
+        assert_eq!(resolve_layer_names(&args, &config), None);
+    }
+
+    #[test]
+    fn resolve_layer_names_config_layers() {
+        let args = test_run_args();
+        let mut config = Config::default();
+        config.container.layers = vec!["rust".to_string()];
+        // Clear MINO_LAYERS to avoid interference from environment
+        std::env::remove_var("MINO_LAYERS");
+        assert_eq!(
+            resolve_layer_names(&args, &config),
+            Some(vec!["rust".to_string()])
+        );
+    }
+
+    #[test]
+    fn resolve_layer_names_none_when_empty() {
+        let args = test_run_args();
+        let config = Config::default();
+        std::env::remove_var("MINO_LAYERS");
+        assert_eq!(resolve_layer_names(&args, &config), None);
     }
 
     #[tokio::test]
