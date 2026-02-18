@@ -3,10 +3,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.82%2B-orange.svg)](https://www.rust-lang.org)
 [![Crates.io](https://img.shields.io/crates/v/mino.svg)](https://crates.io/crates/mino)
+[![npm](https://img.shields.io/npm/v/@dean0x/mino)](https://www.npmjs.com/package/@dean0x/mino)
+[![GitHub Release](https://img.shields.io/github/v/release/dean0x/mino)](https://github.com/dean0x/mino/releases)
+[![CI](https://github.com/dean0x/mino/actions/workflows/ci.yml/badge.svg)](https://github.com/dean0x/mino/actions/workflows/ci.yml)
 
 Secure sandbox wrapper for AI coding agents using OrbStack + Podman rootless containers.
 
 Wraps **any command** in isolated containers with temporary cloud credentials and SSH agent forwarding. Works with Claude Code, Aider, Cursor, or any CLI tool.
+
+<p align="center">
+  <img src="demo.gif" alt="Mino terminal demo" width="800">
+</p>
 
 ## Why Mino?
 

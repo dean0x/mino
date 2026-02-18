@@ -49,6 +49,5 @@ lcov.info
 # DevFlow working files
 .docs/
 
-# Terminal demo recordings
-demo.gif
-demo.tape
+# Terminal demo example (VHS boilerplate)
+demo-example.tape
