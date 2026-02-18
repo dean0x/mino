@@ -196,7 +196,8 @@ mod tests {
 
     #[test]
     fn parse_step_line_from_instruction() {
-        let (n, m, instr) = parse_step_line("STEP 1/8: FROM ghcr.io/dean0x/mino-base:latest").unwrap();
+        let (n, m, instr) =
+            parse_step_line("STEP 1/8: FROM ghcr.io/dean0x/mino-base:latest").unwrap();
         assert_eq!(n, 1);
         assert_eq!(m, 8);
         assert_eq!(instr, "FROM ghcr.io/dean0x/mino-base:latest");

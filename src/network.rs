@@ -97,9 +97,7 @@ fn parse_mode_str(s: &str, source: &str) -> MinoResult<NetworkMode> {
 
 /// Parse a slice of `host:port` strings into `NetworkRule`s.
 fn parse_rules(raw: &[String]) -> MinoResult<Vec<NetworkRule>> {
-    raw.iter()
-        .map(|r| parse_network_rule(r))
-        .collect()
+    raw.iter().map(|r| parse_network_rule(r)).collect()
 }
 
 /// Resolve the effective network mode from CLI flags and config values.
@@ -184,7 +182,10 @@ pub fn shell_escape(s: &str) -> String {
 /// then `exec`s the original command.
 ///
 /// Returns a command vector: `["/bin/sh", "-c", "<script>"]`.
-pub fn generate_iptables_wrapper(rules: &[NetworkRule], original_command: &[String]) -> Vec<String> {
+pub fn generate_iptables_wrapper(
+    rules: &[NetworkRule],
+    original_command: &[String],
+) -> Vec<String> {
     let mut script = String::from("set -e; ");
 
     // Verify iptables is available before attempting network filtering
@@ -232,11 +233,7 @@ pub fn generate_iptables_wrapper(rules: &[NetworkRule], original_command: &[Stri
         script.push_str(&format!(" '{}'", shell_escape(arg)));
     }
 
-    vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        script,
-    ]
+    vec!["/bin/sh".to_string(), "-c".to_string(), script]
 }
 
 #[cfg(test)]
@@ -336,10 +333,7 @@ mod tests {
     fn parse_ipv6_missing_close_bracket() {
         let result = parse_network_rule("[::1:443");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("closing bracket"));
+        assert!(result.unwrap_err().to_string().contains("closing bracket"));
     }
 
     #[test]
@@ -389,13 +383,8 @@ mod tests {
 
     #[test]
     fn resolve_cli_allow_implies_bridge() {
-        let mode = resolve_network_mode(
-            None,
-            &["github.com:443".to_string()],
-            "host",
-            &[],
-        )
-        .unwrap();
+        let mode =
+            resolve_network_mode(None, &["github.com:443".to_string()], "host", &[]).unwrap();
         match mode {
             NetworkMode::Allow(rules) => {
                 assert_eq!(rules.len(), 1);
@@ -410,10 +399,7 @@ mod tests {
     fn resolve_cli_allow_multiple_rules() {
         let mode = resolve_network_mode(
             None,
-            &[
-                "github.com:443".to_string(),
-                "npmjs.org:443".to_string(),
-            ],
+            &["github.com:443".to_string(), "npmjs.org:443".to_string()],
             "host",
             &[],
         )
@@ -426,40 +412,23 @@ mod tests {
 
     #[test]
     fn resolve_cli_none_with_allow_is_error() {
-        let result = resolve_network_mode(
-            Some("none"),
-            &["github.com:443".to_string()],
-            "host",
-            &[],
-        );
+        let result =
+            resolve_network_mode(Some("none"), &["github.com:443".to_string()], "host", &[]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Cannot combine"));
+        assert!(result.unwrap_err().to_string().contains("Cannot combine"));
     }
 
     #[test]
     fn resolve_cli_host_with_allow_overrides_to_allow() {
-        let mode = resolve_network_mode(
-            Some("host"),
-            &["github.com:443".to_string()],
-            "host",
-            &[],
-        )
-        .unwrap();
+        let mode = resolve_network_mode(Some("host"), &["github.com:443".to_string()], "host", &[])
+            .unwrap();
         assert!(matches!(mode, NetworkMode::Allow(_)));
     }
 
     #[test]
     fn resolve_config_allow_rules() {
-        let mode = resolve_network_mode(
-            None,
-            &[],
-            "host",
-            &["registry.npmjs.org:443".to_string()],
-        )
-        .unwrap();
+        let mode = resolve_network_mode(None, &[], "host", &["registry.npmjs.org:443".to_string()])
+            .unwrap();
         match mode {
             NetworkMode::Allow(rules) => {
                 assert_eq!(rules.len(), 1);
@@ -491,17 +460,15 @@ mod tests {
     fn resolve_unknown_mode_error() {
         let result = resolve_network_mode(Some("invalid"), &[], "host", &[]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown network mode"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown network mode"));
     }
 
     #[test]
     fn resolve_config_none_with_allow_is_error() {
-        let result = resolve_network_mode(
-            None,
-            &[],
-            "none",
-            &["github.com:443".to_string()],
-        );
+        let result = resolve_network_mode(None, &[], "none", &["github.com:443".to_string()]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Config conflict"));
     }
@@ -510,7 +477,10 @@ mod tests {
     fn resolve_unknown_config_mode_error() {
         let result = resolve_network_mode(None, &[], "invalid", &[]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown network mode"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown network mode"));
     }
 
     // ---- NetworkMode method tests ----
@@ -594,8 +564,10 @@ mod tests {
         assert!(script.contains("ip6tables -P OUTPUT DROP"));
         assert!(script.contains("iptables -A OUTPUT -o lo -j ACCEPT"));
         assert!(script.contains("ip6tables -A OUTPUT -o lo -j ACCEPT"));
-        assert!(script.contains("iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"));
-        assert!(script.contains("ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"));
+        assert!(script
+            .contains("iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"));
+        assert!(script
+            .contains("ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"));
         assert!(script.contains("iptables -A OUTPUT -p udp --dport 53 -j ACCEPT"));
         assert!(script.contains("iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT"));
         assert!(script.contains("ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT"));

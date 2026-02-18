@@ -212,9 +212,8 @@ fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinoResult<(
         .ok_or_else(|| MinoError::User(format!("Expected table for key: {}", key)))?;
 
     // Keys that store as arrays
-    let is_list_key = key.ends_with("network_allow")
-        || key.ends_with("layers")
-        || key.ends_with("volumes");
+    let is_list_key =
+        key.ends_with("network_allow") || key.ends_with("layers") || key.ends_with("volumes");
 
     let toml_value = if is_list_key {
         let items: Vec<toml::Value> = value

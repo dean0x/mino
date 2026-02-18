@@ -1,7 +1,7 @@
 class Mino < Formula
   desc "Secure AI agent sandbox wrapper using Podman rootless containers"
   homepage "https://github.com/dean0x/mino"
-  version "0.1.0"
+  version "1.1.0"
   license "MIT"
 
   on_macos do
