@@ -1,6 +1,6 @@
 {
   "name": "@dean0x/mino",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Secure AI agent sandbox using rootless containers",
   "license": "MIT",
   "repository": {
@@ -28,10 +28,10 @@
     "install.js"
   ],
   "optionalDependencies": {
-    "@dean0x/mino-darwin-x64": "1.0.0",
-    "@dean0x/mino-darwin-arm64": "1.0.0",
-    "@dean0x/mino-linux-x64": "1.0.0",
-    "@dean0x/mino-linux-arm64": "1.0.0"
+    "@dean0x/mino-darwin-x64": "1.1.0",
+    "@dean0x/mino-darwin-arm64": "1.1.0",
+    "@dean0x/mino-linux-x64": "1.1.0",
+    "@dean0x/mino-linux-arm64": "1.1.0"
   },
   "scripts": {
     "postinstall": "node install.js"
