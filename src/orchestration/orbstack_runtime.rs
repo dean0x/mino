@@ -98,7 +98,10 @@ impl OrbStackRuntime {
             }
 
             needs_configure = true;
-            debug!("Adding subordinate ID mapping for '{}' in {}", username, file);
+            debug!(
+                "Adding subordinate ID mapping for '{}' in {}",
+                username, file
+            );
 
             let cmd = format!("echo '{}:100000:65536' | sudo tee -a {}", username, file);
             let result = self.orbstack.exec(&["sh", "-c", &cmd]).await?;
@@ -113,10 +116,7 @@ impl OrbStackRuntime {
             return Ok(());
         }
 
-        let migrate = self
-            .orbstack
-            .exec(&["podman", "system", "migrate"])
-            .await?;
+        let migrate = self.orbstack.exec(&["podman", "system", "migrate"]).await?;
         if !migrate.status.success() {
             return Err(MinoError::PodmanRootlessSetup {
                 reason: "podman system migrate failed".to_string(),
@@ -131,11 +131,7 @@ impl OrbStackRuntime {
     ///
     /// Appends workdir, network, capabilities, volumes, env, image, and command
     /// to `args`. Mirrors `NativePodmanRuntime::push_container_args`.
-    fn push_podman_args(
-        args: &mut Vec<String>,
-        config: &ContainerConfig,
-        command: &[String],
-    ) {
+    fn push_podman_args(args: &mut Vec<String>, config: &ContainerConfig, command: &[String]) {
         args.push("-w".to_string());
         args.push(config.workdir.clone());
         args.push("--network".to_string());
@@ -409,9 +405,9 @@ impl ContainerRuntime for OrbStackRuntime {
         on_output: &(dyn Fn(String) + Send + Sync),
     ) -> MinoResult<()> {
         let context_str = context_dir.display().to_string();
-        let mut child =
-            self.orbstack
-                .spawn_piped(&["podman", "build", "-t", tag, &context_str])?;
+        let mut child = self
+            .orbstack
+            .spawn_piped(&["podman", "build", "-t", tag, &context_str])?;
 
         let all_output = super::stream_child_output(&mut child, on_output).await;
 

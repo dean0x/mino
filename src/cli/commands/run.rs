@@ -13,10 +13,10 @@ use crate::cache::{
 };
 use crate::cli::args::RunArgs;
 use crate::config::Config;
+use crate::config::ConfigManager;
 use crate::credentials::{
     AwsCredentials, AzureCredentials, CredentialCache, GcpCredentials, GithubCredentials,
 };
-use crate::config::ConfigManager;
 use crate::error::{MinoError, MinoResult};
 use crate::layer::{compose_image, list_available_layers, resolve_layers};
 use crate::network::{generate_iptables_wrapper, resolve_network_mode, NetworkMode};
@@ -127,21 +127,19 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     });
 
     // Interactive layer selection when no layers/image configured
-    let layer_names = if layer_names.is_none()
-        && ctx.is_interactive()
-        && is_default_image(&args, config)
-    {
-        spinner.clear();
-        match prompt_layer_selection(&ctx, &project_dir, config).await? {
-            Some(selected) => {
-                spinner.start("Initializing sandbox...");
-                Some(selected)
+    let layer_names =
+        if layer_names.is_none() && ctx.is_interactive() && is_default_image(&args, config) {
+            spinner.clear();
+            match prompt_layer_selection(&ctx, &project_dir, config).await? {
+                Some(selected) => {
+                    spinner.start("Initializing sandbox...");
+                    Some(selected)
+                }
+                None => None,
             }
-            None => None,
-        }
-    } else {
-        layer_names
-    };
+        } else {
+            layer_names
+        };
 
     let using_layers = layer_names.is_some();
 
@@ -947,11 +945,7 @@ async fn prompt_save_config(
     _config: &Config,
 ) -> MinoResult<()> {
     let options: Vec<(SaveTarget, &str, &str)> = vec![
-        (
-            SaveTarget::Local,
-            "Save to .mino.toml",
-            "this project only",
-        ),
+        (SaveTarget::Local, "Save to .mino.toml", "this project only"),
         (
             SaveTarget::Global,
             "Save to global config",
@@ -966,20 +960,12 @@ async fn prompt_save_config(
         SaveTarget::Local => {
             let path = project_dir.join(".mino.toml");
             write_layers_to_config(&path, layers).await?;
-            println!(
-                "  {} Saved to {}",
-                style("✓").green(),
-                path.display()
-            );
+            println!("  {} Saved to {}", style("✓").green(), path.display());
         }
         SaveTarget::Global => {
             let path = ConfigManager::default_config_path();
             write_layers_to_config(&path, layers).await?;
-            println!(
-                "  {} Saved to {}",
-                style("✓").green(),
-                path.display()
-            );
+            println!("  {} Saved to {}", style("✓").green(), path.display());
         }
         SaveTarget::None => {}
     }
@@ -991,9 +977,9 @@ async fn prompt_save_config(
 async fn write_layers_to_config(path: &Path, layers: &[String]) -> MinoResult<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| MinoError::io(format!("creating config directory {}", parent.display()), e))?;
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            MinoError::io(format!("creating config directory {}", parent.display()), e)
+        })?;
     }
 
     let layers_value = toml::Value::Array(
@@ -1008,12 +994,13 @@ async fn write_layers_to_config(path: &Path, layers: &[String]) -> MinoResult<()
         let content = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| MinoError::io(format!("reading {}", path.display()), e))?;
-        let mut doc: toml::Value = content
-            .parse()
-            .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            })?;
+        let mut doc: toml::Value =
+            content
+                .parse()
+                .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                })?;
 
         // Ensure container table exists and set layers
         let table = doc.as_table_mut().ok_or_else(|| MinoError::ConfigInvalid {
@@ -1164,17 +1151,26 @@ mod tests {
 
     #[test]
     fn parse_layers_env_basic() {
-        assert_eq!(parse_layers_env("rust,typescript"), vec!["rust", "typescript"]);
+        assert_eq!(
+            parse_layers_env("rust,typescript"),
+            vec!["rust", "typescript"]
+        );
     }
 
     #[test]
     fn parse_layers_env_whitespace() {
-        assert_eq!(parse_layers_env(" rust , typescript "), vec!["rust", "typescript"]);
+        assert_eq!(
+            parse_layers_env(" rust , typescript "),
+            vec!["rust", "typescript"]
+        );
     }
 
     #[test]
     fn parse_layers_env_empty_segments() {
-        assert_eq!(parse_layers_env("rust,,typescript,"), vec!["rust", "typescript"]);
+        assert_eq!(
+            parse_layers_env("rust,,typescript,"),
+            vec!["rust", "typescript"]
+        );
     }
 
     #[test]
@@ -1258,9 +1254,6 @@ mod tests {
             parsed["container"]["image"].as_str().unwrap(),
             "custom:latest"
         );
-        assert_eq!(
-            parsed["container"]["network"].as_str().unwrap(),
-            "none"
-        );
+        assert_eq!(parsed["container"]["network"].as_str().unwrap(), "none");
     }
 }

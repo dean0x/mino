@@ -430,7 +430,12 @@ mod tests {
     #[test]
     fn cli_parses_network_allow() {
         let cli = Cli::parse_from([
-            "mino", "run", "--network-allow", "github.com:443,npmjs.org:443", "--", "bash",
+            "mino",
+            "run",
+            "--network-allow",
+            "github.com:443,npmjs.org:443",
+            "--",
+            "bash",
         ]);
         match cli.command {
             Commands::Run(args) => {

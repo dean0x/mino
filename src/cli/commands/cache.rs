@@ -27,9 +27,7 @@ pub async fn execute(args: CacheArgs, config: &Config) -> MinoResult<()> {
             volumes,
             images,
             yes,
-        } => {
-            clear_artifacts(&*runtime, all || volumes, all || images, yes).await
-        }
+        } => clear_artifacts(&*runtime, all || volumes, all || images, yes).await,
     }
 }
 
@@ -484,8 +482,7 @@ async fn clear_artifacts(
 
     // Single confirmation
     if !skip_confirm {
-        let confirmed =
-            ui::confirm(&ctx, "Are you sure you want to proceed?", false).await?;
+        let confirmed = ui::confirm(&ctx, "Are you sure you want to proceed?", false).await?;
         if !confirmed {
             ui::outro_warn(&ctx, "Aborted.");
             return Ok(());

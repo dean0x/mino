@@ -209,7 +209,13 @@ pub async fn list_available_layers(project_dir: &Path) -> MinoResult<Vec<Availab
 
     // 1. Project-local layers
     let project_layers_dir = project_dir.join(".mino").join("layers");
-    scan_layer_dir(&project_layers_dir, LayerSource::ProjectLocal, &mut seen, &mut layers).await;
+    scan_layer_dir(
+        &project_layers_dir,
+        LayerSource::ProjectLocal,
+        &mut seen,
+        &mut layers,
+    )
+    .await;
 
     // 2. User-global layers
     if let Some(global_dir) = dirs::config_dir().map(|d| d.join("mino").join("layers")) {
