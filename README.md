@@ -132,6 +132,10 @@ mino run [OPTIONS] [-- COMMAND...]
 | `--network <MODE>` | Network mode: `host` (default), `none`, `bridge` |
 | `--network-allow <RULES>` | Allowlisted destinations (`host:port`, comma-separated). Implies bridge + iptables |
 
+**Layer precedence**: `--layers` flag > `--image` flag > `MINO_LAYERS` env var > config `container.layers` > interactive selection > config `container.image`.
+
+Set `MINO_LAYERS=rust,typescript` in your environment for non-interactive layer selection (CI, IDE plugins). When no layers or image are configured and the terminal is interactive, `mino run` prompts for layer selection with an option to save to config.
+
 #### `mino list`
 
 List sessions.
@@ -178,6 +182,33 @@ Check system health and dependencies.
 mino status
 ```
 
+#### `mino setup`
+
+Install and configure prerequisites interactively.
+
+```bash
+mino setup [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-y, --yes` | Auto-approve all installation prompts |
+| `--check` | Check prerequisites only, don't install |
+| `--upgrade` | Upgrade existing dependencies to latest versions |
+
+#### `mino init`
+
+Initialize a project-local `.mino.toml` configuration file.
+
+```bash
+mino init [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Overwrite existing `.mino.toml` |
+| `-p, --path <DIR>` | Target directory (default: current directory) |
+
 #### `mino cache`
 
 Manage dependency caches.
@@ -191,7 +222,7 @@ mino cache <SUBCOMMAND>
 | `list [-f FORMAT]` | List all cache volumes |
 | `info [-p PATH]` | Show cache info for current/specified project |
 | `gc [--days N] [--dry-run]` | Remove caches older than N days |
-| `clear --all\|--images [-y]` | Clear all caches or composed images |
+| `clear --volumes\|--images\|--all [-y]` | Clear cache volumes, composed images, or both |
 
 #### `mino config`
 
@@ -419,6 +450,93 @@ Language aliases trigger layer composition at runtime — the toolchain is insta
 All images include: Claude Code CLI, git, gh CLI, delta (git diff), ripgrep, fd, bat, fzf, neovim, zsh, zoxide.
 
 See [images/README.md](images/README.md) for full tool inventory and layer architecture.
+
+## Custom Layers
+
+You can create custom layers to extend `mino-base` with any toolchain.
+
+### Layer Locations
+
+| Location | Path | Scope |
+|----------|------|-------|
+| Project-local | `.mino/layers/{name}/` | Current project only |
+| User-global | `~/.config/mino/layers/{name}/` | All projects |
+| Built-in | Bundled with mino | All projects |
+
+**Resolution order**: project-local > user-global > built-in (first match wins). This lets you override built-in layers per-project or per-user.
+
+### Creating a Layer
+
+Each layer needs two files: `layer.toml` (metadata) and `install.sh` (setup script).
+
+**`layer.toml`** — declares environment variables, PATH extensions, and cache paths:
+
+```toml
+[layer]
+name = "python"
+description = "Python 3.12 + pip + uv"
+version = "1"
+
+[env]
+UV_CACHE_DIR = "/cache/uv"
+PIP_CACHE_DIR = "/cache/pip"
+VIRTUAL_ENV = "/opt/venv"
+
+[env.path_prepend]
+dirs = ["/opt/venv/bin"]
+
+[cache]
+paths = ["/cache/uv", "/cache/pip"]
+```
+
+**`install.sh`** — runs as root on `mino-base`. Must be idempotent (safe to re-run):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Idempotent: skip if already installed
+if ! command -v python3.12 &>/dev/null; then
+    dnf install -y python3.12 python3.12-pip
+fi
+
+# Install uv
+if ! command -v uv &>/dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+
+# Create shared virtualenv
+python3.12 -m venv /opt/venv
+chmod -R a+rX /opt/venv
+chown -R developer:developer /opt/venv
+
+# Verify
+python3.12 --version
+uv --version
+```
+
+### Using Custom Layers
+
+```bash
+# Use by name (resolved from layer locations)
+mino run --layers python
+
+# Compose multiple layers
+mino run --layers python,rust
+
+# Set via environment for CI
+export MINO_LAYERS=python
+mino run -- pytest
+```
+
+### Overriding Built-in Layers
+
+To customize a built-in layer, create a layer with the same name in your project or user config directory. Your version takes precedence:
+
+```
+.mino/layers/typescript/layer.toml    # overrides built-in typescript
+.mino/layers/typescript/install.sh
+```
 
 ## Architecture
 
