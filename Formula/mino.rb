@@ -7,24 +7,24 @@ class Mino < Formula
   on_macos do
     on_intel do
       url "https://github.com/dean0x/mino/releases/download/v#{version}/mino-x86_64-apple-darwin.tar.gz"
-      sha256 "83ef56a7f0aafb282c1b1b124b147780b92751739ebc3370f0d68e6cf843c428"
+      sha256 "1f5bd6b851d355007ab193bc43b6156087cd1aef6f5d54dfb4eb23c03232e536"
     end
 
     on_arm do
       url "https://github.com/dean0x/mino/releases/download/v#{version}/mino-aarch64-apple-darwin.tar.gz"
-      sha256 "59f08bbc32aec7d4bcd2365b6b8354ccdd23e7f9b46ceb00dbd4a1e5e1b35b01"
+      sha256 "531098c36013e4bb8c15d1015fbfc00d7531daf3c4d45b16aa714529b277f518"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/dean0x/mino/releases/download/v#{version}/mino-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "adc6765a8d883ed571483f18abfb016962ad68e7cf818d0af7ef8485d99d8d47"
+      sha256 "f105ca8864cc5e06cfe1497d39c572ba5c897b9343fa257e934c30e836f8599c"
     end
 
     on_arm do
       url "https://github.com/dean0x/mino/releases/download/v#{version}/mino-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "97c64473225c29ad09dfe8adf99b25c1bc727364701f88673a5be8d65689dcdb"
+      sha256 "278e95e59d1f049e6112b1ba6b58eaf20962fc5c4c04c90681f2965c3379d199"
     end
   end
 
