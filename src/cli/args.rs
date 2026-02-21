@@ -161,7 +161,7 @@ pub struct RunArgs {
     pub network_allow: Vec<String>,
 
     /// Network allowlist preset: dev, registries
-    #[arg(long, conflicts_with = "network_allow")]
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["dev", "registries"]), conflicts_with = "network_allow")]
     pub network_preset: Option<String>,
 
     /// Command and arguments to run (defaults to shell)

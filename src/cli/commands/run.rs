@@ -19,7 +19,10 @@ use crate::credentials::{
 };
 use crate::error::{MinoError, MinoResult};
 use crate::layer::{compose_image, list_available_layers, resolve_layers};
-use crate::network::{generate_iptables_wrapper, resolve_network_mode, resolve_preset, NetworkMode};
+use crate::network::{
+    generate_iptables_wrapper, resolve_network_mode, resolve_preset, NetworkMode,
+    NetworkResolutionInput,
+};
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, BuildProgress, TaskSpinner, UiContext};
@@ -193,18 +196,18 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     // Interactive network selection when no network mode configured
     let network_mode = if is_default_network(&args, config) && ctx.is_interactive() {
         spinner.clear();
-        let mode = prompt_network_selection(&ctx).await?;
+        let mode = prompt_network_selection(&ctx, &project_dir).await?;
         spinner.start("Initializing sandbox...");
         mode
     } else {
-        resolve_network_mode(
-            args.network.as_deref(),
-            &args.network_allow,
-            args.network_preset.as_deref(),
-            &config.container.network,
-            &config.container.network_allow,
-            config.container.network_preset.as_deref(),
-        )?
+        resolve_network_mode(&NetworkResolutionInput {
+            cli_network: args.network.as_deref(),
+            cli_allow_rules: &args.network_allow,
+            cli_preset: args.network_preset.as_deref(),
+            config_network: &config.container.network,
+            config_network_allow: &config.container.network_allow,
+            config_preset: config.container.network_preset.as_deref(),
+        })?
     };
     debug!("Network mode: {:?}", network_mode);
 
@@ -315,6 +318,9 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     if args.detach {
         // Detached mode: run -d returns container ID immediately
+        // TODO: Detached containers also need removal after stop for credential cleanup.
+        // The `mino stop` command should call runtime.remove() after stopping.
+        // See: container security hardening review issue #10.
         let container_id = match runtime.run(&container_config, &command).await {
             Ok(id) => id,
             Err(e) => {
@@ -933,7 +939,7 @@ enum NetworkChoice {
 
 /// Prompt user to select network mode interactively.
 /// Returns the resolved `NetworkMode`.
-async fn prompt_network_selection(ctx: &UiContext) -> MinoResult<NetworkMode> {
+async fn prompt_network_selection(ctx: &UiContext, project_dir: &Path) -> MinoResult<NetworkMode> {
     let options: Vec<(NetworkChoice, &str, &str)> = vec![
         (
             NetworkChoice::Bridge,
@@ -979,7 +985,7 @@ async fn prompt_network_selection(ctx: &UiContext) -> MinoResult<NetworkMode> {
     };
 
     // Offer to save
-    prompt_save_network(ctx, &choice, preset_name).await?;
+    prompt_save_network(ctx, &choice, preset_name, project_dir).await?;
 
     Ok(mode)
 }
@@ -989,8 +995,10 @@ async fn prompt_save_network(
     ctx: &UiContext,
     choice: &NetworkChoice,
     preset_name: Option<&str>,
+    project_dir: &Path,
 ) -> MinoResult<()> {
     let options: Vec<(SaveTarget, &str, &str)> = vec![
+        (SaveTarget::Local, "Save to .mino.toml", "this project only"),
         (
             SaveTarget::Global,
             "Save to global config",
@@ -1005,36 +1013,57 @@ async fn prompt_save_network(
         return Ok(());
     }
 
-    let path = ConfigManager::default_config_path();
-    let (key, value) = if let Some(preset) = preset_name {
-        ("network_preset", preset.to_string())
+    let path = match target {
+        SaveTarget::Local => project_dir.join(".mino.toml"),
+        SaveTarget::Global => ConfigManager::default_config_path(),
+        SaveTarget::None => unreachable!(),
+    };
+
+    let (key, toml_value) = if let Some(preset) = preset_name {
+        (
+            "network_preset",
+            toml::Value::String(preset.to_string()),
+        )
     } else {
         let net = match choice {
             NetworkChoice::Host => "host",
             NetworkChoice::None => "none",
             _ => "bridge",
         };
-        ("network", net.to_string())
+        ("network", toml::Value::String(net.to_string()))
     };
 
-    write_network_to_config(&path, key, &value).await?;
+    upsert_container_toml_key(&path, key, toml_value).await?;
     println!("  {} Saved to {}", style("✓").green(), path.display());
 
     Ok(())
 }
 
-/// Write a network config key into a TOML config file (create or merge).
-async fn write_network_to_config(path: &Path, key: &str, value: &str) -> MinoResult<()> {
+/// Insert or update a key under [container] in a TOML config file.
+///
+/// Creates the file (and parent directories) if it does not exist.
+/// Uses a single `read_to_string` + match-on-error-kind to avoid a TOCTOU
+/// race between `path.exists()` and the subsequent read.
+async fn upsert_container_toml_key(
+    path: &Path,
+    key: &str,
+    value: toml::Value,
+) -> MinoResult<()> {
+    // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| {
             MinoError::io(format!("creating config directory {}", parent.display()), e)
         })?;
     }
 
-    if path.exists() {
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| MinoError::io(format!("reading {}", path.display()), e))?;
+    // Attempt to read existing file; NotFound means create new
+    let existing = match tokio::fs::read_to_string(path).await {
+        Ok(content) => Some(content),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(MinoError::io(format!("reading {}", path.display()), e)),
+    };
+
+    let doc = if let Some(content) = existing {
         let mut doc: toml::Value =
             content
                 .parse()
@@ -1047,30 +1076,37 @@ async fn write_network_to_config(path: &Path, key: &str, value: &str) -> MinoRes
             path: path.to_path_buf(),
             reason: "config is not a TOML table".to_string(),
         })?;
+
         let container = table
             .entry("container")
             .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-        if let Some(ct) = container.as_table_mut() {
-            ct.insert(key.to_string(), toml::Value::String(value.to_string()));
+
+        if !container.is_table() {
+            return Err(MinoError::ConfigInvalid {
+                path: path.to_path_buf(),
+                reason: "'container' key exists but is not a table".to_string(),
+            });
         }
 
-        let output = toml::to_string_pretty(&doc)
-            .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
-        tokio::fs::write(path, output)
-            .await
-            .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
+        container
+            .as_table_mut()
+            .unwrap()
+            .insert(key.to_string(), value);
+
+        doc
     } else {
         let mut table = toml::map::Map::new();
         let mut container = toml::map::Map::new();
-        container.insert(key.to_string(), toml::Value::String(value.to_string()));
+        container.insert(key.to_string(), value);
         table.insert("container".to_string(), toml::Value::Table(container));
+        toml::Value::Table(table)
+    };
 
-        let output = toml::to_string_pretty(&toml::Value::Table(table))
-            .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
-        tokio::fs::write(path, output)
-            .await
-            .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
-    }
+    let output = toml::to_string_pretty(&doc)
+        .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
+    tokio::fs::write(path, output)
+        .await
+        .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
 
     Ok(())
 }
@@ -1141,31 +1177,11 @@ async fn prompt_save_config(
 
     let target = ui::select(ctx, "Save this configuration?", &options).await?;
 
-    match target {
-        SaveTarget::Local => {
-            let path = project_dir.join(".mino.toml");
-            write_layers_to_config(&path, layers).await?;
-            println!("  {} Saved to {}", style("✓").green(), path.display());
-        }
-        SaveTarget::Global => {
-            let path = ConfigManager::default_config_path();
-            write_layers_to_config(&path, layers).await?;
-            println!("  {} Saved to {}", style("✓").green(), path.display());
-        }
-        SaveTarget::None => {}
-    }
-
-    Ok(())
-}
-
-/// Write layer selection into a TOML config file (create or merge).
-async fn write_layers_to_config(path: &Path, layers: &[String]) -> MinoResult<()> {
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            MinoError::io(format!("creating config directory {}", parent.display()), e)
-        })?;
-    }
+    let path = match target {
+        SaveTarget::Local => project_dir.join(".mino.toml"),
+        SaveTarget::Global => ConfigManager::default_config_path(),
+        SaveTarget::None => return Ok(()),
+    };
 
     let layers_value = toml::Value::Array(
         layers
@@ -1173,50 +1189,8 @@ async fn write_layers_to_config(path: &Path, layers: &[String]) -> MinoResult<()
             .map(|l| toml::Value::String(l.clone()))
             .collect(),
     );
-
-    if path.exists() {
-        // Read existing, merge container.layers
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| MinoError::io(format!("reading {}", path.display()), e))?;
-        let mut doc: toml::Value =
-            content
-                .parse()
-                .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
-                    path: path.to_path_buf(),
-                    reason: e.to_string(),
-                })?;
-
-        // Ensure container table exists and set layers
-        let table = doc.as_table_mut().ok_or_else(|| MinoError::ConfigInvalid {
-            path: path.to_path_buf(),
-            reason: "config is not a TOML table".to_string(),
-        })?;
-        let container = table
-            .entry("container")
-            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-        if let Some(ct) = container.as_table_mut() {
-            ct.insert("layers".to_string(), layers_value);
-        }
-
-        let output = toml::to_string_pretty(&doc)
-            .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
-        tokio::fs::write(path, output)
-            .await
-            .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
-    } else {
-        // Write minimal config
-        let mut table = toml::map::Map::new();
-        let mut container = toml::map::Map::new();
-        container.insert("layers".to_string(), layers_value);
-        table.insert("container".to_string(), toml::Value::Table(container));
-
-        let output = toml::to_string_pretty(&toml::Value::Table(table))
-            .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
-        tokio::fs::write(path, output)
-            .await
-            .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
-    }
+    upsert_container_toml_key(&path, "layers", layers_value).await?;
+    println!("  {} Saved to {}", style("✓").green(), path.display());
 
     Ok(())
 }
@@ -1319,11 +1293,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_layers_creates_new_config() {
+    async fn upsert_creates_new_config() {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join(".mino.toml");
 
-        write_layers_to_config(&path, &["rust".to_string(), "typescript".to_string()])
+        let layers = toml::Value::Array(vec![
+            toml::Value::String("rust".to_string()),
+            toml::Value::String("typescript".to_string()),
+        ]);
+        upsert_container_toml_key(&path, "layers", layers)
             .await
             .unwrap();
 
@@ -1413,7 +1391,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_layers_merges_existing_config() {
+    async fn upsert_merges_existing_config() {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join(".mino.toml");
 
@@ -1425,7 +1403,8 @@ mod tests {
         .await
         .unwrap();
 
-        write_layers_to_config(&path, &["typescript".to_string()])
+        let layers = toml::Value::Array(vec![toml::Value::String("typescript".to_string())]);
+        upsert_container_toml_key(&path, "layers", layers)
             .await
             .unwrap();
 
@@ -1441,5 +1420,78 @@ mod tests {
             "custom:latest"
         );
         assert_eq!(parsed["container"]["network"].as_str().unwrap(), "none");
+    }
+
+    #[tokio::test]
+    async fn upsert_errors_on_non_table_container() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("bad.toml");
+
+        // Write config where container is a string, not a table
+        tokio::fs::write(&path, "container = \"not-a-table\"\n")
+            .await
+            .unwrap();
+
+        let result = upsert_container_toml_key(
+            &path,
+            "network",
+            toml::Value::String("bridge".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not a table"),
+            "expected 'not a table' in error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn is_default_network_with_defaults() {
+        let args = test_run_args();
+        let config = Config::default();
+        assert!(is_default_network(&args, &config));
+    }
+
+    #[test]
+    fn is_default_network_with_cli_network() {
+        let mut args = test_run_args();
+        args.network = Some("host".to_string());
+        let config = Config::default();
+        assert!(!is_default_network(&args, &config));
+    }
+
+    #[test]
+    fn is_default_network_with_cli_preset() {
+        let mut args = test_run_args();
+        args.network_preset = Some("dev".to_string());
+        let config = Config::default();
+        assert!(!is_default_network(&args, &config));
+    }
+
+    #[test]
+    fn is_default_network_with_cli_allow() {
+        let mut args = test_run_args();
+        args.network_allow = vec!["github.com:443".to_string()];
+        let config = Config::default();
+        assert!(!is_default_network(&args, &config));
+    }
+
+    #[test]
+    fn is_default_network_with_config_preset() {
+        let args = test_run_args();
+        let mut config = Config::default();
+        config.container.network_preset = Some("dev".to_string());
+        assert!(!is_default_network(&args, &config));
+    }
+
+    #[test]
+    fn is_default_network_with_config_allow() {
+        let args = test_run_args();
+        let mut config = Config::default();
+        config.container.network_allow = vec!["github.com:443".to_string()];
+        assert!(!is_default_network(&args, &config));
     }
 }
