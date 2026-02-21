@@ -12,7 +12,7 @@ Secure sandbox wrapper for AI coding agents using OrbStack + Podman rootless con
 Wraps **any command** in isolated containers with temporary cloud credentials and SSH agent forwarding. Works with Claude Code, Aider, Cursor, or any CLI tool.
 
 <p align="center">
-  <img src="demo.gif" alt="Mino terminal demo" width="800">
+  <img src=".github/assets/demo.gif" alt="Mino terminal demo" width="800">
 </p>
 
 ## Why Mino?
