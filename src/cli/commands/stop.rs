@@ -44,14 +44,22 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
             style(&args.session).cyan()
         ));
 
-        if args.force {
-            runtime.kill(container_id).await?;
+        // With --rm on detached containers, the container may already be gone
+        // when the user runs `mino stop`. Treat "no such container" as success.
+        let stop_result = if args.force {
+            runtime.kill(container_id).await
         } else {
-            runtime.stop(container_id).await?;
+            runtime.stop(container_id).await
+        };
+        if let Err(e) = &stop_result {
+            let msg = e.to_string().to_lowercase();
+            if !msg.contains("no such container") && !msg.contains("not found") {
+                stop_result?;
+            }
         }
 
-        // Remove container
-        runtime.remove(container_id).await?;
+        // Remove container (already tolerates "no such container")
+        let _ = runtime.remove(container_id).await;
 
         spinner.stop(&format!("Session {} stopped", style(&args.session).cyan()));
     } else {

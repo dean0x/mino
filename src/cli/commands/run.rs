@@ -317,10 +317,8 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     }
 
     if args.detach {
-        // Detached mode: run -d returns container ID immediately
-        // TODO: Detached containers also need removal after stop for credential cleanup.
-        // The `mino stop` command should call runtime.remove() after stopping.
-        // See: container security hardening review issue #10.
+        // Detached mode: --rm auto-removes the container when its process exits,
+        // preventing credential persistence in `podman inspect`.
         let container_id = match runtime.run(&container_config, &command).await {
             Ok(id) => id,
             Err(e) => {
@@ -871,6 +869,7 @@ fn build_container_config(
         },
         security_opt: vec!["no-new-privileges".to_string()],
         pids_limit: 4096,
+        auto_remove: args.detach,
     })
 }
 
