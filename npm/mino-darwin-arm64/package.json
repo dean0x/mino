@@ -1,6 +1,6 @@
 {
   "name": "@dean0x/mino-darwin-arm64",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Mino binary for macOS ARM64",
   "license": "MIT",
   "repository": {

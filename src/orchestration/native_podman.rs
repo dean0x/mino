@@ -78,31 +78,6 @@ impl NativePodmanRuntime {
         Ok(status.code().unwrap_or(-1))
     }
 
-    /// Append workdir, network, volumes, env, image, and command args to a Vec<String>.
-    fn push_container_args(args: &mut Vec<String>, config: &ContainerConfig, command: &[String]) {
-        args.push("-w".to_string());
-        args.push(config.workdir.clone());
-        args.push("--network".to_string());
-        args.push(config.network.clone());
-
-        for cap in &config.cap_add {
-            args.push("--cap-add".to_string());
-            args.push(cap.clone());
-        }
-
-        for v in &config.volumes {
-            args.push("-v".to_string());
-            args.push(v.clone());
-        }
-        for (k, v) in &config.env {
-            args.push("-e".to_string());
-            args.push(format!("{}={}", k, v));
-        }
-
-        args.push(config.image.clone());
-        args.extend(command.iter().cloned());
-    }
-
     /// Pull an image
     async fn pull(&self, image: &str) -> MinoResult<()> {
         debug!("Pulling image: {}", image);
@@ -165,7 +140,7 @@ impl ContainerRuntime for NativePodmanRuntime {
             args.push("-t".to_string());
         }
 
-        Self::push_container_args(&mut args, config, command);
+        config.push_args(&mut args, command);
 
         debug!("Running container (detached): podman {:?}", args);
 
@@ -200,7 +175,7 @@ impl ContainerRuntime for NativePodmanRuntime {
             args.push("-t".to_string());
         }
 
-        Self::push_container_args(&mut args, config, command);
+        config.push_args(&mut args, command);
 
         debug!("Creating container: podman {:?}", args);
 

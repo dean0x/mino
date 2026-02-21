@@ -21,7 +21,7 @@ AI coding agents are powerful but require significant system access. Mino provid
 
 - **Filesystem Isolation**: Agent only sees your project directory, not `~/.ssh`, `~/.aws`, or system files
 - **Credential Scoping**: Short-lived cloud tokens instead of permanent credentials
-- **Network Boundaries**: Three network modes — full host, no network, or allowlisted egress via iptables
+- **Network Boundaries**: Four network modes — bridge (default), host, none, or allowlisted egress via iptables — with built-in presets for common services
 
 ## Features
 
@@ -30,7 +30,7 @@ AI coding agents are powerful but require significant system access. Mino provid
 - **SSH Agent Forwarding**: Git authentication without exposing private keys
 - **Persistent Caching**: Content-addressed dependency caches survive session crashes
 - **Multi-Session**: Run multiple isolated sandboxes in parallel
-- **Network Isolation**: Block all outbound traffic, or allowlist specific host:port destinations
+- **Network Isolation**: Bridge networking by default with interactive prompt on first run. Block all traffic, allowlist specific destinations, or use built-in presets (`dev`, `registries`)
 - **Zero Config**: Works out of the box with sensible defaults
 
 ## Requirements
@@ -136,8 +136,9 @@ mino run [OPTIONS] [-- COMMAND...]
 | `-d, --detach` | Run in background |
 | `--no-cache` | Disable dependency caching |
 | `--cache-fresh` | Force fresh cache (ignore existing) |
-| `--network <MODE>` | Network mode: `host` (default), `none`, `bridge` |
+| `--network <MODE>` | Network mode: `bridge` (default), `host`, `none` |
 | `--network-allow <RULES>` | Allowlisted destinations (`host:port`, comma-separated). Implies bridge + iptables |
+| `--network-preset <PRESET>` | Network preset: `dev`, `registries` (conflicts with `--network-allow`) |
 
 **Layer precedence**: `--layers` flag > `--image` flag > `MINO_LAYERS` env var > config `container.layers` > interactive selection > config `container.image`.
 
@@ -263,7 +264,8 @@ distro = "fedora"
 [container]
 image = "fedora:43"
 workdir = "/workspace"
-network = "host"
+network = "bridge"
+# network_preset = "dev"              # Preset allowlist: dev, registries
 # network_allow = ["github.com:443"]  # Implies bridge + iptables egress filtering
 # env = { "MY_VAR" = "value" }       # Additional env vars
 # volumes = ["/host/path:/container/path"]
@@ -313,6 +315,7 @@ vm.name
 vm.distro
 container.image
 container.network
+container.network_preset
 container.workdir
 container.network_allow
 credentials.aws.enabled
@@ -388,28 +391,38 @@ mino cache clear --all
 
 ## Network Isolation
 
-Mino supports three network modes for container sessions:
+Mino supports four network modes for container sessions:
 
 ### Modes
 
 | Mode | Flag | Behavior |
 |------|------|----------|
-| Host | `--network host` (default) | Full host networking, no restrictions |
+| Bridge | `--network bridge` (default) | Standard bridge networking, isolated from host localhost |
+| Host | `--network host` | Full host networking, no restrictions |
 | None | `--network none` | No network access at all |
-| Bridge | `--network bridge` | Standard bridge networking |
 | Allowlist | `--network-allow host:port,...` | Bridge + iptables egress filtering |
+| Preset | `--network-preset dev\|registries` | Allowlist with built-in rules for common services |
 
 ### Examples
 
 ```bash
+# Default: bridge networking (isolated from host localhost)
+mino run -- bash
+
 # No network access (air-gapped)
 mino run --network none -- bash
 
 # Allow only GitHub and npm registry
 mino run --network-allow github.com:443,registry.npmjs.org:443 -- claude
 
-# Standard bridge networking (outbound allowed)
-mino run --network bridge -- bash
+# Use dev preset (GitHub, npm, crates.io, PyPI, AI APIs)
+mino run --network-preset dev -- claude
+
+# Use registries preset (package repos only, most restrictive)
+mino run --network-preset registries -- bash
+
+# Full host networking (no isolation)
+mino run --network host -- bash
 ```
 
 ### Allowlist Mode
@@ -431,7 +444,8 @@ Set default network allowlist in config:
 
 ```toml
 [container]
-network = "host"                                    # default mode
+network = "bridge"                                  # default mode
+# network_preset = "dev"                            # preset allowlist (conflicts with network_allow)
 network_allow = ["github.com:443", "npmjs.org:443"] # implies bridge + iptables
 ```
 
@@ -441,6 +455,7 @@ Or via CLI: `mino config set container.network_allow "github.com:443,npmjs.org:4
 
 - **DNS resolution at rule time**: iptables resolves hostnames to IPs when rules are inserted. CDN hosts with rotating IPs may become unreachable during long sessions.
 - **iptables required**: The container image must include iptables. Fedora 43 and mino-base include it by default.
+- **capsh required**: `--network-allow` and `--network-preset` modes require `capsh` (from `libcap`) in the container image to drop `CAP_NET_ADMIN` after iptables setup. The mino-base image includes it.
 
 ## Container Images
 
@@ -594,15 +609,18 @@ Credentials are cached with TTL awareness - Mino automatically refreshes expired
 
 Mino provides defense-in-depth but is not a complete security solution:
 
+- **Container Hardening**: All containers run with `--cap-drop ALL`, `--security-opt no-new-privileges`, and `--pids-limit 4096` by default
 - **Trust Boundary**: The container can access anything mounted into it
-- **Network Access**: Default `host` mode allows outbound connections. Use `--network none` for air-gapped sessions or `--network-allow` for fine-grained egress control
+- **Network Access**: Default `bridge` mode isolates containers from host localhost. Use `--network none` for air-gapped sessions, `--network-allow` or `--network-preset` for fine-grained egress control
 - **Credential Scope**: Temporary credentials still have the permissions of the source identity
 - **OrbStack Trust**: You're trusting OrbStack's VM isolation
+- **Container Cleanup**: Interactive sessions remove containers after exit to prevent credential persistence via `podman inspect`
 
 For maximum security:
 1. Use dedicated cloud roles with minimal permissions
 2. Use named sessions to track activity
 3. Use `--network none` or `--network-allow` for network-restricted sessions
+4. Use `--network-preset registries` to limit egress to package registries only
 
 ## Development
 

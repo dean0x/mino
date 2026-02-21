@@ -127,34 +127,6 @@ impl OrbStackRuntime {
         Ok(())
     }
 
-    /// Build the common Podman argument list for container `run` / `create`.
-    ///
-    /// Appends workdir, network, capabilities, volumes, env, image, and command
-    /// to `args`. Mirrors `NativePodmanRuntime::push_container_args`.
-    fn push_podman_args(args: &mut Vec<String>, config: &ContainerConfig, command: &[String]) {
-        args.push("-w".to_string());
-        args.push(config.workdir.clone());
-        args.push("--network".to_string());
-        args.push(config.network.clone());
-
-        for cap in &config.cap_add {
-            args.push("--cap-add".to_string());
-            args.push(cap.clone());
-        }
-
-        for v in &config.volumes {
-            args.push("-v".to_string());
-            args.push(v.clone());
-        }
-        for (k, v) in &config.env {
-            args.push("-e".to_string());
-            args.push(format!("{}={}", k, v));
-        }
-
-        args.push(config.image.clone());
-        args.extend(command.iter().cloned());
-    }
-
     /// Pull an image
     async fn pull(&self, image: &str) -> MinoResult<()> {
         debug!("Pulling image: {}", image);
@@ -206,7 +178,7 @@ impl ContainerRuntime for OrbStackRuntime {
             args.push("-t".to_string());
         }
 
-        Self::push_podman_args(&mut args, config, command);
+        config.push_args(&mut args, command);
 
         debug!("Running container (detached): {:?}", args);
 
@@ -241,7 +213,7 @@ impl ContainerRuntime for OrbStackRuntime {
             args.push("-t".to_string());
         }
 
-        Self::push_podman_args(&mut args, config, command);
+        config.push_args(&mut args, command);
 
         debug!("Creating container: {:?}", args);
 
