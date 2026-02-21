@@ -160,6 +160,10 @@ pub struct RunArgs {
     #[arg(long, value_delimiter = ',')]
     pub network_allow: Vec<String>,
 
+    /// Network allowlist preset: dev, registries
+    #[arg(long, conflicts_with = "network_allow")]
+    pub network_preset: Option<String>,
+
     /// Command and arguments to run (defaults to shell)
     #[arg(last = true)]
     pub command: Vec<String>,

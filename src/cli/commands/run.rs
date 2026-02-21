@@ -19,7 +19,7 @@ use crate::credentials::{
 };
 use crate::error::{MinoError, MinoResult};
 use crate::layer::{compose_image, list_available_layers, resolve_layers};
-use crate::network::{generate_iptables_wrapper, resolve_network_mode, NetworkMode};
+use crate::network::{generate_iptables_wrapper, resolve_network_mode, resolve_preset, NetworkMode};
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, BuildProgress, TaskSpinner, UiContext};
@@ -190,13 +190,22 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         }
     };
 
-    // Resolve network mode
-    let network_mode = resolve_network_mode(
-        args.network.as_deref(),
-        &args.network_allow,
-        &config.container.network,
-        &config.container.network_allow,
-    )?;
+    // Interactive network selection when no network mode configured
+    let network_mode = if is_default_network(&args, config) && ctx.is_interactive() {
+        spinner.clear();
+        let mode = prompt_network_selection(&ctx).await?;
+        spinner.start("Initializing sandbox...");
+        mode
+    } else {
+        resolve_network_mode(
+            args.network.as_deref(),
+            &args.network_allow,
+            args.network_preset.as_deref(),
+            &config.container.network,
+            &config.container.network_allow,
+            config.container.network_preset.as_deref(),
+        )?
+    };
     debug!("Network mode: {:?}", network_mode);
 
     // Setup caching (if enabled)
@@ -413,6 +422,15 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         manager
             .update_status(&session_name, SessionStatus::Stopped)
             .await?;
+
+        // Remove stopped container to prevent credential persistence in `podman inspect`
+        if let Err(e) = runtime.remove(&container_id).await {
+            warn!(
+                "Failed to remove container {}: {}",
+                &container_id[..12.min(container_id.len())],
+                e
+            );
+        }
 
         audit
             .log(
@@ -839,11 +857,14 @@ fn build_container_config(
         network: network_mode.to_podman_network().to_string(),
         interactive: !args.detach,
         tty: !args.detach,
+        cap_drop: vec!["ALL".to_string()],
         cap_add: if network_mode.requires_cap_net_admin() {
             vec!["NET_ADMIN".to_string()]
         } else {
             vec![]
         },
+        security_opt: vec!["no-new-privileges".to_string()],
+        pids_limit: 4096,
     })
 }
 
@@ -888,6 +909,170 @@ fn resolve_image_alias(image: &str) -> String {
 /// Check if no explicit image was provided and config uses the default image.
 fn is_default_image(args: &RunArgs, config: &Config) -> bool {
     args.image.is_none() && config.container.image == "fedora:43"
+}
+
+/// Check if network is at defaults (no explicit CLI or config override).
+fn is_default_network(args: &RunArgs, config: &Config) -> bool {
+    args.network.is_none()
+        && args.network_allow.is_empty()
+        && args.network_preset.is_none()
+        && config.container.network == "bridge"
+        && config.container.network_allow.is_empty()
+        && config.container.network_preset.is_none()
+}
+
+/// Network mode selection for the interactive prompt
+#[derive(Clone, PartialEq, Eq)]
+enum NetworkChoice {
+    Bridge,
+    Host,
+    AllowDev,
+    AllowRegistries,
+    None,
+}
+
+/// Prompt user to select network mode interactively.
+/// Returns the resolved `NetworkMode`.
+async fn prompt_network_selection(ctx: &UiContext) -> MinoResult<NetworkMode> {
+    let options: Vec<(NetworkChoice, &str, &str)> = vec![
+        (
+            NetworkChoice::Bridge,
+            "Bridge (recommended)",
+            "full internet, isolated from host services",
+        ),
+        (
+            NetworkChoice::Host,
+            "Host",
+            "full host network (local databases, APIs)",
+        ),
+        (
+            NetworkChoice::AllowDev,
+            "Allowlist: dev",
+            "GitHub, npm, crates.io, PyPI, AI APIs only",
+        ),
+        (
+            NetworkChoice::AllowRegistries,
+            "Allowlist: registries",
+            "package registries only (most restrictive)",
+        ),
+        (
+            NetworkChoice::None,
+            "None",
+            "no network (air-gapped)",
+        ),
+    ];
+
+    let choice = ui::select(ctx, "Select network mode", &options).await?;
+
+    let (mode, preset_name) = match choice {
+        NetworkChoice::Bridge => (NetworkMode::Bridge, None),
+        NetworkChoice::Host => (NetworkMode::Host, None),
+        NetworkChoice::AllowDev => (
+            NetworkMode::Allow(resolve_preset("dev")?),
+            Some("dev"),
+        ),
+        NetworkChoice::AllowRegistries => (
+            NetworkMode::Allow(resolve_preset("registries")?),
+            Some("registries"),
+        ),
+        NetworkChoice::None => (NetworkMode::None, None),
+    };
+
+    // Offer to save
+    prompt_save_network(ctx, &choice, preset_name).await?;
+
+    Ok(mode)
+}
+
+/// Save network selection to config.
+async fn prompt_save_network(
+    ctx: &UiContext,
+    choice: &NetworkChoice,
+    preset_name: Option<&str>,
+) -> MinoResult<()> {
+    let options: Vec<(SaveTarget, &str, &str)> = vec![
+        (
+            SaveTarget::Global,
+            "Save to global config",
+            "~/.config/mino/config.toml",
+        ),
+        (SaveTarget::None, "Don't save", "prompt again next time"),
+    ];
+
+    let target = ui::select(ctx, "Save this network setting?", &options).await?;
+
+    if target == SaveTarget::None {
+        return Ok(());
+    }
+
+    let path = ConfigManager::default_config_path();
+    let (key, value) = if let Some(preset) = preset_name {
+        ("network_preset", preset.to_string())
+    } else {
+        let net = match choice {
+            NetworkChoice::Host => "host",
+            NetworkChoice::None => "none",
+            _ => "bridge",
+        };
+        ("network", net.to_string())
+    };
+
+    write_network_to_config(&path, key, &value).await?;
+    println!("  {} Saved to {}", style("✓").green(), path.display());
+
+    Ok(())
+}
+
+/// Write a network config key into a TOML config file (create or merge).
+async fn write_network_to_config(path: &Path, key: &str, value: &str) -> MinoResult<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            MinoError::io(format!("creating config directory {}", parent.display()), e)
+        })?;
+    }
+
+    if path.exists() {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| MinoError::io(format!("reading {}", path.display()), e))?;
+        let mut doc: toml::Value =
+            content
+                .parse()
+                .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                })?;
+
+        let table = doc.as_table_mut().ok_or_else(|| MinoError::ConfigInvalid {
+            path: path.to_path_buf(),
+            reason: "config is not a TOML table".to_string(),
+        })?;
+        let container = table
+            .entry("container")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if let Some(ct) = container.as_table_mut() {
+            ct.insert(key.to_string(), toml::Value::String(value.to_string()));
+        }
+
+        let output = toml::to_string_pretty(&doc)
+            .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
+        tokio::fs::write(path, output)
+            .await
+            .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
+    } else {
+        let mut table = toml::map::Map::new();
+        let mut container = toml::map::Map::new();
+        container.insert(key.to_string(), toml::Value::String(value.to_string()));
+        table.insert("container".to_string(), toml::Value::Table(container));
+
+        let output = toml::to_string_pretty(&toml::Value::Table(table))
+            .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
+        tokio::fs::write(path, output)
+            .await
+            .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
+    }
+
+    Ok(())
 }
 
 /// Prompt user to select development tool layers interactively.
@@ -1105,6 +1290,7 @@ mod tests {
             cache_fresh: false,
             network: None,
             network_allow: vec![],
+            network_preset: None,
             command: vec![],
         }
     }

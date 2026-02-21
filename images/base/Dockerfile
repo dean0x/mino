@@ -25,8 +25,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     neovim \
     # Shell
     zsh \
-    # Networking
-    procps-ng httpie \
+    # Networking & capabilities
+    procps-ng httpie libcap \
     # Build essentials for native modules
     gcc gcc-c++ make pkgconf \
     && dnf clean all \

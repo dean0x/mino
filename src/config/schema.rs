@@ -96,6 +96,10 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub network_allow: Vec<String>,
 
+    /// Network preset name (e.g., "dev", "registries")
+    #[serde(default)]
+    pub network_preset: Option<String>,
+
     /// Composable layers (overrides image when non-empty)
     #[serde(default)]
     pub layers: Vec<String>,
@@ -107,9 +111,10 @@ impl Default for ContainerConfig {
             image: "fedora:43".to_string(),
             env: HashMap::new(),
             volumes: vec![],
-            network: "host".to_string(),
+            network: "bridge".to_string(),
             workdir: "/workspace".to_string(),
             network_allow: vec![],
+            network_preset: None,
             layers: vec![],
         }
     }

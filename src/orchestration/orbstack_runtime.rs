@@ -137,9 +137,22 @@ impl OrbStackRuntime {
         args.push("--network".to_string());
         args.push(config.network.clone());
 
+        // cap-drop BEFORE cap-add: Podman processes them in order
+        for cap in &config.cap_drop {
+            args.push("--cap-drop".to_string());
+            args.push(cap.clone());
+        }
         for cap in &config.cap_add {
             args.push("--cap-add".to_string());
             args.push(cap.clone());
+        }
+        for opt in &config.security_opt {
+            args.push("--security-opt".to_string());
+            args.push(opt.clone());
+        }
+        if config.pids_limit > 0 {
+            args.push("--pids-limit".to_string());
+            args.push(config.pids_limit.to_string());
         }
 
         for v in &config.volumes {
@@ -691,11 +704,40 @@ impl ContainerRuntime for OrbStackRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn orbstack_runtime_new() {
         let config = VmConfig::default();
         let runtime = OrbStackRuntime::new(config);
         assert_eq!(runtime.runtime_name(), "OrbStack + Podman");
+    }
+
+    #[test]
+    fn push_podman_args_cap_drop_before_cap_add() {
+        let config = ContainerConfig {
+            image: "test:latest".to_string(),
+            workdir: "/workspace".to_string(),
+            volumes: vec![],
+            env: HashMap::new(),
+            network: "bridge".to_string(),
+            interactive: false,
+            tty: false,
+            cap_add: vec!["NET_ADMIN".to_string()],
+            cap_drop: vec!["ALL".to_string()],
+            security_opt: vec!["no-new-privileges".to_string()],
+            pids_limit: 4096,
+        };
+        let mut args = Vec::new();
+        OrbStackRuntime::push_podman_args(&mut args, &config, &[]);
+
+        let drop_pos = args.iter().position(|a| a == "--cap-drop").unwrap();
+        let add_pos = args.iter().position(|a| a == "--cap-add").unwrap();
+        assert!(drop_pos < add_pos, "--cap-drop must come before --cap-add");
+
+        assert!(args.contains(&"--security-opt".to_string()));
+        assert!(args.contains(&"no-new-privileges".to_string()));
+        assert!(args.contains(&"--pids-limit".to_string()));
+        assert!(args.contains(&"4096".to_string()));
     }
 }

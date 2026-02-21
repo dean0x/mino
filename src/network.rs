@@ -100,18 +100,67 @@ fn parse_rules(raw: &[String]) -> MinoResult<Vec<NetworkRule>> {
     raw.iter().map(|r| parse_network_rule(r)).collect()
 }
 
-/// Resolve the effective network mode from CLI flags and config values.
+/// Resolve a network preset name into a list of `NetworkRule`s.
+///
+/// Built-in presets:
+/// - `dev`: GitHub, npm, crates.io, PyPI, AI APIs
+/// - `registries`: Package registries only
+pub fn resolve_preset(name: &str) -> MinoResult<Vec<NetworkRule>> {
+    let rules: Vec<(&str, u16)> = match name {
+        "dev" => vec![
+            ("github.com", 443),
+            ("github.com", 22),
+            ("api.github.com", 443),
+            ("registry.npmjs.org", 443),
+            ("crates.io", 443),
+            ("static.crates.io", 443),
+            ("index.crates.io", 443),
+            ("pypi.org", 443),
+            ("files.pythonhosted.org", 443),
+            ("api.anthropic.com", 443),
+            ("api.openai.com", 443),
+        ],
+        "registries" => vec![
+            ("registry.npmjs.org", 443),
+            ("crates.io", 443),
+            ("static.crates.io", 443),
+            ("index.crates.io", 443),
+            ("pypi.org", 443),
+            ("files.pythonhosted.org", 443),
+        ],
+        other => {
+            return Err(MinoError::NetworkPolicy(format!(
+                "Unknown network preset '{}'. Available presets: dev, registries",
+                other
+            )));
+        }
+    };
+
+    Ok(rules
+        .into_iter()
+        .map(|(host, port)| NetworkRule {
+            host: host.to_string(),
+            port,
+        })
+        .collect())
+}
+
+/// Resolve the effective network mode from CLI flags, presets, and config values.
 ///
 /// Precedence:
 /// 1. CLI `--network-allow` (non-empty) implies bridge + iptables allowlist.
-/// 2. CLI `--network` overrides config.
-/// 3. Config `network_allow` (non-empty) implies bridge + iptables allowlist.
-/// 4. Config `network` as fallback.
+/// 2. CLI `--network-preset` resolves preset into allowlist rules.
+/// 3. CLI `--network` overrides config.
+/// 4. Config `network_allow` (non-empty) implies bridge + iptables allowlist.
+/// 5. Config `network_preset` resolves preset into allowlist rules.
+/// 6. Config `network` as fallback.
 pub fn resolve_network_mode(
     cli_network: Option<&str>,
     cli_allow_rules: &[String],
+    cli_preset: Option<&str>,
     config_network: &str,
     config_network_allow: &[String],
+    config_preset: Option<&str>,
 ) -> MinoResult<NetworkMode> {
     // CLI allow rules take highest precedence
     if !cli_allow_rules.is_empty() {
@@ -134,7 +183,19 @@ pub fn resolve_network_mode(
         return Ok(NetworkMode::Allow(parse_rules(cli_allow_rules)?));
     }
 
-    // CLI --network flag (without allow rules)
+    // CLI --network-preset
+    if let Some(preset) = cli_preset {
+        if cli_network == Some("none") {
+            return Err(MinoError::NetworkPolicy(
+                "Cannot combine --network none with --network-preset. \
+                 Presets require bridge networking."
+                    .to_string(),
+            ));
+        }
+        return Ok(NetworkMode::Allow(resolve_preset(preset)?));
+    }
+
+    // CLI --network flag (without allow rules or preset)
     if let Some(net) = cli_network {
         return parse_mode_str(net, "CLI");
     }
@@ -151,6 +212,18 @@ pub fn resolve_network_mode(
         }
 
         return Ok(NetworkMode::Allow(parse_rules(config_network_allow)?));
+    }
+
+    // Config network_preset
+    if let Some(preset) = config_preset {
+        if config_network == "none" {
+            return Err(MinoError::NetworkPolicy(
+                "Config conflict: network = \"none\" with network_preset. \
+                 Presets require bridge networking."
+                    .to_string(),
+            ));
+        }
+        return Ok(NetworkMode::Allow(resolve_preset(preset)?));
     }
 
     // Config network mode fallback
@@ -227,11 +300,19 @@ pub fn generate_iptables_wrapper(
         ));
     }
 
-    // Exec the original command
-    script.push_str("exec");
+    // Drop CAP_NET_ADMIN before exec'ing the user command.
+    // The capsh -- -c 'exec "$@"' -- arg1 arg2 pattern passes args as
+    // positional parameters, avoiding nested quoting issues.
+    // Falls back to direct exec if capsh is not available.
+    script.push_str("if command -v capsh >/dev/null 2>&1; then exec capsh --drop=cap_net_admin -- -c 'exec \"$@\"' --");
     for arg in original_command {
         script.push_str(&format!(" '{}'", shell_escape(arg)));
     }
+    script.push_str("; else exec");
+    for arg in original_command {
+        script.push_str(&format!(" '{}'", shell_escape(arg)));
+    }
+    script.push_str("; fi");
 
     vec!["/bin/sh".to_string(), "-c".to_string(), script]
 }
@@ -349,42 +430,88 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("Empty host"));
     }
 
+    // ---- resolve_preset tests ----
+
+    #[test]
+    fn resolve_preset_dev() {
+        let rules = resolve_preset("dev").unwrap();
+        assert!(rules.len() >= 10);
+        assert!(rules.iter().any(|r| r.host == "github.com" && r.port == 443));
+        assert!(rules.iter().any(|r| r.host == "github.com" && r.port == 22));
+        assert!(rules
+            .iter()
+            .any(|r| r.host == "registry.npmjs.org" && r.port == 443));
+        assert!(rules
+            .iter()
+            .any(|r| r.host == "api.anthropic.com" && r.port == 443));
+    }
+
+    #[test]
+    fn resolve_preset_registries() {
+        let rules = resolve_preset("registries").unwrap();
+        assert!(rules.len() >= 5);
+        assert!(rules
+            .iter()
+            .any(|r| r.host == "registry.npmjs.org" && r.port == 443));
+        assert!(rules.iter().any(|r| r.host == "crates.io" && r.port == 443));
+        // Should NOT include GitHub or AI APIs
+        assert!(!rules.iter().any(|r| r.host == "github.com"));
+        assert!(!rules.iter().any(|r| r.host == "api.anthropic.com"));
+    }
+
+    #[test]
+    fn resolve_preset_unknown_error() {
+        let result = resolve_preset("unknown");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown network preset"));
+    }
+
     // ---- resolve_network_mode tests ----
 
     #[test]
     fn resolve_defaults_to_config_host() {
-        let mode = resolve_network_mode(None, &[], "host", &[]).unwrap();
+        let mode = resolve_network_mode(None, &[], None, "host", &[], None).unwrap();
         assert_eq!(mode, NetworkMode::Host);
     }
 
     #[test]
     fn resolve_defaults_to_config_none() {
-        let mode = resolve_network_mode(None, &[], "none", &[]).unwrap();
+        let mode = resolve_network_mode(None, &[], None, "none", &[], None).unwrap();
         assert_eq!(mode, NetworkMode::None);
     }
 
     #[test]
     fn resolve_defaults_to_config_bridge() {
-        let mode = resolve_network_mode(None, &[], "bridge", &[]).unwrap();
+        let mode = resolve_network_mode(None, &[], None, "bridge", &[], None).unwrap();
         assert_eq!(mode, NetworkMode::Bridge);
     }
 
     #[test]
     fn resolve_cli_network_overrides_config() {
-        let mode = resolve_network_mode(Some("none"), &[], "host", &[]).unwrap();
+        let mode = resolve_network_mode(Some("none"), &[], None, "host", &[], None).unwrap();
         assert_eq!(mode, NetworkMode::None);
     }
 
     #[test]
     fn resolve_cli_bridge() {
-        let mode = resolve_network_mode(Some("bridge"), &[], "host", &[]).unwrap();
+        let mode = resolve_network_mode(Some("bridge"), &[], None, "host", &[], None).unwrap();
         assert_eq!(mode, NetworkMode::Bridge);
     }
 
     #[test]
     fn resolve_cli_allow_implies_bridge() {
-        let mode =
-            resolve_network_mode(None, &["github.com:443".to_string()], "host", &[]).unwrap();
+        let mode = resolve_network_mode(
+            None,
+            &["github.com:443".to_string()],
+            None,
+            "host",
+            &[],
+            None,
+        )
+        .unwrap();
         match mode {
             NetworkMode::Allow(rules) => {
                 assert_eq!(rules.len(), 1);
@@ -400,8 +527,10 @@ mod tests {
         let mode = resolve_network_mode(
             None,
             &["github.com:443".to_string(), "npmjs.org:443".to_string()],
+            None,
             "host",
             &[],
+            None,
         )
         .unwrap();
         match mode {
@@ -412,23 +541,43 @@ mod tests {
 
     #[test]
     fn resolve_cli_none_with_allow_is_error() {
-        let result =
-            resolve_network_mode(Some("none"), &["github.com:443".to_string()], "host", &[]);
+        let result = resolve_network_mode(
+            Some("none"),
+            &["github.com:443".to_string()],
+            None,
+            "host",
+            &[],
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Cannot combine"));
     }
 
     #[test]
     fn resolve_cli_host_with_allow_overrides_to_allow() {
-        let mode = resolve_network_mode(Some("host"), &["github.com:443".to_string()], "host", &[])
-            .unwrap();
+        let mode = resolve_network_mode(
+            Some("host"),
+            &["github.com:443".to_string()],
+            None,
+            "host",
+            &[],
+            None,
+        )
+        .unwrap();
         assert!(matches!(mode, NetworkMode::Allow(_)));
     }
 
     #[test]
     fn resolve_config_allow_rules() {
-        let mode = resolve_network_mode(None, &[], "host", &["registry.npmjs.org:443".to_string()])
-            .unwrap();
+        let mode = resolve_network_mode(
+            None,
+            &[],
+            None,
+            "host",
+            &["registry.npmjs.org:443".to_string()],
+            None,
+        )
+        .unwrap();
         match mode {
             NetworkMode::Allow(rules) => {
                 assert_eq!(rules.len(), 1);
@@ -443,8 +592,10 @@ mod tests {
         let mode = resolve_network_mode(
             None,
             &["github.com:443".to_string()],
+            None,
             "host",
             &["npmjs.org:443".to_string()],
+            None,
         )
         .unwrap();
         match mode {
@@ -458,7 +609,7 @@ mod tests {
 
     #[test]
     fn resolve_unknown_mode_error() {
-        let result = resolve_network_mode(Some("invalid"), &[], "host", &[]);
+        let result = resolve_network_mode(Some("invalid"), &[], None, "host", &[], None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -468,19 +619,105 @@ mod tests {
 
     #[test]
     fn resolve_config_none_with_allow_is_error() {
-        let result = resolve_network_mode(None, &[], "none", &["github.com:443".to_string()]);
+        let result = resolve_network_mode(
+            None,
+            &[],
+            None,
+            "none",
+            &["github.com:443".to_string()],
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Config conflict"));
     }
 
     #[test]
     fn resolve_unknown_config_mode_error() {
-        let result = resolve_network_mode(None, &[], "invalid", &[]);
+        let result = resolve_network_mode(None, &[], None, "invalid", &[], None);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
             .to_string()
             .contains("Unknown network mode"));
+    }
+
+    #[test]
+    fn resolve_cli_preset_dev() {
+        let mode = resolve_network_mode(None, &[], Some("dev"), "bridge", &[], None).unwrap();
+        match mode {
+            NetworkMode::Allow(rules) => {
+                assert!(rules.len() >= 10);
+                assert!(rules.iter().any(|r| r.host == "github.com"));
+            }
+            other => panic!("expected Allow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolve_cli_preset_overrides_config_preset() {
+        let mode = resolve_network_mode(
+            None,
+            &[],
+            Some("registries"),
+            "bridge",
+            &[],
+            Some("dev"),
+        )
+        .unwrap();
+        match mode {
+            NetworkMode::Allow(rules) => {
+                // registries preset should NOT have github.com
+                assert!(!rules.iter().any(|r| r.host == "github.com"));
+            }
+            other => panic!("expected Allow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolve_cli_allow_overrides_cli_preset() {
+        let mode = resolve_network_mode(
+            None,
+            &["custom.host:8080".to_string()],
+            Some("dev"),
+            "bridge",
+            &[],
+            None,
+        )
+        .unwrap();
+        match mode {
+            NetworkMode::Allow(rules) => {
+                assert_eq!(rules.len(), 1);
+                assert_eq!(rules[0].host, "custom.host");
+            }
+            other => panic!("expected Allow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolve_config_preset() {
+        let mode =
+            resolve_network_mode(None, &[], None, "bridge", &[], Some("registries")).unwrap();
+        match mode {
+            NetworkMode::Allow(rules) => {
+                assert!(rules.iter().any(|r| r.host == "crates.io"));
+            }
+            other => panic!("expected Allow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolve_cli_none_with_preset_is_error() {
+        let result =
+            resolve_network_mode(Some("none"), &[], Some("dev"), "bridge", &[], None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cannot combine"));
+    }
+
+    #[test]
+    fn resolve_config_none_with_preset_is_error() {
+        let result = resolve_network_mode(None, &[], None, "none", &[], Some("dev"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Config conflict"));
     }
 
     // ---- NetworkMode method tests ----
@@ -575,7 +812,27 @@ mod tests {
         assert!(script.contains("iptables -A OUTPUT -d 'github.com' -p tcp --dport 443 -j ACCEPT"));
         assert!(script.contains("ip6tables -A OUTPUT -d 'github.com' -p tcp --dport 443 -j ACCEPT"));
         assert!(script.contains("command -v iptables"));
-        assert!(script.ends_with("exec 'bash'"));
+        // capsh drop + fallback
+        assert!(script.contains("capsh --drop=cap_net_admin"));
+        assert!(script.contains("else exec"));
+    }
+
+    #[test]
+    fn iptables_wrapper_capsh_drops_cap_net_admin() {
+        let rules = vec![NetworkRule {
+            host: "github.com".to_string(),
+            port: 443,
+        }];
+        let cmd = vec!["/bin/zsh".to_string()];
+        let result = generate_iptables_wrapper(&rules, &cmd);
+        let script = &result[2];
+
+        // capsh branch: drops CAP_NET_ADMIN and execs the command
+        assert!(script.contains(
+            "exec capsh --drop=cap_net_admin -- -c 'exec \"$@\"' -- '/bin/zsh'"
+        ));
+        // fallback branch: direct exec without capsh
+        assert!(script.contains("else exec '/bin/zsh'; fi"));
     }
 
     #[test]
@@ -598,7 +855,7 @@ mod tests {
         assert!(script.contains("ip6tables -A OUTPUT -d 'github.com' -p tcp --dport 443"));
         assert!(script.contains("iptables -A OUTPUT -d 'npmjs.org' -p tcp --dport 443"));
         assert!(script.contains("ip6tables -A OUTPUT -d 'npmjs.org' -p tcp --dport 443"));
-        assert!(script.ends_with("exec 'node' 'app.js'"));
+        assert!(script.contains("else exec 'node' 'app.js'; fi"));
     }
 
     #[test]
@@ -640,7 +897,7 @@ mod tests {
         // Should still have base rules (DROP, loopback, DNS) but no allowlist entries
         assert!(script.contains("iptables -P OUTPUT DROP"));
         assert!(!script.contains("-d '"));
-        assert!(script.ends_with("exec 'bash'"));
+        assert!(script.contains("else exec 'bash'; fi"));
     }
 
     #[test]
@@ -654,6 +911,6 @@ mod tests {
         let result = generate_iptables_wrapper(&rules, &cmd);
         let script = &result[2];
 
-        assert!(script.ends_with("exec '/bin/bash' '-c' 'ls -la'"));
+        assert!(script.contains("else exec '/bin/bash' '-c' 'ls -la'; fi"));
     }
 }
