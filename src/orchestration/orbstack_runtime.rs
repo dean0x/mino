@@ -127,47 +127,6 @@ impl OrbStackRuntime {
         Ok(())
     }
 
-    /// Build the common Podman argument list for container `run` / `create`.
-    ///
-    /// Appends workdir, network, capabilities, volumes, env, image, and command
-    /// to `args`. Mirrors `NativePodmanRuntime::push_container_args`.
-    fn push_podman_args(args: &mut Vec<String>, config: &ContainerConfig, command: &[String]) {
-        args.push("-w".to_string());
-        args.push(config.workdir.clone());
-        args.push("--network".to_string());
-        args.push(config.network.clone());
-
-        // cap-drop BEFORE cap-add: Podman processes them in order
-        for cap in &config.cap_drop {
-            args.push("--cap-drop".to_string());
-            args.push(cap.clone());
-        }
-        for cap in &config.cap_add {
-            args.push("--cap-add".to_string());
-            args.push(cap.clone());
-        }
-        for opt in &config.security_opt {
-            args.push("--security-opt".to_string());
-            args.push(opt.clone());
-        }
-        if config.pids_limit > 0 {
-            args.push("--pids-limit".to_string());
-            args.push(config.pids_limit.to_string());
-        }
-
-        for v in &config.volumes {
-            args.push("-v".to_string());
-            args.push(v.clone());
-        }
-        for (k, v) in &config.env {
-            args.push("-e".to_string());
-            args.push(format!("{}={}", k, v));
-        }
-
-        args.push(config.image.clone());
-        args.extend(command.iter().cloned());
-    }
-
     /// Pull an image
     async fn pull(&self, image: &str) -> MinoResult<()> {
         debug!("Pulling image: {}", image);
@@ -219,7 +178,7 @@ impl ContainerRuntime for OrbStackRuntime {
             args.push("-t".to_string());
         }
 
-        Self::push_podman_args(&mut args, config, command);
+        config.push_args(&mut args, command);
 
         debug!("Running container (detached): {:?}", args);
 
@@ -254,7 +213,7 @@ impl ContainerRuntime for OrbStackRuntime {
             args.push("-t".to_string());
         }
 
-        Self::push_podman_args(&mut args, config, command);
+        config.push_args(&mut args, command);
 
         debug!("Creating container: {:?}", args);
 
@@ -704,40 +663,11 @@ impl ContainerRuntime for OrbStackRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn orbstack_runtime_new() {
         let config = VmConfig::default();
         let runtime = OrbStackRuntime::new(config);
         assert_eq!(runtime.runtime_name(), "OrbStack + Podman");
-    }
-
-    #[test]
-    fn push_podman_args_cap_drop_before_cap_add() {
-        let config = ContainerConfig {
-            image: "test:latest".to_string(),
-            workdir: "/workspace".to_string(),
-            volumes: vec![],
-            env: HashMap::new(),
-            network: "bridge".to_string(),
-            interactive: false,
-            tty: false,
-            cap_add: vec!["NET_ADMIN".to_string()],
-            cap_drop: vec!["ALL".to_string()],
-            security_opt: vec!["no-new-privileges".to_string()],
-            pids_limit: 4096,
-        };
-        let mut args = Vec::new();
-        OrbStackRuntime::push_podman_args(&mut args, &config, &[]);
-
-        let drop_pos = args.iter().position(|a| a == "--cap-drop").unwrap();
-        let add_pos = args.iter().position(|a| a == "--cap-add").unwrap();
-        assert!(drop_pos < add_pos, "--cap-drop must come before --cap-add");
-
-        assert!(args.contains(&"--security-opt".to_string()));
-        assert!(args.contains(&"no-new-privileges".to_string()));
-        assert!(args.contains(&"--pids-limit".to_string()));
-        assert!(args.contains(&"4096".to_string()));
     }
 }

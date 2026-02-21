@@ -1,7 +1,7 @@
-//! Podman shared types
+//! Podman shared types and helpers
 //!
-//! Contains data structures used by container runtimes.
-//! The actual Podman execution logic is in the runtime implementations.
+//! Contains data structures and shared argument-building logic
+//! used by both `NativePodmanRuntime` and `OrbStackRuntime`.
 
 use std::collections::HashMap;
 
@@ -32,6 +32,51 @@ pub struct ContainerConfig {
     pub pids_limit: u32,
 }
 
+impl ContainerConfig {
+    /// Append Podman container arguments to a command-line argument vector.
+    ///
+    /// Pushes workdir, network, capabilities (drop before add), security options,
+    /// pids-limit, volumes, env vars, image, and the user command.
+    ///
+    /// Used by both `NativePodmanRuntime` and `OrbStackRuntime`.
+    pub fn push_args(&self, args: &mut Vec<String>, command: &[String]) {
+        args.push("-w".to_string());
+        args.push(self.workdir.clone());
+        args.push("--network".to_string());
+        args.push(self.network.clone());
+
+        // cap-drop BEFORE cap-add: Podman processes them in order
+        for cap in &self.cap_drop {
+            args.push("--cap-drop".to_string());
+            args.push(cap.clone());
+        }
+        for cap in &self.cap_add {
+            args.push("--cap-add".to_string());
+            args.push(cap.clone());
+        }
+        for opt in &self.security_opt {
+            args.push("--security-opt".to_string());
+            args.push(opt.clone());
+        }
+        if self.pids_limit > 0 {
+            args.push("--pids-limit".to_string());
+            args.push(self.pids_limit.to_string());
+        }
+
+        for v in &self.volumes {
+            args.push("-v".to_string());
+            args.push(v.clone());
+        }
+        for (k, v) in &self.env {
+            args.push("-e".to_string());
+            args.push(format!("{}={}", k, v));
+        }
+
+        args.push(self.image.clone());
+        args.extend(command.iter().cloned());
+    }
+}
+
 /// Information about a running container
 #[derive(Debug, Clone)]
 pub struct ContainerInfo {
@@ -49,25 +94,58 @@ pub struct ContainerInfo {
 mod tests {
     use super::*;
 
-    #[test]
-    fn container_config_default() {
-        let config = ContainerConfig {
+    fn test_config() -> ContainerConfig {
+        ContainerConfig {
             image: "fedora:43".to_string(),
             workdir: "/workspace".to_string(),
             volumes: vec![],
             env: HashMap::new(),
-            network: "host".to_string(),
+            network: "bridge".to_string(),
             interactive: true,
             tty: true,
             cap_add: vec![],
             cap_drop: vec!["ALL".to_string()],
             security_opt: vec!["no-new-privileges".to_string()],
             pids_limit: 4096,
-        };
+        }
+    }
 
+    #[test]
+    fn container_config_fields() {
+        let config = test_config();
         assert_eq!(config.image, "fedora:43");
         assert_eq!(config.cap_drop, vec!["ALL"]);
         assert_eq!(config.security_opt, vec!["no-new-privileges"]);
         assert_eq!(config.pids_limit, 4096);
+    }
+
+    #[test]
+    fn push_args_cap_drop_before_cap_add() {
+        let mut config = test_config();
+        config.cap_add = vec!["NET_ADMIN".to_string()];
+
+        let mut args = Vec::new();
+        config.push_args(&mut args, &[]);
+
+        let drop_pos = args.iter().position(|a| a == "--cap-drop").unwrap();
+        let add_pos = args.iter().position(|a| a == "--cap-add").unwrap();
+        assert!(drop_pos < add_pos, "--cap-drop must come before --cap-add");
+
+        assert!(args.contains(&"--security-opt".to_string()));
+        assert!(args.contains(&"no-new-privileges".to_string()));
+        assert!(args.contains(&"--pids-limit".to_string()));
+        assert!(args.contains(&"4096".to_string()));
+    }
+
+    #[test]
+    fn push_args_no_pids_limit_when_zero() {
+        let mut config = test_config();
+        config.pids_limit = 0;
+        config.cap_drop = vec![];
+        config.security_opt = vec![];
+
+        let mut args = Vec::new();
+        config.push_args(&mut args, &[]);
+        assert!(!args.contains(&"--pids-limit".to_string()));
     }
 }

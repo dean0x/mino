@@ -151,7 +151,7 @@ pub struct RunArgs {
     #[arg(long, conflicts_with = "no_cache")]
     pub cache_fresh: bool,
 
-    /// Network mode: host (default), none, bridge
+    /// Network mode: bridge (default), host, none
     #[arg(long)]
     pub network: Option<String>,
 

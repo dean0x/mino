@@ -15,7 +15,7 @@ pub struct NetworkRule {
 /// Network mode for container sessions
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkMode {
-    /// Full host networking (default, backward compatible)
+    /// Full host networking (shares host network namespace)
     Host,
     /// No network access
     None,
