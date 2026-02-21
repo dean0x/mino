@@ -614,7 +614,7 @@ Mino provides defense-in-depth but is not a complete security solution:
 - **Network Access**: Default `bridge` mode isolates containers from host localhost. Use `--network none` for air-gapped sessions, `--network-allow` or `--network-preset` for fine-grained egress control
 - **Credential Scope**: Temporary credentials still have the permissions of the source identity
 - **OrbStack Trust**: You're trusting OrbStack's VM isolation
-- **Container Cleanup**: Interactive sessions remove containers after exit to prevent credential persistence via `podman inspect`
+- **Container Cleanup**: All sessions (interactive and detached) remove containers after exit to prevent credential persistence via `podman inspect`
 
 For maximum security:
 1. Use dedicated cloud roles with minimal permissions

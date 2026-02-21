@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - Unreleased
+## [1.2.0] - 2026-02-21
 
 ### Breaking Changes
 
@@ -18,15 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--network-preset dev|registries` flag with built-in allowlists for common services (GitHub, npm, crates.io, PyPI, AI APIs).
 - Interactive network mode prompt on first run — saves choice to config so it never prompts again.
 - `--security-opt no-new-privileges` on all containers to prevent privilege escalation.
-- Container removal after interactive sessions to prevent credential persistence via `podman inspect`.
+- Container removal after all sessions (interactive and detached) to prevent credential persistence via `podman inspect`. Detached containers use `--rm` for automatic cleanup on process exit.
 - `capsh --drop=cap_net_admin` after iptables setup in allowlist mode — irrecoverably drops the capability before running user commands.
 - `libcap` added to base Dockerfile for `capsh` binary.
+
+### Fixed
+
+- Detached containers (`mino run -d`) now auto-removed on exit via `--rm`, closing credential leakage gap where stopped containers exposed env vars via `podman inspect`.
+- `mino stop` now tolerates already-removed containers gracefully.
 
 ### Security
 
 - Defense-in-depth: capability dropping, privilege escalation prevention, PID limits.
 - Allowlist mode now irrecoverably drops `CAP_NET_ADMIN` before executing user commands.
-- Stopped containers cleaned up to prevent credential leakage.
+- All containers cleaned up after exit to prevent credential leakage (interactive via explicit removal, detached via `--rm`).
 
 ## [1.1.0] - 2025-02-13
 
@@ -70,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
-[1.2.0]: https://github.com/dean0x/mino/compare/v1.1.0...HEAD
+[1.2.0]: https://github.com/dean0x/mino/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dean0x/mino/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dean0x/mino/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/dean0x/mino/releases/tag/v0.1.0

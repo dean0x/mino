@@ -1,4 +1,4 @@
-# Mino v1.1.0 — Terminal Demo
+# Mino v1.2.0 — Terminal Demo
 # Record with: vhs demo.tape
 # Output: demo.gif
 
@@ -25,13 +25,23 @@ Sleep 500ms
 Enter
 Sleep 1s
 
-# Step 3: Save prompt — navigate to "Don't save" (third option)
+# Step 3: Layer save prompt — navigate to "Don't save" (third option)
+Down 2
+Sleep 500ms
+Enter
+Sleep 1s
+
+# Step 4: Network mode prompt — "Bridge (recommended)" is first item
+Enter
+Sleep 1s
+
+# Step 5: Network save prompt — navigate to "Don't save" (third option)
 Down 2
 Sleep 500ms
 Enter
 Sleep 4s
 
-# Step 4: Inside container
+# Step 6: Inside container
 Type "echo 'Hello from Mino!'"
 Sleep 300ms
 Enter
@@ -47,7 +57,7 @@ Sleep 300ms
 Enter
 Sleep 1.5s
 
-# Step 5: Clean exit
+# Step 7: Clean exit
 Type "exit"
 Sleep 300ms
 Enter
