@@ -454,7 +454,9 @@ mod tests {
     fn resolve_preset_dev() {
         let rules = resolve_preset("dev").unwrap();
         assert!(rules.len() >= 10);
-        assert!(rules.iter().any(|r| r.host == "github.com" && r.port == 443));
+        assert!(rules
+            .iter()
+            .any(|r| r.host == "github.com" && r.port == 443));
         assert!(rules.iter().any(|r| r.host == "github.com" && r.port == 22));
         assert!(rules
             .iter()
@@ -692,15 +694,7 @@ mod tests {
 
     #[test]
     fn resolve_cli_preset_overrides_config_preset() {
-        let mode = resolve(
-            None,
-            &[],
-            Some("registries"),
-            "bridge",
-            &[],
-            Some("dev"),
-        )
-        .unwrap();
+        let mode = resolve(None, &[], Some("registries"), "bridge", &[], Some("dev")).unwrap();
         match mode {
             NetworkMode::Allow(rules) => {
                 // registries preset should NOT have github.com
@@ -732,8 +726,7 @@ mod tests {
 
     #[test]
     fn resolve_config_preset() {
-        let mode =
-            resolve(None, &[], None, "bridge", &[], Some("registries")).unwrap();
+        let mode = resolve(None, &[], None, "bridge", &[], Some("registries")).unwrap();
         match mode {
             NetworkMode::Allow(rules) => {
                 assert!(rules.iter().any(|r| r.host == "crates.io"));
@@ -744,8 +737,7 @@ mod tests {
 
     #[test]
     fn resolve_cli_none_with_preset_is_error() {
-        let result =
-            resolve(Some("none"), &[], Some("dev"), "bridge", &[], None);
+        let result = resolve(Some("none"), &[], Some("dev"), "bridge", &[], None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Cannot combine"));
     }
@@ -866,9 +858,9 @@ mod tests {
         let script = &result[2];
 
         // capsh branch: drops CAP_NET_ADMIN and execs the command
-        assert!(script.contains(
-            "exec capsh --drop=cap_net_admin -- -c 'exec \"$@\"' -- '/bin/zsh'"
-        ));
+        assert!(
+            script.contains("exec capsh --drop=cap_net_admin -- -c 'exec \"$@\"' -- '/bin/zsh'")
+        );
         // fallback branch: hard fail when capsh is missing
         assert!(script.contains("else echo 'mino: capsh not found. Cannot drop CAP_NET_ADMIN"));
         assert!(script.contains("exit 1; fi"));

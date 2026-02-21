@@ -961,11 +961,7 @@ async fn prompt_network_selection(ctx: &UiContext, project_dir: &Path) -> MinoRe
             "Allowlist: registries",
             "package registries only (most restrictive)",
         ),
-        (
-            NetworkChoice::None,
-            "None",
-            "no network (air-gapped)",
-        ),
+        (NetworkChoice::None, "None", "no network (air-gapped)"),
     ];
 
     let choice = ui::select(ctx, "Select network mode", &options).await?;
@@ -973,10 +969,7 @@ async fn prompt_network_selection(ctx: &UiContext, project_dir: &Path) -> MinoRe
     let (mode, preset_name) = match choice {
         NetworkChoice::Bridge => (NetworkMode::Bridge, None),
         NetworkChoice::Host => (NetworkMode::Host, None),
-        NetworkChoice::AllowDev => (
-            NetworkMode::Allow(resolve_preset("dev")?),
-            Some("dev"),
-        ),
+        NetworkChoice::AllowDev => (NetworkMode::Allow(resolve_preset("dev")?), Some("dev")),
         NetworkChoice::AllowRegistries => (
             NetworkMode::Allow(resolve_preset("registries")?),
             Some("registries"),
@@ -1020,10 +1013,7 @@ async fn prompt_save_network(
     };
 
     let (key, toml_value) = if let Some(preset) = preset_name {
-        (
-            "network_preset",
-            toml::Value::String(preset.to_string()),
-        )
+        ("network_preset", toml::Value::String(preset.to_string()))
     } else {
         let net = match choice {
             NetworkChoice::Host => "host",
@@ -1044,11 +1034,7 @@ async fn prompt_save_network(
 /// Creates the file (and parent directories) if it does not exist.
 /// Uses a single `read_to_string` + match-on-error-kind to avoid a TOCTOU
 /// race between `path.exists()` and the subsequent read.
-async fn upsert_container_toml_key(
-    path: &Path,
-    key: &str,
-    value: toml::Value,
-) -> MinoResult<()> {
+async fn upsert_container_toml_key(path: &Path, key: &str, value: toml::Value) -> MinoResult<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| {
@@ -1432,12 +1418,9 @@ mod tests {
             .await
             .unwrap();
 
-        let result = upsert_container_toml_key(
-            &path,
-            "network",
-            toml::Value::String("bridge".to_string()),
-        )
-        .await;
+        let result =
+            upsert_container_toml_key(&path, "network", toml::Value::String("bridge".to_string()))
+                .await;
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
