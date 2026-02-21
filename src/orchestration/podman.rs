@@ -30,6 +30,8 @@ pub struct ContainerConfig {
     pub security_opt: Vec<String>,
     /// PID limit (0 = no limit)
     pub pids_limit: u32,
+    /// Automatically remove container when it exits (--rm)
+    pub auto_remove: bool,
 }
 
 impl ContainerConfig {
@@ -40,6 +42,9 @@ impl ContainerConfig {
     ///
     /// Used by both `NativePodmanRuntime` and `OrbStackRuntime`.
     pub fn push_args(&self, args: &mut Vec<String>, command: &[String]) {
+        if self.auto_remove {
+            args.push("--rm".to_string());
+        }
         args.push("-w".to_string());
         args.push(self.workdir.clone());
         args.push("--network".to_string());
@@ -107,6 +112,7 @@ mod tests {
             cap_drop: vec!["ALL".to_string()],
             security_opt: vec!["no-new-privileges".to_string()],
             pids_limit: 4096,
+            auto_remove: false,
         }
     }
 
@@ -135,6 +141,22 @@ mod tests {
         assert!(args.contains(&"no-new-privileges".to_string()));
         assert!(args.contains(&"--pids-limit".to_string()));
         assert!(args.contains(&"4096".to_string()));
+    }
+
+    #[test]
+    fn push_args_auto_remove() {
+        let mut config = test_config();
+        config.auto_remove = true;
+
+        let mut args = Vec::new();
+        config.push_args(&mut args, &["echo".to_string()]);
+        assert_eq!(args[0], "--rm", "--rm must be first arg when auto_remove");
+
+        // Verify --rm is absent when auto_remove is false
+        config.auto_remove = false;
+        let mut args = Vec::new();
+        config.push_args(&mut args, &[]);
+        assert!(!args.contains(&"--rm".to_string()));
     }
 
     #[test]
