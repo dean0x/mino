@@ -4,7 +4,7 @@
 //! without a VM layer. Requires rootless Podman to be properly configured.
 
 use crate::error::{MinoError, MinoResult};
-use crate::orchestration::podman::ContainerConfig;
+use crate::orchestration::podman::{redact_args, ContainerConfig};
 use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -51,7 +51,7 @@ impl NativePodmanRuntime {
 
     /// Execute a Podman command and return the output
     async fn exec(&self, args: &[&str]) -> MinoResult<std::process::Output> {
-        debug!("Executing: podman {:?}", args);
+        debug!("Executing: podman {:?}", redact_args(args));
 
         Command::new("podman")
             .args(args)
@@ -59,12 +59,12 @@ impl NativePodmanRuntime {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| MinoError::command_failed(format!("podman {:?}", args), e))
+            .map_err(|e| MinoError::command_failed(format!("podman {:?}", redact_args(args)), e))
     }
 
     /// Execute a Podman command interactively
     async fn exec_interactive(&self, args: &[&str]) -> MinoResult<i32> {
-        debug!("Executing interactively: podman {:?}", args);
+        debug!("Executing interactively: podman {:?}", redact_args(args));
 
         let status = Command::new("podman")
             .args(args)
@@ -73,7 +73,7 @@ impl NativePodmanRuntime {
             .stderr(Stdio::inherit())
             .status()
             .await
-            .map_err(|e| MinoError::command_failed(format!("podman {:?}", args), e))?;
+            .map_err(|e| MinoError::command_failed(format!("podman {:?}", redact_args(args)), e))?;
 
         Ok(status.code().unwrap_or(-1))
     }
@@ -142,7 +142,10 @@ impl ContainerRuntime for NativePodmanRuntime {
 
         config.push_args(&mut args, command);
 
-        debug!("Running container (detached): podman {:?}", args);
+        debug!(
+            "Running container (detached): podman {:?}",
+            redact_args(&args)
+        );
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = self.exec(&args_refs).await?;
@@ -177,7 +180,7 @@ impl ContainerRuntime for NativePodmanRuntime {
 
         config.push_args(&mut args, command);
 
-        debug!("Creating container: podman {:?}", args);
+        debug!("Creating container: podman {:?}", redact_args(&args));
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = self.exec(&args_refs).await?;

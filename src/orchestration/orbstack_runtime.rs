@@ -5,7 +5,7 @@
 use crate::config::schema::VmConfig;
 use crate::error::{MinoError, MinoResult};
 use crate::orchestration::orbstack::OrbStack;
-use crate::orchestration::podman::ContainerConfig;
+use crate::orchestration::podman::{redact_args, ContainerConfig};
 use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -180,7 +180,7 @@ impl ContainerRuntime for OrbStackRuntime {
 
         config.push_args(&mut args, command);
 
-        debug!("Running container (detached): {:?}", args);
+        debug!("Running container (detached): {:?}", redact_args(&args));
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = self.orbstack.exec(&args_refs).await?;
@@ -215,7 +215,7 @@ impl ContainerRuntime for OrbStackRuntime {
 
         config.push_args(&mut args, command);
 
-        debug!("Creating container: {:?}", args);
+        debug!("Creating container: {:?}", redact_args(&args));
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = self.orbstack.exec(&args_refs).await?;
