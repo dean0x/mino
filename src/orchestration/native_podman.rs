@@ -142,7 +142,10 @@ impl ContainerRuntime for NativePodmanRuntime {
 
         config.push_args(&mut args, command);
 
-        debug!("Running container (detached): podman {:?}", redact_args(&args));
+        debug!(
+            "Running container (detached): podman {:?}",
+            redact_args(&args)
+        );
 
         let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = self.exec(&args_refs).await?;

@@ -194,7 +194,11 @@ impl OrbStack {
 
     /// Execute a command in the VM
     pub async fn exec(&self, command: &[&str]) -> MinoResult<std::process::Output> {
-        debug!("Executing in VM {}: {:?}", self.config.name, redact_args(command));
+        debug!(
+            "Executing in VM {}: {:?}",
+            self.config.name,
+            redact_args(command)
+        );
 
         let mut cmd = Command::new("orb");
         cmd.arg("-m").arg(&self.config.name);
@@ -202,7 +206,10 @@ impl OrbStack {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let output = cmd.output().await.map_err(|e| {
-            MinoError::command_failed(format!("orb -m {} {:?}", self.config.name, redact_args(command)), e)
+            MinoError::command_failed(
+                format!("orb -m {} {:?}", self.config.name, redact_args(command)),
+                e,
+            )
         })?;
 
         Ok(output)
@@ -218,7 +225,8 @@ impl OrbStack {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(MinoError::VmCommand(format!(
                 "Command failed: {:?}, stderr: {}",
-                redact_args(command), stderr
+                redact_args(command),
+                stderr
             )))
         }
     }
@@ -228,7 +236,11 @@ impl OrbStack {
     /// Returns the child process for streaming output. Caller is responsible
     /// for reading stdout/stderr and waiting for exit.
     pub fn spawn_piped(&self, command: &[&str]) -> MinoResult<tokio::process::Child> {
-        debug!("Spawning piped in VM {}: {:?}", self.config.name, redact_args(command));
+        debug!(
+            "Spawning piped in VM {}: {:?}",
+            self.config.name,
+            redact_args(command)
+        );
 
         let mut cmd = Command::new("orb");
         cmd.arg("-m").arg(&self.config.name);
@@ -236,7 +248,10 @@ impl OrbStack {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         cmd.spawn().map_err(|e| {
-            MinoError::command_failed(format!("orb -m {} {:?}", self.config.name, redact_args(command)), e)
+            MinoError::command_failed(
+                format!("orb -m {} {:?}", self.config.name, redact_args(command)),
+                e,
+            )
         })
     }
 
@@ -244,7 +259,8 @@ impl OrbStack {
     pub async fn exec_interactive(&self, command: &[&str]) -> MinoResult<i32> {
         debug!(
             "Executing interactively in VM {}: {:?}",
-            self.config.name, redact_args(command)
+            self.config.name,
+            redact_args(command)
         );
 
         let mut cmd = Command::new("orb");
@@ -255,7 +271,10 @@ impl OrbStack {
             .stderr(Stdio::inherit());
 
         let status = cmd.status().await.map_err(|e| {
-            MinoError::command_failed(format!("orb -m {} {:?}", self.config.name, redact_args(command)), e)
+            MinoError::command_failed(
+                format!("orb -m {} {:?}", self.config.name, redact_args(command)),
+                e,
+            )
         })?;
 
         Ok(status.code().unwrap_or(-1))

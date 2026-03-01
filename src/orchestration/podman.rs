@@ -200,8 +200,15 @@ mod tests {
     #[test]
     fn redact_args_masks_sensitive_keys() {
         let args: Vec<String> = vec![
-            "run", "-d", "-e", "AWS_SECRET_ACCESS_KEY=hunter2", "-e",
-            "GITHUB_TOKEN=ghp_abc123", "-e", "PATH=/usr/bin", "fedora:43",
+            "run",
+            "-d",
+            "-e",
+            "AWS_SECRET_ACCESS_KEY=hunter2",
+            "-e",
+            "GITHUB_TOKEN=ghp_abc123",
+            "-e",
+            "PATH=/usr/bin",
+            "fedora:43",
         ]
         .into_iter()
         .map(String::from)
@@ -216,7 +223,13 @@ mod tests {
     #[test]
     fn redact_args_preserves_non_sensitive() {
         let args: Vec<String> = vec![
-            "run", "-e", "HOME=/home/dev", "-e", "LANG=en_US.UTF-8", "-w", "/workspace",
+            "run",
+            "-e",
+            "HOME=/home/dev",
+            "-e",
+            "LANG=en_US.UTF-8",
+            "-w",
+            "/workspace",
         ]
         .into_iter()
         .map(String::from)
@@ -240,7 +253,12 @@ mod tests {
     #[test]
     fn redact_args_works_with_str_slices() {
         let args: &[&str] = &[
-            "run", "-d", "-e", "AWS_SESSION_TOKEN=secret123", "-e", "HOME=/home/dev",
+            "run",
+            "-d",
+            "-e",
+            "AWS_SESSION_TOKEN=secret123",
+            "-e",
+            "HOME=/home/dev",
         ];
 
         let redacted = redact_args(args);
@@ -250,10 +268,7 @@ mod tests {
 
     #[test]
     fn redact_args_trailing_dash_e_no_panic() {
-        let args: Vec<String> = vec!["run", "-e"]
-            .into_iter()
-            .map(String::from)
-            .collect();
+        let args: Vec<String> = vec!["run", "-e"].into_iter().map(String::from).collect();
 
         let redacted = redact_args(&args);
         assert_eq!(redacted, args);
