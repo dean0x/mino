@@ -57,7 +57,11 @@ impl TrustStore {
         match serde_json::from_slice(&bytes) {
             Ok(store) => store,
             Err(e) => {
-                warn!("Corrupt trust store at {}, treating as empty: {}", path.display(), e);
+                warn!(
+                    "Corrupt trust store at {}, treating as empty: {}",
+                    path.display(),
+                    e
+                );
                 Self::default()
             }
         }
@@ -66,9 +70,12 @@ impl TrustStore {
     async fn save(&self) -> MinoResult<()> {
         let path = Self::path();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| MinoError::io(format!("creating trust store directory {}", parent.display()), e))?;
+            fs::create_dir_all(parent).await.map_err(|e| {
+                MinoError::io(
+                    format!("creating trust store directory {}", parent.display()),
+                    e,
+                )
+            })?;
         }
         let json = serde_json::to_string_pretty(self)?;
         fs::write(&path, json)
@@ -242,19 +249,16 @@ pub async fn verify_local_config(
     // Check trust store
     let mut store = TrustStore::load().await;
     if store.is_trusted(&canonical, &content_hash) {
-        debug!("Local config {} is trusted (hash match)", canonical.display());
+        debug!(
+            "Local config {} is trusted (hash match)",
+            canonical.display()
+        );
         return Ok(Some(path.to_path_buf()));
     }
 
     // Interactive prompt
     if ctx.is_interactive() {
-        ui::step_warn(
-            ctx,
-            &format!(
-                "Untrusted local config: {}",
-                path.display()
-            ),
-        );
+        ui::step_warn(ctx, &format!("Untrusted local config: {}", path.display()));
 
         let summary = format_sensitive_summary(&value, &analysis.fields);
         ui::note(ctx, "Security-sensitive fields detected", &summary);
@@ -454,7 +458,9 @@ mod tests {
         .unwrap();
 
         let ctx = UiContext::non_interactive();
-        let result = verify_local_config(&config_path, &ctx, false).await.unwrap();
+        let result = verify_local_config(&config_path, &ctx, false)
+            .await
+            .unwrap();
         assert!(result.is_some());
     }
 
@@ -472,7 +478,9 @@ mod tests {
         .unwrap();
 
         let ctx = UiContext::non_interactive();
-        let result = verify_local_config(&config_path, &ctx, false).await.unwrap();
+        let result = verify_local_config(&config_path, &ctx, false)
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 
