@@ -18,6 +18,18 @@ use tracing::{debug, warn};
 
 use super::ConfigManager;
 
+/// Container keys considered security-sensitive for trust gating.
+/// Any local config setting one of these requires explicit user approval.
+const SENSITIVE_CONTAINER_KEYS: &[&str] = &[
+    "volumes",
+    "env",
+    "network",
+    "network_allow",
+    "network_preset",
+    "image",
+    "layers",
+];
+
 /// A single trust entry keyed by file content hash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrustEntry {
@@ -85,8 +97,13 @@ impl TrustStore {
 
 /// Result of analyzing a TOML value for security-sensitive keys.
 pub struct SensitiveAnalysis {
-    pub has_sensitive: bool,
     pub fields: Vec<String>,
+}
+
+impl SensitiveAnalysis {
+    pub fn has_sensitive(&self) -> bool {
+        !self.fields.is_empty()
+    }
 }
 
 /// SHA-256 hex digest of raw bytes.
@@ -98,51 +115,31 @@ pub fn hash_content(bytes: &[u8]) -> String {
 
 /// Walk the parsed TOML value and check for sensitive key paths.
 pub fn analyze_sensitive_fields(value: &toml::Value) -> SensitiveAnalysis {
-    let table = match value.as_table() {
-        Some(t) => t,
-        None => {
-            return SensitiveAnalysis {
-                has_sensitive: false,
-                fields: vec![],
-            }
-        }
+    let Some(table) = value.as_table() else {
+        return SensitiveAnalysis { fields: vec![] };
     };
 
     let mut fields = Vec::new();
 
-    // Check container.* keys
     if let Some(container) = table.get("container").and_then(|v| v.as_table()) {
-        for key in &[
-            "volumes",
-            "env",
-            "network",
-            "network_allow",
-            "network_preset",
-            "image",
-            "layers",
-        ] {
+        for key in SENSITIVE_CONTAINER_KEYS {
             if container.contains_key(*key) {
                 fields.push(format!("container.{key}"));
             }
         }
     }
 
-    // Check any key under credentials
     if table.contains_key("credentials") {
         fields.push("credentials".to_string());
     }
 
-    SensitiveAnalysis {
-        has_sensitive: !fields.is_empty(),
-        fields,
-    }
+    SensitiveAnalysis { fields }
 }
 
 /// Render a human-readable summary of the sensitive values found.
 fn format_sensitive_summary(value: &toml::Value, fields: &[String]) -> String {
-    let table = match value.as_table() {
-        Some(t) => t,
-        None => return String::new(),
+    let Some(table) = value.as_table() else {
+        return String::new();
     };
 
     let mut lines = Vec::new();
@@ -180,11 +177,11 @@ fn summarize_value(val: &toml::Value) -> String {
             }
         }
         toml::Value::Table(t) => {
-            let keys: Vec<&String> = t.keys().take(5).collect();
+            let preview: String = t.keys().take(5).cloned().collect::<Vec<_>>().join(", ");
             if t.len() > 5 {
-                format!("{{ {}, ... +{} more }}", keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", "), t.len() - 5)
+                format!("{{ {preview}, ... +{} more }}", t.len() - 5)
             } else {
-                format!("{{ {} }}", keys.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", "))
+                format!("{{ {preview} }}")
             }
         }
         toml::Value::Datetime(dt) => dt.to_string(),
@@ -222,7 +219,7 @@ pub async fn verify_local_config(
 
     // Analyze for sensitive fields
     let analysis = analyze_sensitive_fields(&value);
-    if !analysis.has_sensitive {
+    if !analysis.has_sensitive() {
         debug!("Local config is benign (no sensitive fields), loading without trust check");
         return Ok(Some(path.to_path_buf()));
     }
@@ -242,7 +239,7 @@ pub async fn verify_local_config(
     let content_hash = hash_content(&raw);
 
     // Check trust store
-    let store = TrustStore::load().await;
+    let mut store = TrustStore::load().await;
     if store.is_trusted(&canonical, &content_hash) {
         debug!("Local config {} is trusted (hash match)", canonical.display());
         return Ok(Some(path.to_path_buf()));
@@ -264,7 +261,6 @@ pub async fn verify_local_config(
         let trusted = ui::confirm(ctx, "Trust this config and continue?", false).await?;
 
         if trusted {
-            let mut store = store;
             store.add(canonical, content_hash);
             store.save().await?;
             return Ok(Some(path.to_path_buf()));
@@ -300,7 +296,7 @@ mod tests {
     fn test_empty_config_is_benign() {
         let value: toml::Value = toml::from_str("").unwrap();
         let analysis = analyze_sensitive_fields(&value);
-        assert!(!analysis.has_sensitive);
+        assert!(!analysis.has_sensitive());
         assert!(analysis.fields.is_empty());
     }
 
@@ -314,7 +310,7 @@ mod tests {
         )
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
-        assert!(!analysis.has_sensitive);
+        assert!(!analysis.has_sensitive());
     }
 
     #[test]
@@ -327,7 +323,7 @@ mod tests {
         )
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
-        assert!(analysis.has_sensitive);
+        assert!(analysis.has_sensitive());
         assert!(analysis.fields.contains(&"container.network".to_string()));
     }
 
@@ -341,7 +337,7 @@ mod tests {
         )
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
-        assert!(analysis.has_sensitive);
+        assert!(analysis.has_sensitive());
         assert!(analysis.fields.contains(&"container.volumes".to_string()));
     }
 
@@ -356,7 +352,7 @@ mod tests {
         )
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
-        assert!(analysis.has_sensitive);
+        assert!(analysis.has_sensitive());
         assert!(analysis.fields.contains(&"credentials".to_string()));
     }
 
@@ -375,7 +371,7 @@ mod tests {
         )
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
-        assert!(analysis.has_sensitive);
+        assert!(analysis.has_sensitive());
         assert!(analysis.fields.contains(&"container.network".to_string()));
         assert!(analysis.fields.contains(&"container.volumes".to_string()));
         assert!(analysis.fields.contains(&"container.image".to_string()));
