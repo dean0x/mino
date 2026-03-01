@@ -27,6 +27,10 @@ pub struct Cli {
     /// Skip local .mino.toml discovery
     #[arg(long, global = true)]
     pub no_local: bool,
+
+    /// Trust project-local .mino.toml without prompting
+    #[arg(long, global = true, env = "MINO_TRUST_LOCAL")]
+    pub trust_local: bool,
 }
 
 /// Available commands
