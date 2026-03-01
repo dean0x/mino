@@ -28,7 +28,12 @@ const SENSITIVE_CONTAINER_KEYS: &[&str] = &[
     "network_preset",
     "image",
     "layers",
+    "workdir",
 ];
+
+/// VM keys considered security-sensitive for trust gating.
+/// On macOS, these control which OrbStack VM commands execute inside.
+const SENSITIVE_VM_KEYS: &[&str] = &["name", "distro"];
 
 /// A single trust entry keyed by file content hash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +142,14 @@ pub fn analyze_sensitive_fields(value: &toml::Value) -> SensitiveAnalysis {
         }
     }
 
+    if let Some(vm) = table.get("vm").and_then(|v| v.as_table()) {
+        for key in SENSITIVE_VM_KEYS {
+            if vm.contains_key(*key) {
+                fields.push(format!("vm.{key}"));
+            }
+        }
+    }
+
     if table.contains_key("credentials") {
         fields.push("credentials".to_string());
     }
@@ -161,6 +174,12 @@ fn format_sensitive_summary(value: &toml::Value, fields: &[String]) -> String {
             if let Some(container) = table.get("container").and_then(|v| v.as_table()) {
                 if let Some(val) = container.get(rest) {
                     lines.push(format!("container.{rest} = {}", summarize_value(val)));
+                }
+            }
+        } else if let Some(rest) = field.strip_prefix("vm.") {
+            if let Some(vm) = table.get("vm").and_then(|v| v.as_table()) {
+                if let Some(val) = vm.get(rest) {
+                    lines.push(format!("vm.{rest} = {}", summarize_value(val)));
                 }
             }
         }
@@ -501,5 +520,80 @@ mod tests {
         let ctx = UiContext::non_interactive();
         let result = verify_local_config(&config_path, &ctx, true).await.unwrap();
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_container_workdir_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [container]
+            workdir = "/app"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis.fields.contains(&"container.workdir".to_string()));
+    }
+
+    #[test]
+    fn test_vm_name_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [vm]
+            name = "evil"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis.fields.contains(&"vm.name".to_string()));
+    }
+
+    #[test]
+    fn test_vm_distro_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [vm]
+            distro = "alpine"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis.fields.contains(&"vm.distro".to_string()));
+    }
+
+    #[test]
+    fn test_vm_only_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [vm]
+            name = "x"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert_eq!(analysis.fields.len(), 1);
+        assert_eq!(analysis.fields[0], "vm.name");
+    }
+
+    #[test]
+    fn test_workdir_with_other_benign_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [container]
+            workdir = "/"
+
+            [session]
+            shell = "zsh"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis.fields.contains(&"container.workdir".to_string()));
+        assert_eq!(analysis.fields.len(), 1);
     }
 }
