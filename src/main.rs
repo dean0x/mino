@@ -67,6 +67,15 @@ async fn run() -> MinoResult<()> {
         found
     };
 
+    // Trust gate: verify local config before merging
+    let local_config_path = match local_config_path {
+        Some(path) => {
+            let ctx = mino::ui::UiContext::detect();
+            mino::config::trust::verify_local_config(&path, &ctx, cli.trust_local).await?
+        }
+        None => None,
+    };
+
     let config = config_manager
         .load_merged(local_config_path.as_deref())
         .await?;

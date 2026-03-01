@@ -1,6 +1,7 @@
 //! Configuration management for Mino
 
 pub mod schema;
+pub mod trust;
 
 pub use schema::Config;
 

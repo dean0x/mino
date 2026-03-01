@@ -27,6 +27,10 @@ pub struct Cli {
     /// Skip local .mino.toml discovery
     #[arg(long, global = true)]
     pub no_local: bool,
+
+    /// Trust project-local .mino.toml without prompting
+    #[arg(long, global = true, env = "MINO_TRUST_LOCAL")]
+    pub trust_local: bool,
 }
 
 /// Available commands
@@ -417,6 +421,13 @@ mod tests {
     fn cli_no_local_flag() {
         let cli = Cli::parse_from(["mino", "--no-local", "status"]);
         assert!(cli.no_local);
+    }
+
+    #[test]
+    fn cli_trust_local_flag() {
+        let cli = Cli::parse_from(["mino", "--trust-local", "status"]);
+        assert!(cli.trust_local);
+        assert!(!cli.no_local);
     }
 
     #[test]
