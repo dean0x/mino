@@ -82,6 +82,44 @@ impl ContainerConfig {
     }
 }
 
+/// Env var keys whose values must never appear in logs.
+const SENSITIVE_ENV_KEYS: &[&str] = &[
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "CLOUDSDK_AUTH_ACCESS_TOKEN",
+    "AZURE_ACCESS_TOKEN",
+];
+
+/// Return a copy of `args` with sensitive `-e KEY=VALUE` values replaced by `***`.
+///
+/// Generic over element type so it works with both `&[String]` and `&[&str]`.
+pub(crate) fn redact_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut redact_next = false;
+    for arg in args {
+        let s = arg.as_ref();
+        if redact_next {
+            if let Some((key, _)) = s.split_once('=') {
+                if SENSITIVE_ENV_KEYS.contains(&key) {
+                    out.push(format!("{key}=***"));
+                } else {
+                    out.push(s.to_owned());
+                }
+            } else {
+                out.push(s.to_owned());
+            }
+            redact_next = false;
+        } else {
+            out.push(s.to_owned());
+            redact_next = s == "-e";
+        }
+    }
+    out
+}
+
 /// Information about a running container
 #[derive(Debug, Clone)]
 pub struct ContainerInfo {
@@ -157,6 +195,68 @@ mod tests {
         let mut args = Vec::new();
         config.push_args(&mut args, &[]);
         assert!(!args.contains(&"--rm".to_string()));
+    }
+
+    #[test]
+    fn redact_args_masks_sensitive_keys() {
+        let args: Vec<String> = vec![
+            "run", "-d", "-e", "AWS_SECRET_ACCESS_KEY=hunter2", "-e",
+            "GITHUB_TOKEN=ghp_abc123", "-e", "PATH=/usr/bin", "fedora:43",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let redacted = redact_args(&args);
+        assert_eq!(redacted[3], "AWS_SECRET_ACCESS_KEY=***");
+        assert_eq!(redacted[5], "GITHUB_TOKEN=***");
+        assert_eq!(redacted[7], "PATH=/usr/bin");
+    }
+
+    #[test]
+    fn redact_args_preserves_non_sensitive() {
+        let args: Vec<String> = vec![
+            "run", "-e", "HOME=/home/dev", "-e", "LANG=en_US.UTF-8", "-w", "/workspace",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let redacted = redact_args(&args);
+        assert_eq!(redacted, args);
+    }
+
+    #[test]
+    fn redact_args_handles_no_env() {
+        let args: Vec<String> = vec!["run", "-d", "-w", "/workspace", "fedora:43"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+
+        let redacted = redact_args(&args);
+        assert_eq!(redacted, args);
+    }
+
+    #[test]
+    fn redact_args_works_with_str_slices() {
+        let args: &[&str] = &[
+            "run", "-d", "-e", "AWS_SESSION_TOKEN=secret123", "-e", "HOME=/home/dev",
+        ];
+
+        let redacted = redact_args(args);
+        assert_eq!(redacted[3], "AWS_SESSION_TOKEN=***");
+        assert_eq!(redacted[5], "HOME=/home/dev");
+    }
+
+    #[test]
+    fn redact_args_trailing_dash_e_no_panic() {
+        let args: Vec<String> = vec!["run", "-e"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+
+        let redacted = redact_args(&args);
+        assert_eq!(redacted, args);
     }
 
     #[test]
