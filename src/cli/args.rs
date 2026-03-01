@@ -424,6 +424,13 @@ mod tests {
     }
 
     #[test]
+    fn cli_trust_local_flag() {
+        let cli = Cli::parse_from(["mino", "--trust-local", "status"]);
+        assert!(cli.trust_local);
+        assert!(!cli.no_local);
+    }
+
+    #[test]
     fn cli_parses_network_flags() {
         let cli = Cli::parse_from(["mino", "run", "--network", "none", "--", "bash"]);
         match cli.command {

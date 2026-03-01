@@ -96,6 +96,7 @@ impl TrustStore {
 }
 
 /// Result of analyzing a TOML value for security-sensitive keys.
+#[derive(Debug)]
 pub struct SensitiveAnalysis {
     pub fields: Vec<String>,
 }
