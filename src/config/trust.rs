@@ -28,7 +28,12 @@ const SENSITIVE_CONTAINER_KEYS: &[&str] = &[
     "network_preset",
     "image",
     "layers",
+    "workdir",
 ];
+
+/// VM keys considered security-sensitive for trust gating.
+/// On macOS, these control which OrbStack VM commands execute inside.
+const SENSITIVE_VM_KEYS: &[&str] = &["name", "distro"];
 
 /// A single trust entry keyed by file content hash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +126,12 @@ pub fn hash_content(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Sections with key-level sensitivity checks.
+const SENSITIVE_SECTIONS: &[(&str, &[&str])] = &[
+    ("container", SENSITIVE_CONTAINER_KEYS),
+    ("vm", SENSITIVE_VM_KEYS),
+];
+
 /// Walk the parsed TOML value and check for sensitive key paths.
 pub fn analyze_sensitive_fields(value: &toml::Value) -> SensitiveAnalysis {
     let Some(table) = value.as_table() else {
@@ -129,10 +140,12 @@ pub fn analyze_sensitive_fields(value: &toml::Value) -> SensitiveAnalysis {
 
     let mut fields = Vec::new();
 
-    if let Some(container) = table.get("container").and_then(|v| v.as_table()) {
-        for key in SENSITIVE_CONTAINER_KEYS {
-            if container.contains_key(*key) {
-                fields.push(format!("container.{key}"));
+    for (section, keys) in SENSITIVE_SECTIONS {
+        if let Some(sub) = table.get(*section).and_then(|v| v.as_table()) {
+            for key in *keys {
+                if sub.contains_key(*key) {
+                    fields.push(format!("{section}.{key}"));
+                }
             }
         }
     }
@@ -157,11 +170,17 @@ fn format_sensitive_summary(value: &toml::Value, fields: &[String]) -> String {
             if let Some(creds) = table.get("credentials") {
                 lines.push(format!("[credentials] = {}", summarize_value(creds)));
             }
-        } else if let Some(rest) = field.strip_prefix("container.") {
-            if let Some(container) = table.get("container").and_then(|v| v.as_table()) {
-                if let Some(val) = container.get(rest) {
-                    lines.push(format!("container.{rest} = {}", summarize_value(val)));
-                }
+            continue;
+        }
+
+        // Handle section.key fields (e.g. "container.network", "vm.name")
+        if let Some((section, key)) = field.split_once('.') {
+            if let Some(val) = table
+                .get(section)
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get(key))
+            {
+                lines.push(format!("{section}.{key} = {}", summarize_value(val)));
             }
         }
     }
@@ -370,6 +389,9 @@ mod tests {
             volumes = ["/etc:/etc:ro"]
             image = "evil:latest"
 
+            [vm]
+            name = "attacker-vm"
+
             [credentials.aws]
             enabled = true
             "#,
@@ -380,8 +402,9 @@ mod tests {
         assert!(analysis.fields.contains(&"container.network".to_string()));
         assert!(analysis.fields.contains(&"container.volumes".to_string()));
         assert!(analysis.fields.contains(&"container.image".to_string()));
+        assert!(analysis.fields.contains(&"vm.name".to_string()));
         assert!(analysis.fields.contains(&"credentials".to_string()));
-        assert_eq!(analysis.fields.len(), 4);
+        assert_eq!(analysis.fields.len(), 5);
     }
 
     #[test]
@@ -501,5 +524,100 @@ mod tests {
         let ctx = UiContext::non_interactive();
         let result = verify_local_config(&config_path, &ctx, true).await.unwrap();
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_container_workdir_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [container]
+            workdir = "/app"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis.fields.contains(&"container.workdir".to_string()));
+    }
+
+    #[test]
+    fn test_vm_name_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [vm]
+            name = "evil"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis.fields.contains(&"vm.name".to_string()));
+    }
+
+    #[test]
+    fn test_vm_distro_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [vm]
+            distro = "alpine"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis.fields.contains(&"vm.distro".to_string()));
+    }
+
+    #[test]
+    fn test_vm_only_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [vm]
+            name = "x"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert_eq!(analysis.fields.len(), 1);
+        assert_eq!(analysis.fields[0], "vm.name");
+    }
+
+    #[test]
+    fn test_workdir_with_other_benign_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [container]
+            workdir = "/"
+
+            [session]
+            shell = "zsh"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis.fields.contains(&"container.workdir".to_string()));
+        assert_eq!(analysis.fields.len(), 1);
+    }
+
+    #[test]
+    fn test_format_summary_includes_vm_fields() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [container]
+            image = "evil:latest"
+
+            [vm]
+            name = "attacker"
+            distro = "alpine"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        let summary = format_sensitive_summary(&value, &analysis.fields);
+        assert!(summary.contains("container.image = \"evil:latest\""));
+        assert!(summary.contains("vm.name = \"attacker\""));
+        assert!(summary.contains("vm.distro = \"alpine\""));
     }
 }
