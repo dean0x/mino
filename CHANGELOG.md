@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-03-03
+
+### Security
+
+- Remove `session.default_project_dir` config option to eliminate trust gate bypass vulnerability. Malicious `.mino.toml` could redirect project mount via symlink without triggering trust prompt. Now only `--project` flag or current working directory are used.
+- Harden trust gate to include `container.workdir` and `vm.*` fields in sensitive key enumeration.
+- Redact credential values from debug log output to prevent accidental exposure in CI logs or crash reports.
+
 ## [1.2.0] - 2026-02-21
 
 ### Breaking Changes
@@ -75,6 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
+[1.2.1]: https://github.com/dean0x/mino/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dean0x/mino/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dean0x/mino/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dean0x/mino/compare/v0.1.0...v1.0.0
