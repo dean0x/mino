@@ -686,18 +686,12 @@ async fn validate_environment() -> MinoResult<()> {
     Ok(())
 }
 
-fn resolve_project_dir(args: &RunArgs, config: &Config) -> MinoResult<PathBuf> {
+fn resolve_project_dir(args: &RunArgs, _config: &Config) -> MinoResult<PathBuf> {
     if let Some(ref path) = args.project {
         let canonical = path
             .canonicalize()
             .map_err(|e| MinoError::io(format!("resolving project path {}", path.display()), e))?;
         return Ok(canonical);
-    }
-
-    if let Some(ref path) = config.session.default_project_dir {
-        if path.exists() {
-            return Ok(path.clone());
-        }
     }
 
     env::current_dir().map_err(|e| MinoError::io("getting current directory", e))

@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// Root configuration structure
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -226,9 +225,6 @@ pub struct SessionConfig {
 
     /// Auto-cleanup stopped/failed sessions older than N hours (0 = disabled)
     pub auto_cleanup_hours: u32,
-
-    /// Default project directory to mount
-    pub default_project_dir: Option<PathBuf>,
 }
 
 impl Default for SessionConfig {
@@ -236,7 +232,6 @@ impl Default for SessionConfig {
         Self {
             shell: "/bin/bash".to_string(),
             auto_cleanup_hours: 720,
-            default_project_dir: None,
         }
     }
 }
