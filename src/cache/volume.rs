@@ -274,6 +274,18 @@ pub fn plan_cache_mounts(
         .collect()
 }
 
+/// Resolve the authoritative cache state for a volume.
+///
+/// Checks the sidecar file first (source of truth), falls back to the
+/// label-derived state for backward compatibility with volumes created
+/// before the sidecar system existed.
+pub async fn resolve_state(volume_name: &str, label_state: CacheState) -> CacheState {
+    match crate::cache::sidecar::CacheSidecar::load(volume_name).await {
+        Ok(Some(sidecar)) => sidecar.state,
+        _ => label_state, // No sidecar = backward compat, trust labels
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

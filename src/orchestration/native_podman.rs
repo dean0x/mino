@@ -204,11 +204,6 @@ impl ContainerRuntime for NativePodmanRuntime {
             .await
     }
 
-    async fn attach(&self, container_id: &str) -> MinoResult<i32> {
-        debug!("Attaching to container: {}", container_id);
-        self.exec_interactive(&["attach", container_id]).await
-    }
-
     async fn stop(&self, container_id: &str) -> MinoResult<()> {
         debug!("Stopping container: {}", container_id);
 
@@ -410,11 +405,6 @@ impl ContainerRuntime for NativePodmanRuntime {
         }
     }
 
-    async fn volume_exists(&self, name: &str) -> MinoResult<bool> {
-        let output = self.exec(&["volume", "exists", name]).await?;
-        Ok(output.status.success())
-    }
-
     async fn volume_remove(&self, name: &str) -> MinoResult<()> {
         debug!("Removing volume: {}", name);
 
@@ -523,29 +513,6 @@ impl ContainerRuntime for NativePodmanRuntime {
             created_at: vol["CreatedAt"].as_str().map(String::from),
             size_bytes: None,
         }))
-    }
-
-    async fn volume_update_labels(
-        &self,
-        name: &str,
-        labels: &HashMap<String, String>,
-    ) -> MinoResult<()> {
-        // Podman doesn't support updating labels directly
-        // We need to note the limitations here - this is only safe for
-        // metadata updates, not for volumes with data
-        debug!("Updating volume labels: {} (recreating)", name);
-
-        // First check if volume exists and get current info
-        let existing = self.volume_inspect(name).await?;
-        if existing.is_none() {
-            return Err(MinoError::Internal(format!("Volume not found: {}", name)));
-        }
-
-        // Remove old volume
-        self.volume_remove(name).await?;
-
-        // Create with new labels
-        self.volume_create(name, labels).await
     }
 
     async fn volume_disk_usage(&self, prefix: &str) -> MinoResult<HashMap<String, u64>> {

@@ -58,6 +58,11 @@ impl ConfigManager {
         Self::state_dir().join("credentials")
     }
 
+    /// Get the cache state directory path (sidecar JSON files)
+    pub fn cache_state_dir() -> PathBuf {
+        Self::state_dir().join("cache")
+    }
+
     /// Get the audit log file path
     pub fn audit_log_path() -> PathBuf {
         Self::state_dir().join("audit.log")
@@ -216,6 +221,7 @@ impl ConfigManager {
             Self::state_dir(),
             Self::sessions_dir(),
             Self::credentials_dir(),
+            Self::cache_state_dir(),
         ];
 
         for dir in &dirs {

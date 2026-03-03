@@ -46,9 +46,6 @@ pub trait ContainerRuntime: Send + Sync {
     /// Start a created container attached to the terminal. Returns exit code.
     async fn start_attached(&self, container_id: &str) -> MinoResult<i32>;
 
-    /// Attach to a running container interactively
-    async fn attach(&self, container_id: &str) -> MinoResult<i32>;
-
     /// Stop a container gracefully
     async fn stop(&self, container_id: &str) -> MinoResult<()>;
 
@@ -98,9 +95,6 @@ pub trait ContainerRuntime: Send + Sync {
     /// Create a new volume with the given name and labels
     async fn volume_create(&self, name: &str, labels: &HashMap<String, String>) -> MinoResult<()>;
 
-    /// Check if a volume exists
-    async fn volume_exists(&self, name: &str) -> MinoResult<bool>;
-
     /// Remove a volume
     async fn volume_remove(&self, name: &str) -> MinoResult<()>;
 
@@ -109,15 +103,6 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Get detailed info about a specific volume
     async fn volume_inspect(&self, name: &str) -> MinoResult<Option<VolumeInfo>>;
-
-    /// Update labels on an existing volume
-    /// Note: Podman doesn't support label updates directly, so this removes and recreates
-    /// the volume. Only use for state transitions, not for volumes with data.
-    async fn volume_update_labels(
-        &self,
-        name: &str,
-        labels: &HashMap<String, String>,
-    ) -> MinoResult<()>;
 
     /// Get disk usage for volumes matching a prefix
     /// Returns a map of volume name -> size in bytes
