@@ -30,6 +30,7 @@ use console::style;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -101,8 +102,8 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     spinner.start("Initializing sandbox...");
 
-    // Create platform-appropriate runtime
-    let runtime = create_runtime(config)?;
+    // Create platform-appropriate runtime (Arc for sharing with background tasks)
+    let runtime: Arc<dyn ContainerRuntime> = Arc::from(create_runtime(config)?);
     debug!("Using runtime: {}", runtime.runtime_name());
 
     // Validate environment (platform-specific checks)
@@ -366,12 +367,41 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         println!("  Attach with: mino logs {}", session_name);
         println!("  Stop with:   mino stop {}", session_name);
 
+        // Spawn background monitor: waits for container exit, then finalizes caches
         if !cache_session.volumes_to_finalize.is_empty() {
-            println!(
-                "  {} Cache finalization requires: mino stop {}",
-                style("!").yellow(),
-                session_name
-            );
+            let bg_runtime = Arc::clone(&runtime);
+            let bg_container_id = container_id.clone();
+            let bg_cache_session = cache_session;
+
+            tokio::spawn(async move {
+                let short_id = &bg_container_id[..12.min(bg_container_id.len())];
+                debug!("Background monitor started for container {}", short_id);
+
+                match bg_runtime.get_container_exit_code(&bg_container_id).await {
+                    Ok(Some(0)) => {
+                        debug!("Container {} exited cleanly, finalizing caches", short_id);
+                        finalize_caches(&bg_cache_session).await;
+                    }
+                    Ok(Some(code)) => {
+                        debug!(
+                            "Container {} exited with code {}, skipping cache finalization",
+                            short_id, code
+                        );
+                    }
+                    Ok(None) => {
+                        warn!(
+                            "Container {} exit code unknown, skipping cache finalization",
+                            short_id
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to wait for container {}: {}, skipping cache finalization",
+                            short_id, e
+                        );
+                    }
+                }
+            });
         }
     } else {
         // Interactive mode: create + start_attached (no race condition)

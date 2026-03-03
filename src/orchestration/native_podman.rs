@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Container runtime using native rootless Podman (for Linux)
 pub struct NativePodmanRuntime;
@@ -555,6 +555,29 @@ impl ContainerRuntime for NativePodmanRuntime {
         }
 
         Ok(sizes)
+    }
+
+    async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>> {
+        debug!("Waiting for container exit: {}", container_id);
+
+        let output = self.exec(&["wait", container_id]).await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("no such container") {
+                return Ok(None);
+            }
+            return Err(MinoError::command_exec("podman wait", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        match stdout.trim().parse::<i32>() {
+            Ok(code) => Ok(Some(code)),
+            Err(_) => {
+                warn!("Could not parse exit code from podman wait: {:?}", stdout.trim());
+                Ok(None)
+            }
+        }
     }
 }
 

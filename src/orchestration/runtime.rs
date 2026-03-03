@@ -107,4 +107,11 @@ pub trait ContainerRuntime: Send + Sync {
     /// Get disk usage for volumes matching a prefix
     /// Returns a map of volume name -> size in bytes
     async fn volume_disk_usage(&self, prefix: &str) -> MinoResult<HashMap<String, u64>>;
+
+    /// Wait for a container to exit and return its exit code.
+    ///
+    /// Uses `podman wait` which blocks until the container stops, then returns
+    /// the exit code. Returns `None` if the exit code cannot be determined
+    /// (e.g. the container was already removed).
+    async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>>;
 }
