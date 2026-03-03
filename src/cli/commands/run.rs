@@ -8,8 +8,8 @@ const LAYER_BASE_IMAGE: &str = "ghcr.io/dean0x/mino-base:latest";
 
 use crate::audit::AuditLog;
 use crate::cache::{
-    detect_lockfiles, format_bytes, gb_to_bytes, labels, CacheMount, CacheSizeStatus, CacheState,
-    CacheVolume, LockfileInfo,
+    detect_lockfiles, format_bytes, gb_to_bytes, resolve_state, CacheMount, CacheSidecar,
+    CacheSizeStatus, CacheState, CacheVolume, LockfileInfo,
 };
 use crate::cli::args::RunArgs;
 use crate::config::Config;
@@ -30,6 +30,7 @@ use console::style;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -101,8 +102,8 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     spinner.start("Initializing sandbox...");
 
-    // Create platform-appropriate runtime
-    let runtime = create_runtime(config)?;
+    // Create platform-appropriate runtime (Arc for sharing with background tasks)
+    let runtime: Arc<dyn ContainerRuntime> = Arc::from(create_runtime(config)?);
     debug!("Using runtime: {}", runtime.runtime_name());
 
     // Validate environment (platform-specific checks)
@@ -366,12 +367,41 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         println!("  Attach with: mino logs {}", session_name);
         println!("  Stop with:   mino stop {}", session_name);
 
+        // Spawn background monitor: waits for container exit, then finalizes caches
         if !cache_session.volumes_to_finalize.is_empty() {
-            println!(
-                "  {} Cache finalization requires: mino stop {}",
-                style("!").yellow(),
-                session_name
-            );
+            let bg_runtime = Arc::clone(&runtime);
+            let bg_container_id = container_id.clone();
+            let bg_cache_session = cache_session;
+
+            tokio::spawn(async move {
+                let short_id = &bg_container_id[..12.min(bg_container_id.len())];
+                debug!("Background monitor started for container {}", short_id);
+
+                match bg_runtime.get_container_exit_code(&bg_container_id).await {
+                    Ok(Some(0)) => {
+                        debug!("Container {} exited cleanly, finalizing caches", short_id);
+                        finalize_caches(&bg_cache_session).await;
+                    }
+                    Ok(Some(code)) => {
+                        debug!(
+                            "Container {} exited with code {}, skipping cache finalization",
+                            short_id, code
+                        );
+                    }
+                    Ok(None) => {
+                        warn!(
+                            "Container {} exit code unknown, skipping cache finalization",
+                            short_id
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to wait for container {}: {}, skipping cache finalization",
+                            short_id, e
+                        );
+                    }
+                }
+            });
         }
     } else {
         // Interactive mode: create + start_attached (no race condition)
@@ -419,7 +449,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
         // Finalize caches on clean exit
         if exit_code == 0 && !cache_session.volumes_to_finalize.is_empty() {
-            finalize_caches(&*runtime, &cache_session).await;
+            finalize_caches(&cache_session).await;
         }
 
         // Clean up session
@@ -517,6 +547,11 @@ async fn setup_cache_for_lockfile(
 ) -> MinoResult<(CacheMount, bool)> {
     let volume_name = info.volume_name();
 
+    // Handle --cache-fresh: delete existing sidecar before proceeding
+    if force_fresh {
+        CacheSidecar::delete(&volume_name).await.ok();
+    }
+
     // Check existing volume state
     let existing = if force_fresh {
         None
@@ -526,9 +561,15 @@ async fn setup_cache_for_lockfile(
 
     let (state, should_finalize) = match existing {
         Some(vol_info) => {
-            let cache = CacheVolume::from_labels(&vol_info.name, &vol_info.labels);
-            match cache.map(|c| c.state) {
-                Some(CacheState::Complete) => {
+            let label_state = CacheVolume::from_labels(&vol_info.name, &vol_info.labels)
+                .map(|c| c.state)
+                .unwrap_or(CacheState::Building);
+
+            // Use sidecar as authoritative state source, fall back to labels
+            let resolved = resolve_state(&volume_name, label_state).await;
+
+            match resolved {
+                CacheState::Complete => {
                     debug!(
                         "Cache hit for {} ({}), mounting read-only",
                         info.ecosystem,
@@ -536,21 +577,24 @@ async fn setup_cache_for_lockfile(
                     );
                     (CacheState::Complete, false)
                 }
-                Some(CacheState::Building) => {
+                CacheState::Building | CacheState::Miss => {
                     debug!(
                         "Resuming incomplete cache for {} ({})",
                         info.ecosystem,
                         &info.hash[..8]
                     );
-                    (CacheState::Building, true)
-                }
-                _ => {
-                    // Unknown state, treat as building
-                    warn!(
-                        "Cache for {} ({}) has unknown state, treating as building",
-                        info.ecosystem,
-                        &info.hash[..8]
-                    );
+                    // Backfill sidecar for existing volumes that lack one (backward compat)
+                    if CacheSidecar::load(&volume_name).await.ok().flatten().is_none() {
+                        let mut sidecar = CacheSidecar::new(
+                            volume_name.clone(),
+                            info.ecosystem,
+                            info.hash.clone(),
+                            CacheState::Building,
+                        );
+                        if let Err(e) = sidecar.save().await {
+                            warn!("Failed to backfill sidecar for {}: {}", volume_name, e);
+                        }
+                    }
                     (CacheState::Building, true)
                 }
             }
@@ -566,16 +610,32 @@ async fn setup_cache_for_lockfile(
             let cache = CacheVolume::from_lockfile(info, CacheState::Building);
             runtime.volume_create(&volume_name, &cache.labels()).await?;
 
+            // Create sidecar for the new volume
+            let mut sidecar = CacheSidecar::new(
+                volume_name.clone(),
+                info.ecosystem,
+                info.hash.clone(),
+                CacheState::Building,
+            );
+            if let Err(e) = sidecar.save().await {
+                warn!("Failed to create sidecar for {}: {}", volume_name, e);
+            }
+
             // Re-inspect: another process may have created it first with different state
-            match runtime.volume_inspect(&volume_name).await? {
+            let resolved = match runtime.volume_inspect(&volume_name).await? {
                 Some(vol_info) => {
-                    let cache = CacheVolume::from_labels(&vol_info.name, &vol_info.labels);
-                    match cache.map(|c| c.state) {
-                        Some(CacheState::Complete) => (CacheState::Complete, false),
-                        _ => (CacheState::Building, true),
-                    }
+                    let label_state = CacheVolume::from_labels(&vol_info.name, &vol_info.labels)
+                        .map(|c| c.state)
+                        .unwrap_or(CacheState::Building);
+                    resolve_state(&volume_name, label_state).await
                 }
-                None => (CacheState::Building, true), // shouldn't happen, but safe fallback
+                None => CacheState::Building,
+            };
+
+            if resolved == CacheState::Complete {
+                (CacheState::Complete, false)
+            } else {
+                (CacheState::Building, true)
             }
         }
     };
@@ -590,35 +650,33 @@ async fn setup_cache_for_lockfile(
     Ok((mount, should_finalize))
 }
 
-/// Finalize cache volumes by marking them as complete
-async fn finalize_caches(runtime: &dyn ContainerRuntime, cache_session: &CacheSession) {
+/// Finalize cache volumes by marking their sidecar state as complete.
+///
+/// This is the fix for the original bug: Podman volume labels are immutable
+/// after creation, so state transitions are now tracked via sidecar JSON files.
+/// Finalization is best-effort -- failures are logged but do not fail the session.
+async fn finalize_caches(cache_session: &CacheSession) {
     for volume_name in &cache_session.volumes_to_finalize {
         debug!("Finalizing cache: {}", volume_name);
 
-        // Get current volume info
-        let vol_info = match runtime.volume_inspect(volume_name).await {
-            Ok(Some(info)) => info,
+        match CacheSidecar::load(volume_name).await {
+            Ok(Some(mut sidecar)) => {
+                if let Err(e) = sidecar.mark_complete().await {
+                    warn!("Failed to finalize cache sidecar {}: {}", volume_name, e);
+                } else {
+                    debug!("Cache {} finalized (complete via sidecar)", volume_name);
+                }
+            }
             Ok(None) => {
                 warn!(
-                    "Cache volume {} disappeared, skipping finalization",
+                    "No sidecar found for cache {}, skipping finalization",
                     volume_name
                 );
-                continue;
             }
             Err(e) => {
-                warn!("Failed to inspect cache {}: {}", volume_name, e);
-                continue;
+                warn!("Failed to load cache sidecar {}: {}", volume_name, e);
             }
-        };
-
-        // Update labels to mark as complete
-        let mut new_labels = vol_info.labels.clone();
-        new_labels.insert(labels::STATE.to_string(), "complete".to_string());
-
-        // Note: Podman doesn't support updating labels in place, so we just log success
-        // The label was already set correctly when we created the volume
-        // For true immutability, we'd need to track state externally or use a different mechanism
-        debug!("Cache {} finalized (complete)", volume_name);
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::Path;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Container runtime using OrbStack VM + Podman (for macOS)
 pub struct OrbStackRuntime {
@@ -244,17 +244,6 @@ impl ContainerRuntime for OrbStackRuntime {
         Ok(exit_code)
     }
 
-    async fn attach(&self, container_id: &str) -> MinoResult<i32> {
-        debug!("Attaching to container: {}", container_id);
-
-        let exit_code = self
-            .orbstack
-            .exec_interactive(&["podman", "attach", container_id])
-            .await?;
-
-        Ok(exit_code)
-    }
-
     async fn stop(&self, container_id: &str) -> MinoResult<()> {
         debug!("Stopping container: {}", container_id);
 
@@ -475,14 +464,6 @@ impl ContainerRuntime for OrbStackRuntime {
         }
     }
 
-    async fn volume_exists(&self, name: &str) -> MinoResult<bool> {
-        let output = self
-            .orbstack
-            .exec(&["podman", "volume", "exists", name])
-            .await?;
-        Ok(output.status.success())
-    }
-
     async fn volume_remove(&self, name: &str) -> MinoResult<()> {
         debug!("Removing volume: {}", name);
 
@@ -600,26 +581,6 @@ impl ContainerRuntime for OrbStackRuntime {
         }))
     }
 
-    async fn volume_update_labels(
-        &self,
-        name: &str,
-        labels: &HashMap<String, String>,
-    ) -> MinoResult<()> {
-        debug!("Updating volume labels: {} (recreating)", name);
-
-        // First check if volume exists
-        let existing = self.volume_inspect(name).await?;
-        if existing.is_none() {
-            return Err(MinoError::Internal(format!("Volume not found: {}", name)));
-        }
-
-        // Remove old volume
-        self.volume_remove(name).await?;
-
-        // Create with new labels
-        self.volume_create(name, labels).await
-    }
-
     async fn volume_disk_usage(&self, prefix: &str) -> MinoResult<HashMap<String, u64>> {
         // Get volume sizes by inspecting each volume individually.
         // Note: `podman system df -v --format json` is not supported (flags conflict).
@@ -657,6 +618,32 @@ impl ContainerRuntime for OrbStackRuntime {
         }
 
         Ok(sizes)
+    }
+
+    async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>> {
+        debug!("Waiting for container exit: {}", container_id);
+
+        let output = self
+            .orbstack
+            .exec(&["podman", "wait", container_id])
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("no such container") {
+                return Ok(None);
+            }
+            return Err(MinoError::command_exec("podman wait", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        match stdout.trim().parse::<i32>() {
+            Ok(code) => Ok(Some(code)),
+            Err(_) => {
+                warn!("Could not parse exit code from podman wait: {:?}", stdout.trim());
+                Ok(None)
+            }
+        }
     }
 }
 

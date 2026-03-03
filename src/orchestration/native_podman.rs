@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Container runtime using native rootless Podman (for Linux)
 pub struct NativePodmanRuntime;
@@ -202,11 +202,6 @@ impl ContainerRuntime for NativePodmanRuntime {
         debug!("Starting container attached: {}", container_id);
         self.exec_interactive(&["start", "--attach", container_id])
             .await
-    }
-
-    async fn attach(&self, container_id: &str) -> MinoResult<i32> {
-        debug!("Attaching to container: {}", container_id);
-        self.exec_interactive(&["attach", container_id]).await
     }
 
     async fn stop(&self, container_id: &str) -> MinoResult<()> {
@@ -410,11 +405,6 @@ impl ContainerRuntime for NativePodmanRuntime {
         }
     }
 
-    async fn volume_exists(&self, name: &str) -> MinoResult<bool> {
-        let output = self.exec(&["volume", "exists", name]).await?;
-        Ok(output.status.success())
-    }
-
     async fn volume_remove(&self, name: &str) -> MinoResult<()> {
         debug!("Removing volume: {}", name);
 
@@ -525,29 +515,6 @@ impl ContainerRuntime for NativePodmanRuntime {
         }))
     }
 
-    async fn volume_update_labels(
-        &self,
-        name: &str,
-        labels: &HashMap<String, String>,
-    ) -> MinoResult<()> {
-        // Podman doesn't support updating labels directly
-        // We need to note the limitations here - this is only safe for
-        // metadata updates, not for volumes with data
-        debug!("Updating volume labels: {} (recreating)", name);
-
-        // First check if volume exists and get current info
-        let existing = self.volume_inspect(name).await?;
-        if existing.is_none() {
-            return Err(MinoError::Internal(format!("Volume not found: {}", name)));
-        }
-
-        // Remove old volume
-        self.volume_remove(name).await?;
-
-        // Create with new labels
-        self.volume_create(name, labels).await
-    }
-
     async fn volume_disk_usage(&self, prefix: &str) -> MinoResult<HashMap<String, u64>> {
         // Get volume sizes by inspecting each volume individually.
         // Note: `podman system df -v --format json` is not supported (flags conflict).
@@ -588,6 +555,29 @@ impl ContainerRuntime for NativePodmanRuntime {
         }
 
         Ok(sizes)
+    }
+
+    async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>> {
+        debug!("Waiting for container exit: {}", container_id);
+
+        let output = self.exec(&["wait", container_id]).await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("no such container") {
+                return Ok(None);
+            }
+            return Err(MinoError::command_exec("podman wait", stderr));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        match stdout.trim().parse::<i32>() {
+            Ok(code) => Ok(Some(code)),
+            Err(_) => {
+                warn!("Could not parse exit code from podman wait: {:?}", stdout.trim());
+                Ok(None)
+            }
+        }
     }
 }
 

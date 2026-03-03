@@ -1,7 +1,8 @@
 //! Cache command - manage dependency caches
 
 use crate::cache::{
-    detect_lockfiles, format_bytes, gb_to_bytes, CacheSizeStatus, CacheState, CacheVolume,
+    detect_lockfiles, format_bytes, gb_to_bytes, resolve_state, CacheSidecar, CacheSizeStatus,
+    CacheState, CacheVolume,
 };
 use crate::cli::args::{CacheAction, CacheArgs, OutputFormat};
 use crate::config::Config;
@@ -51,14 +52,15 @@ async fn list_caches(
     // Get disk usage for all cache volumes
     let sizes = runtime.volume_disk_usage("mino-cache-").await?;
 
-    // Parse into CacheVolume structs with sizes
-    let caches: Vec<(CacheVolume, u64)> = volumes
-        .iter()
-        .filter_map(|v| {
-            CacheVolume::from_labels(&v.name, &v.labels)
-                .map(|c| (c.clone(), *sizes.get(&c.name).unwrap_or(&0)))
-        })
-        .collect();
+    // Parse into CacheVolume structs with sizes, resolving state via sidecar
+    let mut caches: Vec<(CacheVolume, u64)> = Vec::new();
+    for v in &volumes {
+        if let Some(mut cache) = CacheVolume::from_labels(&v.name, &v.labels) {
+            cache.state = resolve_state(&cache.name, cache.state).await;
+            let size = *sizes.get(&cache.name).unwrap_or(&0);
+            caches.push((cache, size));
+        }
+    }
 
     // Calculate total size
     let total_size: u64 = caches.iter().map(|(_, s)| s).sum();
@@ -236,41 +238,40 @@ async fn show_project_info(
         let size = sizes.get(&volume_name).copied().unwrap_or(0);
         project_total += size;
 
+        let size_suffix = if size > 0 {
+            format!(" ({})", format_bytes(size))
+        } else {
+            String::new()
+        };
+
+        let ecosystem = info.ecosystem.to_string();
+
         match volume_info {
             Some(v) => {
-                let cache = CacheVolume::from_labels(&v.name, &v.labels);
-                match cache.map(|c| c.state) {
-                    Some(CacheState::Complete) => {
-                        let size_str = if size > 0 {
-                            format!(" ({})", format_bytes(size))
-                        } else {
-                            String::new()
-                        };
+                let label_state = CacheVolume::from_labels(&v.name, &v.labels)
+                    .map(|c| c.state)
+                    .unwrap_or(CacheState::Building);
+                let state = resolve_state(&volume_name, label_state).await;
+
+                match state {
+                    CacheState::Complete => {
                         ui::step_ok_detail(
                             &ctx,
-                            &format!("{}", info.ecosystem),
-                            &format!("complete (ro){}", size_str),
+                            &ecosystem,
+                            &format!("complete (ro){}", size_suffix),
                         );
                     }
-                    Some(CacheState::Building) => {
-                        let size_str = if size > 0 {
-                            format!(" ({})", format_bytes(size))
-                        } else {
-                            String::new()
-                        };
+                    CacheState::Building | CacheState::Miss => {
                         ui::step_warn_hint(
                             &ctx,
-                            &format!("{}", info.ecosystem),
-                            &format!("building (rw){}", size_str),
+                            &ecosystem,
+                            &format!("building (rw){}", size_suffix),
                         );
-                    }
-                    _ => {
-                        ui::step_info(&ctx, &format!("{}: unknown state", info.ecosystem));
                     }
                 }
             }
             None => {
-                ui::step_info(&ctx, &format!("{}: miss (will create)", info.ecosystem));
+                ui::step_info(&ctx, &format!("{}: miss (will create)", ecosystem));
             }
         }
     }
@@ -397,6 +398,8 @@ async fn gc_caches(
     for (cache, _) in to_remove {
         debug!("Removing cache: {}", cache.name);
         runtime.volume_remove(&cache.name).await?;
+        // Clean up sidecar file alongside volume
+        CacheSidecar::delete(&cache.name).await.ok();
         removed += 1;
     }
 
@@ -492,10 +495,11 @@ async fn clear_artifacts(
     let mut spinner = ui::TaskSpinner::new(&ctx);
     spinner.start("Clearing...");
 
-    // Remove volumes
+    // Remove volumes and their sidecar files
     let vol_count = volumes.len();
     for vol in volumes {
         runtime.volume_remove(&vol.name).await?;
+        CacheSidecar::delete(&vol.name).await.ok();
     }
 
     // Remove images (prune containers first so rmi doesn't fail)

@@ -4,6 +4,7 @@
 //! based on the lockfile contents. Same lockfile = same cache.
 
 use crate::error::{MinoError, MinoResult};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs;
@@ -11,7 +12,8 @@ use std::path::{Path, PathBuf};
 use tracing::debug;
 
 /// Supported package ecosystems
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Ecosystem {
     /// npm (package-lock.json, npm-shrinkwrap.json)
     Npm,
