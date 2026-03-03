@@ -531,8 +531,9 @@ async fn setup_cache_for_lockfile(
 
     let (state, should_finalize) = match existing {
         Some(vol_info) => {
-            let cache = CacheVolume::from_labels(&vol_info.name, &vol_info.labels);
-            let label_state = cache.map(|c| c.state).unwrap_or(CacheState::Building);
+            let label_state = CacheVolume::from_labels(&vol_info.name, &vol_info.labels)
+                .map(|c| c.state)
+                .unwrap_or(CacheState::Building);
 
             // Use sidecar as authoritative state source, fall back to labels
             let resolved = resolve_state(&volume_name, label_state).await;
@@ -546,7 +547,7 @@ async fn setup_cache_for_lockfile(
                     );
                     (CacheState::Complete, false)
                 }
-                CacheState::Building => {
+                CacheState::Building | CacheState::Miss => {
                     debug!(
                         "Resuming incomplete cache for {} ({})",
                         info.ecosystem,
@@ -564,14 +565,6 @@ async fn setup_cache_for_lockfile(
                             warn!("Failed to backfill sidecar for {}: {}", volume_name, e);
                         }
                     }
-                    (CacheState::Building, true)
-                }
-                _ => {
-                    warn!(
-                        "Cache for {} ({}) has unexpected state, treating as building",
-                        info.ecosystem,
-                        &info.hash[..8]
-                    );
                     (CacheState::Building, true)
                 }
             }
@@ -599,17 +592,20 @@ async fn setup_cache_for_lockfile(
             }
 
             // Re-inspect: another process may have created it first with different state
-            match runtime.volume_inspect(&volume_name).await? {
+            let resolved = match runtime.volume_inspect(&volume_name).await? {
                 Some(vol_info) => {
-                    let cache = CacheVolume::from_labels(&vol_info.name, &vol_info.labels);
-                    let label_state = cache.map(|c| c.state).unwrap_or(CacheState::Building);
-                    let resolved = resolve_state(&volume_name, label_state).await;
-                    match resolved {
-                        CacheState::Complete => (CacheState::Complete, false),
-                        _ => (CacheState::Building, true),
-                    }
+                    let label_state = CacheVolume::from_labels(&vol_info.name, &vol_info.labels)
+                        .map(|c| c.state)
+                        .unwrap_or(CacheState::Building);
+                    resolve_state(&volume_name, label_state).await
                 }
-                None => (CacheState::Building, true), // shouldn't happen, but safe fallback
+                None => CacheState::Building,
+            };
+
+            if resolved == CacheState::Complete {
+                (CacheState::Complete, false)
+            } else {
+                (CacheState::Building, true)
             }
         }
     };

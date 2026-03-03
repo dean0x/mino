@@ -238,44 +238,40 @@ async fn show_project_info(
         let size = sizes.get(&volume_name).copied().unwrap_or(0);
         project_total += size;
 
+        let size_suffix = if size > 0 {
+            format!(" ({})", format_bytes(size))
+        } else {
+            String::new()
+        };
+
+        let ecosystem = info.ecosystem.to_string();
+
         match volume_info {
             Some(v) => {
-                let cache = CacheVolume::from_labels(&v.name, &v.labels);
-                let label_state = cache.map(|c| c.state).unwrap_or(CacheState::Building);
+                let label_state = CacheVolume::from_labels(&v.name, &v.labels)
+                    .map(|c| c.state)
+                    .unwrap_or(CacheState::Building);
                 let state = resolve_state(&volume_name, label_state).await;
 
                 match state {
                     CacheState::Complete => {
-                        let size_str = if size > 0 {
-                            format!(" ({})", format_bytes(size))
-                        } else {
-                            String::new()
-                        };
                         ui::step_ok_detail(
                             &ctx,
-                            &format!("{}", info.ecosystem),
-                            &format!("complete (ro){}", size_str),
+                            &ecosystem,
+                            &format!("complete (ro){}", size_suffix),
                         );
                     }
-                    CacheState::Building => {
-                        let size_str = if size > 0 {
-                            format!(" ({})", format_bytes(size))
-                        } else {
-                            String::new()
-                        };
+                    CacheState::Building | CacheState::Miss => {
                         ui::step_warn_hint(
                             &ctx,
-                            &format!("{}", info.ecosystem),
-                            &format!("building (rw){}", size_str),
+                            &ecosystem,
+                            &format!("building (rw){}", size_suffix),
                         );
-                    }
-                    _ => {
-                        ui::step_info(&ctx, &format!("{}: unknown state", info.ecosystem));
                     }
                 }
             }
             None => {
-                ui::step_info(&ctx, &format!("{}: miss (will create)", info.ecosystem));
+                ui::step_info(&ctx, &format!("{}: miss (will create)", ecosystem));
             }
         }
     }

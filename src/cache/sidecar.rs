@@ -92,16 +92,17 @@ impl CacheSidecar {
 
     /// Load a sidecar from a specific path (for testability)
     async fn load_from(path: &Path) -> MinoResult<Option<Self>> {
-        if !path.exists() {
-            return Ok(None);
+        match fs::read_to_string(path).await {
+            Ok(content) => {
+                let sidecar: Self = serde_json::from_str(&content)?;
+                Ok(Some(sidecar))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(MinoError::io(
+                format!("reading cache sidecar {}", path.display()),
+                e,
+            )),
         }
-
-        let content = fs::read_to_string(path)
-            .await
-            .map_err(|e| MinoError::io(format!("reading cache sidecar {}", path.display()), e))?;
-
-        let sidecar: Self = serde_json::from_str(&content)?;
-        Ok(Some(sidecar))
     }
 
     /// Delete a sidecar file. Idempotent -- does not error if file is missing.
@@ -111,13 +112,14 @@ impl CacheSidecar {
 
     /// Delete a sidecar at a specific path (for testability)
     async fn delete_at(path: &Path) -> MinoResult<()> {
-        if path.exists() {
-            fs::remove_file(path).await.map_err(|e| {
-                MinoError::io(format!("deleting cache sidecar {}", path.display()), e)
-            })?;
+        match fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(MinoError::io(
+                format!("deleting cache sidecar {}", path.display()),
+                e,
+            )),
         }
-
-        Ok(())
     }
 
     /// List all sidecar files from the cache state directory
@@ -127,14 +129,13 @@ impl CacheSidecar {
 
     /// List all sidecar files from a specific directory (for testability)
     async fn list_all_in(dir: &Path) -> MinoResult<Vec<Self>> {
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
+        let mut entries = match fs::read_dir(dir).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(MinoError::io("reading cache state directory", e)),
+        };
 
-        let mut sidecars = vec![];
-        let mut entries = fs::read_dir(dir)
-            .await
-            .map_err(|e| MinoError::io("reading cache state directory", e))?;
+        let mut sidecars = Vec::new();
 
         while let Some(entry) = entries
             .next_entry()
@@ -143,11 +144,12 @@ impl CacheSidecar {
         {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "json") {
-                let content = fs::read_to_string(&path).await.ok();
-                if let Some(content) = content {
-                    if let Ok(sidecar) = serde_json::from_str::<Self>(&content) {
-                        sidecars.push(sidecar);
-                    }
+                if let Some(sidecar) = fs::read_to_string(&path)
+                    .await
+                    .ok()
+                    .and_then(|content| serde_json::from_str::<Self>(&content).ok())
+                {
+                    sidecars.push(sidecar);
                 }
             }
         }
