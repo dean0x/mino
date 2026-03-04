@@ -290,7 +290,10 @@ mod tests {
         assert!(output.contains("# Top-level comment"), "top comment lost");
         assert!(output.contains("# Network comment"), "inline comment lost");
         assert!(output.contains("network = \"none\""), "existing value lost");
-        assert!(output.contains("image = \"fedora:43\""), "new value missing");
+        assert!(
+            output.contains("image = \"fedora:43\""),
+            "new value missing"
+        );
     }
 
     #[test]
@@ -305,8 +308,12 @@ mod tests {
     #[test]
     fn set_toml_edit_value_handles_list_keys() {
         let mut doc = toml_edit::DocumentMut::new();
-        set_toml_edit_value(&mut doc, "container.network_allow", "github.com:443,npmjs.org:443")
-            .unwrap();
+        set_toml_edit_value(
+            &mut doc,
+            "container.network_allow",
+            "github.com:443,npmjs.org:443",
+        )
+        .unwrap();
         let output = doc.to_string();
         let parsed: toml::Value = output.parse().unwrap();
         let arr = parsed["container"]["network_allow"].as_array().unwrap();
@@ -321,7 +328,12 @@ mod tests {
         set_toml_edit_value(&mut doc, "session.auto_cleanup_hours", "48").unwrap();
         let output = doc.to_string();
         let parsed: toml::Value = output.parse().unwrap();
-        assert_eq!(parsed["session"]["auto_cleanup_hours"].as_integer().unwrap(), 48);
+        assert_eq!(
+            parsed["session"]["auto_cleanup_hours"]
+                .as_integer()
+                .unwrap(),
+            48
+        );
     }
 
     #[test]

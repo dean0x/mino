@@ -640,7 +640,10 @@ impl ContainerRuntime for OrbStackRuntime {
         match stdout.trim().parse::<i32>() {
             Ok(code) => Ok(Some(code)),
             Err(_) => {
-                warn!("Could not parse exit code from podman wait: {:?}", stdout.trim());
+                warn!(
+                    "Could not parse exit code from podman wait: {:?}",
+                    stdout.trim()
+                );
                 Ok(None)
             }
         }

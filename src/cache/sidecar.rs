@@ -34,12 +34,7 @@ pub struct CacheSidecar {
 
 impl CacheSidecar {
     /// Create a new sidecar record with current timestamps
-    pub fn new(
-        volume_name: String,
-        ecosystem: Ecosystem,
-        hash: String,
-        state: CacheState,
-    ) -> Self {
+    pub fn new(volume_name: String, ecosystem: Ecosystem, hash: String, state: CacheState) -> Self {
         let now = Utc::now();
         Self {
             volume_name,
@@ -316,7 +311,9 @@ mod tests {
     #[test]
     fn sidecar_file_path_format() {
         let path = CacheSidecar::file_path("mino-cache-npm-abc123");
-        assert!(path.to_string_lossy().ends_with("mino-cache-npm-abc123.json"));
+        assert!(path
+            .to_string_lossy()
+            .ends_with("mino-cache-npm-abc123.json"));
     }
 
     #[test]

@@ -224,8 +224,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     // Collect credentials
     spinner.message("Gathering credentials...");
-    let (credentials, active_providers, cred_failures) =
-        gather_credentials(&args, config).await?;
+    let (credentials, active_providers, cred_failures) = gather_credentials(&args, config).await?;
     if !cred_failures.is_empty() {
         spinner.stop("Credentials");
         for (provider, error) in &cred_failures {
@@ -602,7 +601,12 @@ async fn setup_cache_for_lockfile(
                         &info.hash[..8]
                     );
                     // Backfill sidecar for existing volumes that lack one (backward compat)
-                    if CacheSidecar::load(&volume_name).await.ok().flatten().is_none() {
+                    if CacheSidecar::load(&volume_name)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_none()
+                    {
                         let mut sidecar = CacheSidecar::new(
                             volume_name.clone(),
                             info.ecosystem,
@@ -1474,9 +1478,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result =
-            upsert_container_toml_key(&path, "network", "bridge".into())
-                .await;
+        let result = upsert_container_toml_key(&path, "network", "bridge".into()).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
