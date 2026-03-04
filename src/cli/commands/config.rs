@@ -225,7 +225,7 @@ fn set_toml_edit_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str)
         table.insert(leaf, toml_edit::value(n));
     } else {
         table.insert(leaf, toml_edit::value(value));
-    };
+    }
 
     Ok(())
 }
@@ -234,7 +234,7 @@ fn parse_bool(value: &str) -> MinoResult<bool> {
     match value.to_lowercase().as_str() {
         "true" | "1" | "yes" => Ok(true),
         "false" | "0" | "no" => Ok(false),
-        _ => Err(crate::error::MinoError::User(format!(
+        _ => Err(MinoError::User(format!(
             "Invalid boolean value: {}. Use true/false",
             value
         ))),
@@ -244,7 +244,7 @@ fn parse_bool(value: &str) -> MinoResult<bool> {
 fn parse_u32(value: &str) -> MinoResult<u32> {
     value
         .parse()
-        .map_err(|_| crate::error::MinoError::User(format!("Invalid number: {}", value)))
+        .map_err(|_| MinoError::User(format!("Invalid number: {}", value)))
 }
 
 fn print_valid_keys() {

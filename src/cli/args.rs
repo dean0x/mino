@@ -505,4 +505,26 @@ mod tests {
             _ => panic!("expected Run command"),
         }
     }
+
+    #[test]
+    fn cli_strict_credentials_flag() {
+        let cli = Cli::parse_from(["mino", "run", "--strict-credentials", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(args.strict_credentials);
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_strict_credentials_default_false() {
+        let cli = Cli::parse_from(["mino", "run", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(!args.strict_credentials);
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
 }
