@@ -127,6 +127,10 @@ pub struct RunArgs {
     #[arg(long = "no-github")]
     pub no_github: bool,
 
+    /// Fail if any requested credentials cannot be loaded
+    #[arg(long)]
+    pub strict_credentials: bool,
+
     /// Container image to use
     #[arg(long)]
     pub image: Option<String>,

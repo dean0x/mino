@@ -224,7 +224,25 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     // Collect credentials
     spinner.message("Gathering credentials...");
-    let (credentials, active_providers) = gather_credentials(&args, config).await?;
+    let (credentials, active_providers, cred_failures) =
+        gather_credentials(&args, config).await?;
+    if !cred_failures.is_empty() {
+        spinner.stop("Credentials");
+        for (provider, error) in &cred_failures {
+            ui::step_warn(&ctx, &format!("{}: {}", provider, error));
+        }
+        if args.strict_credentials {
+            return Err(MinoError::User(format!(
+                "Credential loading failed for: {}. Remove --strict-credentials to continue anyway.",
+                cred_failures
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        spinner.start("Initializing sandbox...");
+    }
 
     // Create session manager and run cleanup
     let session_name = args.name.clone().unwrap_or_else(generate_session_name);
@@ -755,13 +773,14 @@ fn resolve_project_dir(args: &RunArgs, _config: &Config) -> MinoResult<PathBuf> 
     env::current_dir().map_err(|e| MinoError::io("getting current directory", e))
 }
 
-/// Returns (env_vars, list of successfully loaded provider names)
+/// Returns (env_vars, successfully loaded providers, failed providers with errors)
 async fn gather_credentials(
     args: &RunArgs,
     config: &Config,
-) -> MinoResult<(HashMap<String, String>, Vec<String>)> {
+) -> MinoResult<(HashMap<String, String>, Vec<String>, Vec<(String, String)>)> {
     let mut env_vars = HashMap::new();
     let mut providers = Vec::new();
+    let mut failures: Vec<(String, String)> = Vec::new();
     let cache = CredentialCache::new().await?;
 
     let (use_aws, use_gcp, use_azure) = if args.all_clouds {
@@ -792,7 +811,7 @@ async fn gather_credentials(
                 debug!("AWS credentials loaded");
             }
             Err(e) => {
-                eprintln!("{} AWS: {}", style("!").yellow(), e);
+                failures.push(("AWS".to_string(), e.to_string()));
             }
         }
     }
@@ -810,7 +829,7 @@ async fn gather_credentials(
                 debug!("GCP credentials loaded");
             }
             Err(e) => {
-                eprintln!("{} GCP: {}", style("!").yellow(), e);
+                failures.push(("GCP".to_string(), e.to_string()));
             }
         }
     }
@@ -825,7 +844,7 @@ async fn gather_credentials(
                 debug!("Azure credentials loaded");
             }
             Err(e) => {
-                eprintln!("{} Azure: {}", style("!").yellow(), e);
+                failures.push(("Azure".to_string(), e.to_string()));
             }
         }
     }
@@ -841,7 +860,7 @@ async fn gather_credentials(
                 debug!("GitHub token loaded");
             }
             Err(e) => {
-                debug!("GitHub token not available: {}", e);
+                failures.push(("GitHub".to_string(), e.to_string()));
             }
         }
     }
@@ -851,7 +870,7 @@ async fn gather_credentials(
         env_vars.insert(key.clone(), value.clone());
     }
 
-    Ok((env_vars, providers))
+    Ok((env_vars, providers, failures))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1277,6 +1296,7 @@ mod tests {
             all_clouds: false,
             no_ssh_agent: false,
             no_github: false,
+            strict_credentials: false,
             image: None,
             layers: vec![],
             env: vec![],
