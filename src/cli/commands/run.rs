@@ -1063,15 +1063,15 @@ async fn prompt_save_network(
         SaveTarget::None => unreachable!(),
     };
 
-    let (key, toml_value) = if let Some(preset) = preset_name {
-        ("network_preset", toml::Value::String(preset.to_string()))
+    let (key, toml_value): (&str, toml_edit::Value) = if let Some(preset) = preset_name {
+        ("network_preset", preset.to_string().into())
     } else {
         let net = match choice {
             NetworkChoice::Host => "host",
             NetworkChoice::None => "none",
             _ => "bridge",
         };
-        ("network", toml::Value::String(net.to_string()))
+        ("network", net.to_string().into())
     };
 
     upsert_container_toml_key(&path, key, toml_value).await?;
@@ -1083,9 +1083,12 @@ async fn prompt_save_network(
 /// Insert or update a key under [container] in a TOML config file.
 ///
 /// Creates the file (and parent directories) if it does not exist.
-/// Uses a single `read_to_string` + match-on-error-kind to avoid a TOCTOU
-/// race between `path.exists()` and the subsequent read.
-async fn upsert_container_toml_key(path: &Path, key: &str, value: toml::Value) -> MinoResult<()> {
+/// Uses `toml_edit` for round-trip preservation of comments and formatting.
+async fn upsert_container_toml_key(
+    path: &Path,
+    key: &str,
+    value: toml_edit::Value,
+) -> MinoResult<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| {
@@ -1100,48 +1103,32 @@ async fn upsert_container_toml_key(path: &Path, key: &str, value: toml::Value) -
         Err(e) => return Err(MinoError::io(format!("reading {}", path.display()), e)),
     };
 
-    let doc = if let Some(content) = existing {
-        let mut doc: toml::Value =
-            content
-                .parse()
-                .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
-                    path: path.to_path_buf(),
-                    reason: e.to_string(),
-                })?;
-
-        let table = doc.as_table_mut().ok_or_else(|| MinoError::ConfigInvalid {
-            path: path.to_path_buf(),
-            reason: "config is not a TOML table".to_string(),
-        })?;
-
-        let container = table
-            .entry("container")
-            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-
-        if !container.is_table() {
-            return Err(MinoError::ConfigInvalid {
+    let mut doc: toml_edit::DocumentMut = if let Some(content) = existing {
+        content
+            .parse()
+            .map_err(|e: toml_edit::TomlError| MinoError::ConfigInvalid {
                 path: path.to_path_buf(),
-                reason: "'container' key exists but is not a table".to_string(),
-            });
-        }
-
-        container
-            .as_table_mut()
-            .unwrap()
-            .insert(key.to_string(), value);
-
-        doc
+                reason: e.to_string(),
+            })?
     } else {
-        let mut table = toml::map::Map::new();
-        let mut container = toml::map::Map::new();
-        container.insert(key.to_string(), value);
-        table.insert("container".to_string(), toml::Value::Table(container));
-        toml::Value::Table(table)
+        toml_edit::DocumentMut::new()
     };
 
-    let output = toml::to_string_pretty(&doc)
-        .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
-    tokio::fs::write(path, output)
+    // Navigate to or create [container] table
+    if !doc.contains_key("container") {
+        doc.insert("container", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+
+    let container = doc["container"]
+        .as_table_mut()
+        .ok_or_else(|| MinoError::ConfigInvalid {
+            path: path.to_path_buf(),
+            reason: "'container' key exists but is not a table".to_string(),
+        })?;
+
+    container.insert(key, toml_edit::value(value));
+
+    tokio::fs::write(path, doc.to_string())
         .await
         .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
 
@@ -1220,13 +1207,11 @@ async fn prompt_save_config(
         SaveTarget::None => return Ok(()),
     };
 
-    let layers_value = toml::Value::Array(
-        layers
-            .iter()
-            .map(|l| toml::Value::String(l.clone()))
-            .collect(),
-    );
-    upsert_container_toml_key(&path, "layers", layers_value).await?;
+    let mut layers_arr = toml_edit::Array::new();
+    for l in layers {
+        layers_arr.push(l.as_str());
+    }
+    upsert_container_toml_key(&path, "layers", toml_edit::Value::Array(layers_arr)).await?;
     println!("  {} Saved to {}", style("✓").green(), path.display());
 
     Ok(())
@@ -1334,11 +1319,10 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join(".mino.toml");
 
-        let layers = toml::Value::Array(vec![
-            toml::Value::String("rust".to_string()),
-            toml::Value::String("typescript".to_string()),
-        ]);
-        upsert_container_toml_key(&path, "layers", layers)
+        let mut layers = toml_edit::Array::new();
+        layers.push("rust");
+        layers.push("typescript");
+        upsert_container_toml_key(&path, "layers", toml_edit::Value::Array(layers))
             .await
             .unwrap();
 
@@ -1440,8 +1424,9 @@ mod tests {
         .await
         .unwrap();
 
-        let layers = toml::Value::Array(vec![toml::Value::String("typescript".to_string())]);
-        upsert_container_toml_key(&path, "layers", layers)
+        let mut layers = toml_edit::Array::new();
+        layers.push("typescript");
+        upsert_container_toml_key(&path, "layers", toml_edit::Value::Array(layers))
             .await
             .unwrap();
 
@@ -1470,7 +1455,7 @@ mod tests {
             .unwrap();
 
         let result =
-            upsert_container_toml_key(&path, "network", toml::Value::String("bridge".to_string()))
+            upsert_container_toml_key(&path, "network", "bridge".into())
                 .await;
 
         assert!(result.is_err());

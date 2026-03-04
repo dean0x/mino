@@ -145,27 +145,26 @@ async fn set_local_value(key: &str, value: &str) -> MinoResult<()> {
     // Validate the key before touching the file
     validate_config_key(key)?;
 
-    // Load existing local config or start with an empty TOML table
-    let mut doc: toml::Value = if local_path.exists() {
+    // Load existing local config or start with an empty document (preserves comments)
+    let mut doc: toml_edit::DocumentMut = if local_path.exists() {
         let content = fs::read_to_string(&local_path)
             .await
             .map_err(|e| MinoError::io(format!("reading {}", local_path.display()), e))?;
         content
             .parse()
-            .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
+            .map_err(|e: toml_edit::TomlError| MinoError::ConfigInvalid {
                 path: local_path.clone(),
                 reason: e.to_string(),
             })?
     } else {
-        toml::Value::Table(toml::map::Map::new())
+        toml_edit::DocumentMut::new()
     };
 
     // Set the key in the TOML tree
-    set_toml_value(&mut doc, key, value)?;
+    set_toml_edit_value(&mut doc, key, value)?;
 
-    // Write back only the keys the user has explicitly set
-    let content = toml::to_string_pretty(&doc)?;
-    fs::write(&local_path, content)
+    // Write back preserving comments and formatting
+    fs::write(&local_path, doc.to_string())
         .await
         .map_err(|e| MinoError::io(format!("writing {}", local_path.display()), e))?;
 
@@ -192,45 +191,42 @@ fn validate_config_key(key: &str) -> MinoResult<()> {
     }
 }
 
-/// Set a dot-separated key in a TOML value tree, creating intermediate tables as needed.
-fn set_toml_value(doc: &mut toml::Value, key: &str, value: &str) -> MinoResult<()> {
+/// Set a dot-separated key in a toml_edit document, creating intermediate tables as needed.
+/// Preserves comments and formatting in the original document.
+fn set_toml_edit_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> MinoResult<()> {
     let parts: Vec<&str> = key.split('.').collect();
-    let mut current = doc;
 
     // Navigate/create intermediate tables
+    let mut table = doc.as_table_mut();
     for &part in &parts[..parts.len() - 1] {
-        current = current
+        if !table.contains_key(part) {
+            table.insert(part, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        table = table[part]
             .as_table_mut()
-            .ok_or_else(|| MinoError::User(format!("Expected table at key: {}", part)))?
-            .entry(part)
-            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            .ok_or_else(|| MinoError::User(format!("Expected table at key: {}", part)))?;
     }
 
-    let leaf = parts.last().unwrap();
-    let table = current
-        .as_table_mut()
-        .ok_or_else(|| MinoError::User(format!("Expected table for key: {}", key)))?;
+    let leaf = *parts.last().unwrap();
 
     // Keys that store as arrays
     let is_list_key =
         key.ends_with("network_allow") || key.ends_with("layers") || key.ends_with("volumes");
 
-    let toml_value = if is_list_key {
-        let items: Vec<toml::Value> = value
-            .split(',')
-            .map(|s| toml::Value::String(s.trim().to_string()))
-            .filter(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false))
-            .collect();
-        toml::Value::Array(items)
+    if is_list_key {
+        let mut arr = toml_edit::Array::new();
+        for item in value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            arr.push(item);
+        }
+        table.insert(leaf, toml_edit::value(arr));
     } else if value == "true" || value == "false" {
-        toml::Value::Boolean(parse_bool(value)?)
+        table.insert(leaf, toml_edit::value(parse_bool(value)?));
     } else if let Ok(n) = value.parse::<i64>() {
-        toml::Value::Integer(n)
+        table.insert(leaf, toml_edit::value(n));
     } else {
-        toml::Value::String(value.to_string())
+        table.insert(leaf, toml_edit::value(value));
     };
 
-    table.insert((*leaf).to_string(), toml_value);
     Ok(())
 }
 
@@ -278,5 +274,67 @@ fn print_valid_keys() {
 
     for key in keys {
         eprintln!("  {}", key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_toml_edit_value_preserves_comments() {
+        let input = "# Top-level comment\n[container]\n# Network comment\nnetwork = \"none\"\n";
+        let mut doc: toml_edit::DocumentMut = input.parse().unwrap();
+        set_toml_edit_value(&mut doc, "container.image", "fedora:43").unwrap();
+        let output = doc.to_string();
+        assert!(output.contains("# Top-level comment"), "top comment lost");
+        assert!(output.contains("# Network comment"), "inline comment lost");
+        assert!(output.contains("network = \"none\""), "existing value lost");
+        assert!(output.contains("image = \"fedora:43\""), "new value missing");
+    }
+
+    #[test]
+    fn set_toml_edit_value_creates_intermediate_tables() {
+        let mut doc = toml_edit::DocumentMut::new();
+        set_toml_edit_value(&mut doc, "credentials.aws.enabled", "true").unwrap();
+        let output = doc.to_string();
+        let parsed: toml::Value = output.parse().unwrap();
+        assert_eq!(
+            parsed["credentials"]["aws"]["enabled"].as_bool().unwrap(),
+            true
+        );
+    }
+
+    #[test]
+    fn set_toml_edit_value_handles_list_keys() {
+        let mut doc = toml_edit::DocumentMut::new();
+        set_toml_edit_value(&mut doc, "container.network_allow", "github.com:443,npmjs.org:443")
+            .unwrap();
+        let output = doc.to_string();
+        let parsed: toml::Value = output.parse().unwrap();
+        let arr = parsed["container"]["network_allow"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_str().unwrap(), "github.com:443");
+        assert_eq!(arr[1].as_str().unwrap(), "npmjs.org:443");
+    }
+
+    #[test]
+    fn set_toml_edit_value_handles_integer() {
+        let mut doc = toml_edit::DocumentMut::new();
+        set_toml_edit_value(&mut doc, "session.auto_cleanup_hours", "48").unwrap();
+        let output = doc.to_string();
+        let parsed: toml::Value = output.parse().unwrap();
+        assert_eq!(parsed["session"]["auto_cleanup_hours"].as_integer().unwrap(), 48);
+    }
+
+    #[test]
+    fn validate_config_key_rejects_unknown() {
+        assert!(validate_config_key("container.nonexistent").is_err());
+    }
+
+    #[test]
+    fn validate_config_key_accepts_known() {
+        assert!(validate_config_key("container.network").is_ok());
+        assert!(validate_config_key("credentials.aws.enabled").is_ok());
     }
 }
