@@ -224,7 +224,24 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     // Collect credentials
     spinner.message("Gathering credentials...");
-    let (credentials, active_providers) = gather_credentials(&args, config).await?;
+    let (credentials, active_providers, cred_failures) = gather_credentials(&args, config).await?;
+    if !cred_failures.is_empty() {
+        spinner.stop("Credentials");
+        for (provider, error) in &cred_failures {
+            ui::step_warn(&ctx, &format!("{}: {}", provider, error));
+        }
+        if args.strict_credentials {
+            return Err(MinoError::User(format!(
+                "Credential loading failed for: {}. Remove --strict-credentials to continue anyway.",
+                cred_failures
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        spinner.start("Initializing sandbox...");
+    }
 
     // Create session manager and run cleanup
     let session_name = args.name.clone().unwrap_or_else(generate_session_name);
@@ -584,7 +601,12 @@ async fn setup_cache_for_lockfile(
                         &info.hash[..8]
                     );
                     // Backfill sidecar for existing volumes that lack one (backward compat)
-                    if CacheSidecar::load(&volume_name).await.ok().flatten().is_none() {
+                    if CacheSidecar::load(&volume_name)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_none()
+                    {
                         let mut sidecar = CacheSidecar::new(
                             volume_name.clone(),
                             info.ecosystem,
@@ -755,13 +777,14 @@ fn resolve_project_dir(args: &RunArgs, _config: &Config) -> MinoResult<PathBuf> 
     env::current_dir().map_err(|e| MinoError::io("getting current directory", e))
 }
 
-/// Returns (env_vars, list of successfully loaded provider names)
+/// Returns (env_vars, successfully loaded providers, failed providers with errors)
 async fn gather_credentials(
     args: &RunArgs,
     config: &Config,
-) -> MinoResult<(HashMap<String, String>, Vec<String>)> {
+) -> MinoResult<(HashMap<String, String>, Vec<String>, Vec<(String, String)>)> {
     let mut env_vars = HashMap::new();
     let mut providers = Vec::new();
+    let mut failures: Vec<(String, String)> = Vec::new();
     let cache = CredentialCache::new().await?;
 
     let (use_aws, use_gcp, use_azure) = if args.all_clouds {
@@ -792,7 +815,7 @@ async fn gather_credentials(
                 debug!("AWS credentials loaded");
             }
             Err(e) => {
-                eprintln!("{} AWS: {}", style("!").yellow(), e);
+                failures.push(("AWS".to_string(), e.to_string()));
             }
         }
     }
@@ -810,7 +833,7 @@ async fn gather_credentials(
                 debug!("GCP credentials loaded");
             }
             Err(e) => {
-                eprintln!("{} GCP: {}", style("!").yellow(), e);
+                failures.push(("GCP".to_string(), e.to_string()));
             }
         }
     }
@@ -825,13 +848,13 @@ async fn gather_credentials(
                 debug!("Azure credentials loaded");
             }
             Err(e) => {
-                eprintln!("{} Azure: {}", style("!").yellow(), e);
+                failures.push(("Azure".to_string(), e.to_string()));
             }
         }
     }
 
     // GitHub token
-    if args.github {
+    if !args.no_github {
         debug!("Fetching GitHub token...");
         match GithubCredentials::get_token(&config.credentials.github).await {
             Ok(token) => {
@@ -841,7 +864,7 @@ async fn gather_credentials(
                 debug!("GitHub token loaded");
             }
             Err(e) => {
-                debug!("GitHub token not available: {}", e);
+                failures.push(("GitHub".to_string(), e.to_string()));
             }
         }
     }
@@ -851,7 +874,7 @@ async fn gather_credentials(
         env_vars.insert(key.clone(), value.clone());
     }
 
-    Ok((env_vars, providers))
+    Ok((env_vars, providers, failures))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -878,7 +901,7 @@ fn build_container_config(
     }
 
     // Add SSH agent socket if available and requested
-    if args.ssh_agent {
+    if !args.no_ssh_agent {
         if let Ok(sock) = env::var("SSH_AUTH_SOCK") {
             volumes.push(format!("{}:/ssh-agent", sock));
         }
@@ -901,7 +924,7 @@ fn build_container_config(
     final_env.extend(env_vars);
 
     // Set SSH_AUTH_SOCK inside container
-    if args.ssh_agent && env::var("SSH_AUTH_SOCK").is_ok() {
+    if !args.no_ssh_agent && env::var("SSH_AUTH_SOCK").is_ok() {
         final_env.insert("SSH_AUTH_SOCK".to_string(), "/ssh-agent".to_string());
     }
 
@@ -1063,15 +1086,15 @@ async fn prompt_save_network(
         SaveTarget::None => unreachable!(),
     };
 
-    let (key, toml_value) = if let Some(preset) = preset_name {
-        ("network_preset", toml::Value::String(preset.to_string()))
+    let (key, toml_value): (&str, toml_edit::Value) = if let Some(preset) = preset_name {
+        ("network_preset", preset.to_string().into())
     } else {
         let net = match choice {
             NetworkChoice::Host => "host",
             NetworkChoice::None => "none",
             _ => "bridge",
         };
-        ("network", toml::Value::String(net.to_string()))
+        ("network", net.to_string().into())
     };
 
     upsert_container_toml_key(&path, key, toml_value).await?;
@@ -1083,9 +1106,12 @@ async fn prompt_save_network(
 /// Insert or update a key under [container] in a TOML config file.
 ///
 /// Creates the file (and parent directories) if it does not exist.
-/// Uses a single `read_to_string` + match-on-error-kind to avoid a TOCTOU
-/// race between `path.exists()` and the subsequent read.
-async fn upsert_container_toml_key(path: &Path, key: &str, value: toml::Value) -> MinoResult<()> {
+/// Uses `toml_edit` for round-trip preservation of comments and formatting.
+async fn upsert_container_toml_key(
+    path: &Path,
+    key: &str,
+    value: toml_edit::Value,
+) -> MinoResult<()> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| {
@@ -1100,48 +1126,32 @@ async fn upsert_container_toml_key(path: &Path, key: &str, value: toml::Value) -
         Err(e) => return Err(MinoError::io(format!("reading {}", path.display()), e)),
     };
 
-    let doc = if let Some(content) = existing {
-        let mut doc: toml::Value =
-            content
-                .parse()
-                .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
-                    path: path.to_path_buf(),
-                    reason: e.to_string(),
-                })?;
-
-        let table = doc.as_table_mut().ok_or_else(|| MinoError::ConfigInvalid {
-            path: path.to_path_buf(),
-            reason: "config is not a TOML table".to_string(),
-        })?;
-
-        let container = table
-            .entry("container")
-            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-
-        if !container.is_table() {
-            return Err(MinoError::ConfigInvalid {
+    let mut doc: toml_edit::DocumentMut = if let Some(content) = existing {
+        content
+            .parse()
+            .map_err(|e: toml_edit::TomlError| MinoError::ConfigInvalid {
                 path: path.to_path_buf(),
-                reason: "'container' key exists but is not a table".to_string(),
-            });
-        }
-
-        container
-            .as_table_mut()
-            .unwrap()
-            .insert(key.to_string(), value);
-
-        doc
+                reason: e.to_string(),
+            })?
     } else {
-        let mut table = toml::map::Map::new();
-        let mut container = toml::map::Map::new();
-        container.insert(key.to_string(), value);
-        table.insert("container".to_string(), toml::Value::Table(container));
-        toml::Value::Table(table)
+        toml_edit::DocumentMut::new()
     };
 
-    let output = toml::to_string_pretty(&doc)
-        .map_err(|e| MinoError::io("serializing config", std::io::Error::other(e)))?;
-    tokio::fs::write(path, output)
+    // Navigate to or create [container] table
+    if !doc.contains_key("container") {
+        doc.insert("container", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+
+    let container = doc["container"]
+        .as_table_mut()
+        .ok_or_else(|| MinoError::ConfigInvalid {
+            path: path.to_path_buf(),
+            reason: "'container' key exists but is not a table".to_string(),
+        })?;
+
+    container.insert(key, toml_edit::value(value));
+
+    tokio::fs::write(path, doc.to_string())
         .await
         .map_err(|e| MinoError::io(format!("writing {}", path.display()), e))?;
 
@@ -1220,13 +1230,11 @@ async fn prompt_save_config(
         SaveTarget::None => return Ok(()),
     };
 
-    let layers_value = toml::Value::Array(
-        layers
-            .iter()
-            .map(|l| toml::Value::String(l.clone()))
-            .collect(),
-    );
-    upsert_container_toml_key(&path, "layers", layers_value).await?;
+    let mut layers_arr = toml_edit::Array::new();
+    for l in layers {
+        layers_arr.push(l.as_str());
+    }
+    upsert_container_toml_key(&path, "layers", toml_edit::Value::Array(layers_arr)).await?;
     println!("  {} Saved to {}", style("✓").green(), path.display());
 
     Ok(())
@@ -1290,8 +1298,9 @@ mod tests {
             gcp: false,
             azure: false,
             all_clouds: false,
-            ssh_agent: true,
-            github: true,
+            no_ssh_agent: false,
+            no_github: false,
+            strict_credentials: false,
             image: None,
             layers: vec![],
             env: vec![],
@@ -1334,11 +1343,10 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join(".mino.toml");
 
-        let layers = toml::Value::Array(vec![
-            toml::Value::String("rust".to_string()),
-            toml::Value::String("typescript".to_string()),
-        ]);
-        upsert_container_toml_key(&path, "layers", layers)
+        let mut layers = toml_edit::Array::new();
+        layers.push("rust");
+        layers.push("typescript");
+        upsert_container_toml_key(&path, "layers", toml_edit::Value::Array(layers))
             .await
             .unwrap();
 
@@ -1440,8 +1448,9 @@ mod tests {
         .await
         .unwrap();
 
-        let layers = toml::Value::Array(vec![toml::Value::String("typescript".to_string())]);
-        upsert_container_toml_key(&path, "layers", layers)
+        let mut layers = toml_edit::Array::new();
+        layers.push("typescript");
+        upsert_container_toml_key(&path, "layers", toml_edit::Value::Array(layers))
             .await
             .unwrap();
 
@@ -1469,9 +1478,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result =
-            upsert_container_toml_key(&path, "network", toml::Value::String("bridge".to_string()))
-                .await;
+        let result = upsert_container_toml_key(&path, "network", "bridge".into()).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
