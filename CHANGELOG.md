@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-03-04
+
+### Fixed
+
+- Cache finalization now writes sidecar state files, fixing the no-op where Podman volume labels were immutable after creation so caches never transitioned from `building` to `complete`. Adds detached-mode background monitor for automatic finalization (#20).
+- `config set --local` now preserves TOML comments using `toml_edit` round-trip instead of stripping them (#6).
+- Added `--no-ssh-agent` and `--no-github` negatable flags so users can disable these default-on features from CLI (#21).
+- Credential provider failures now surface visibly between spinner phases instead of silently failing; added `--strict-credentials` flag for CI use (#25).
+
 ## [1.2.1] - 2026-03-03
 
 ### Security
@@ -83,6 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
+[1.2.2]: https://github.com/dean0x/mino/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/dean0x/mino/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dean0x/mino/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dean0x/mino/compare/v1.0.0...v1.1.0
