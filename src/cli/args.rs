@@ -119,13 +119,13 @@ pub struct RunArgs {
     #[arg(long, conflicts_with_all = ["aws", "gcp", "azure"])]
     pub all_clouds: bool,
 
-    /// Forward SSH agent
-    #[arg(long, default_value = "true")]
-    pub ssh_agent: bool,
+    /// Disable SSH agent forwarding (enabled by default)
+    #[arg(long = "no-ssh-agent")]
+    pub no_ssh_agent: bool,
 
-    /// Include GitHub token
-    #[arg(long, default_value = "true")]
-    pub github: bool,
+    /// Disable GitHub token injection (enabled by default)
+    #[arg(long = "no-github")]
+    pub no_github: bool,
 
     /// Container image to use
     #[arg(long)]
@@ -470,5 +470,35 @@ mod tests {
 
         let cli = Cli::parse_from(["mino", "-vv", "status"]);
         assert_eq!(cli.verbose, 2);
+    }
+
+    #[test]
+    fn cli_no_ssh_agent_flag() {
+        let cli = Cli::parse_from(["mino", "run", "--no-ssh-agent", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => assert!(args.no_ssh_agent),
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_no_github_flag() {
+        let cli = Cli::parse_from(["mino", "run", "--no-github", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => assert!(args.no_github),
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_ssh_github_default_enabled() {
+        let cli = Cli::parse_from(["mino", "run", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(!args.no_ssh_agent);
+                assert!(!args.no_github);
+            }
+            _ => panic!("expected Run command"),
+        }
     }
 }

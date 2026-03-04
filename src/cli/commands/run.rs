@@ -831,7 +831,7 @@ async fn gather_credentials(
     }
 
     // GitHub token
-    if args.github {
+    if !args.no_github {
         debug!("Fetching GitHub token...");
         match GithubCredentials::get_token(&config.credentials.github).await {
             Ok(token) => {
@@ -878,7 +878,7 @@ fn build_container_config(
     }
 
     // Add SSH agent socket if available and requested
-    if args.ssh_agent {
+    if !args.no_ssh_agent {
         if let Ok(sock) = env::var("SSH_AUTH_SOCK") {
             volumes.push(format!("{}:/ssh-agent", sock));
         }
@@ -901,7 +901,7 @@ fn build_container_config(
     final_env.extend(env_vars);
 
     // Set SSH_AUTH_SOCK inside container
-    if args.ssh_agent && env::var("SSH_AUTH_SOCK").is_ok() {
+    if !args.no_ssh_agent && env::var("SSH_AUTH_SOCK").is_ok() {
         final_env.insert("SSH_AUTH_SOCK".to_string(), "/ssh-agent".to_string());
     }
 
@@ -1275,8 +1275,8 @@ mod tests {
             gcp: false,
             azure: false,
             all_clouds: false,
-            ssh_agent: true,
-            github: true,
+            no_ssh_agent: false,
+            no_github: false,
             image: None,
             layers: vec![],
             env: vec![],
