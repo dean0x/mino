@@ -299,10 +299,7 @@ mod tests {
         set_toml_edit_value(&mut doc, "credentials.aws.enabled", "true").unwrap();
         let output = doc.to_string();
         let parsed: toml::Value = output.parse().unwrap();
-        assert_eq!(
-            parsed["credentials"]["aws"]["enabled"].as_bool().unwrap(),
-            true
-        );
+        assert!(parsed["credentials"]["aws"]["enabled"].as_bool().unwrap());
     }
 
     #[test]
