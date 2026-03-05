@@ -13,7 +13,7 @@ mod runtime;
 
 pub use factory::{create_runtime, create_runtime_with_vm, Platform};
 pub use orbstack::OrbStack;
-pub use podman::{ContainerConfig, ContainerInfo};
+pub use podman::ContainerConfig;
 pub use runtime::{ContainerRuntime, VolumeInfo};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
