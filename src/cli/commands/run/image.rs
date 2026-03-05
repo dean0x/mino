@@ -1,0 +1,185 @@
+//! Image and layer resolution
+
+use crate::cli::args::RunArgs;
+use crate::config::Config;
+use crate::error::MinoResult;
+use crate::layer::{compose_image, resolve_layers};
+use crate::orchestration::ContainerRuntime;
+use crate::ui::{BuildProgress, TaskSpinner, UiContext};
+use std::collections::HashMap;
+use std::path::Path;
+use tracing::debug;
+
+use super::ImageResolution;
+
+/// Image registry prefix for mino images
+const IMAGE_REGISTRY: &str = "ghcr.io/dean0x";
+
+/// Default base image for layer composition (requires developer user, zsh, etc.)
+pub(super) const LAYER_BASE_IMAGE: &str = "ghcr.io/dean0x/mino-base:latest";
+
+/// Parse a comma-separated layer string into a list of layer names.
+///
+/// Trims whitespace and filters empty segments.
+pub(super) fn parse_layers_env(val: &str) -> Vec<String> {
+    val.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Determine which layers to compose (if any).
+///
+/// Returns None for single-image mode, Some(names) for layer composition.
+///
+/// Precedence:
+/// 1. CLI `--layers` → compose from layers
+/// 2. CLI `--image` → use single image (overrides config layers)
+/// 3. `MINO_LAYERS` env var (comma-separated) → compose from env layers
+/// 4. Config `container.layers` (non-empty) → compose from config layers
+/// 5. Config `container.image` / default → use single image
+pub(super) fn resolve_layer_names(args: &RunArgs, config: &Config) -> Option<Vec<String>> {
+    if !args.layers.is_empty() {
+        return Some(args.layers.clone());
+    }
+    if args.image.is_some() {
+        return None;
+    }
+    if let Ok(val) = std::env::var("MINO_LAYERS") {
+        let layers = parse_layers_env(&val);
+        if !layers.is_empty() {
+            return Some(layers);
+        }
+    }
+    if !config.container.layers.is_empty() {
+        return Some(config.container.layers.clone());
+    }
+    None
+}
+
+/// Map image alias names to layer names for composition.
+///
+/// Language aliases (typescript, rust, etc.) are redirected to the layer
+/// composition system instead of pulling pre-built GHCR images.
+pub(super) fn image_alias_to_layer(image: &str) -> Option<&str> {
+    match image {
+        "typescript" | "ts" | "node" => Some("typescript"),
+        "rust" | "cargo" => Some("rust"),
+        _ => None,
+    }
+}
+
+/// Resolve image aliases to full registry paths.
+///
+/// Only `base` is a direct image alias. Language aliases (typescript, rust)
+/// are handled by `image_alias_to_layer()` and redirected to layer composition.
+///
+/// Full image paths (containing `/` or `:`) are passed through unchanged.
+pub(super) fn resolve_image_alias(image: &str) -> String {
+    // If the image contains '/' or ':', it's already a full path
+    if image.contains('/') || image.contains(':') {
+        return image.to_string();
+    }
+
+    let image_name = match image {
+        "base" => "mino-base",
+        // Not a known alias, pass through (user might have a local image)
+        other => return other.to_string(),
+    };
+
+    format!("{}/{}:latest", IMAGE_REGISTRY, image_name)
+}
+
+/// Check if no explicit image was provided and config uses the default image.
+pub(super) fn is_default_image(args: &RunArgs, config: &Config) -> bool {
+    args.image.is_none() && config.container.image == "fedora:43"
+}
+
+/// Resolve the image to use, handling layers, aliases, and interactive prompts.
+///
+/// Returns `(ImageResolution, using_layers)`.
+pub(super) async fn resolve_image(
+    args: &RunArgs,
+    config: &Config,
+    ctx: &UiContext,
+    spinner: &mut TaskSpinner,
+    runtime: &dyn ContainerRuntime,
+    project_dir: &Path,
+) -> MinoResult<(ImageResolution, bool)> {
+    let layer_names = resolve_layer_names(args, config);
+
+    // Check image alias redirect (e.g., --image typescript → layer composition)
+    let layer_names = layer_names.or_else(|| {
+        let raw = args
+            .image
+            .clone()
+            .unwrap_or_else(|| config.container.image.clone());
+        image_alias_to_layer(&raw).map(|name| vec![name.to_string()])
+    });
+
+    // Interactive layer selection when no layers/image configured
+    let layer_names =
+        if layer_names.is_none() && ctx.is_interactive() && is_default_image(args, config) {
+            spinner.clear();
+            match super::prompts::prompt_layer_selection(ctx, project_dir, config).await? {
+                Some(selected) => {
+                    spinner.start("Initializing sandbox...");
+                    Some(selected)
+                }
+                None => None,
+            }
+        } else {
+            layer_names
+        };
+
+    let using_layers = layer_names.is_some();
+
+    let resolution = if let Some(names) = layer_names {
+        // Phase 1: Resolve each layer with per-layer feedback
+        let mut resolved = Vec::new();
+        for name in &names {
+            spinner.message(&format!("Resolving layer: {}...", name));
+            let mut layers = resolve_layers(std::slice::from_ref(name), project_dir).await?;
+            resolved.append(&mut layers);
+        }
+
+        // Phase 2: Compose image (with streaming progress bar)
+        spinner.clear();
+
+        let label = names.join(", ");
+        let progress = BuildProgress::new(ctx, &label);
+        let result = compose_image(
+            runtime,
+            LAYER_BASE_IMAGE,
+            &resolved,
+            Some(&|line: String| progress.on_line(line)),
+        )
+        .await;
+        progress.finish();
+        let result = result?;
+
+        if result.was_cached {
+            debug!("Using cached composed image: {}", result.image_tag);
+        } else {
+            debug!("Built new composed image: {}", result.image_tag);
+        }
+
+        ImageResolution {
+            image: result.image_tag,
+            layer_env: result.env,
+        }
+    } else {
+        // Single image path (no layers)
+        let raw = args
+            .image
+            .clone()
+            .unwrap_or_else(|| config.container.image.clone());
+        let image = resolve_image_alias(&raw);
+        ImageResolution {
+            image,
+            layer_env: HashMap::new(),
+        }
+    };
+
+    Ok((resolution, using_layers))
+}
