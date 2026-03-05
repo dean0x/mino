@@ -117,7 +117,7 @@ Only `mino-base` is a pre-built GHCR image. Language toolchains use the layer co
 
 3. Add `include_str!` in `src/layer/resolve.rs` for the new layer files
 
-4. Add alias in `src/cli/commands/run.rs` `image_alias_to_layer()`:
+4. Add alias in `src/cli/commands/run/image.rs` `image_alias_to_layer()`:
    ```rust
    "{language}" | "{alias}" => Some("{language}"),
    ```

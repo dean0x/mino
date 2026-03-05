@@ -147,7 +147,7 @@ Both are compiled into the `mino` binary via `include_str!`. At runtime, `--imag
 
 3. Add `include_str!` in `src/layer/mod.rs` for the new layer.
 
-4. Add alias in `src/cli/commands/run.rs` `image_alias_to_layer()`:
+4. Add alias in `src/cli/commands/run/image.rs` `image_alias_to_layer()`:
    ```rust
    "{language}" | "{alias}" => Some("{language}"),
    ```
