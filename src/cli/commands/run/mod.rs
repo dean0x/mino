@@ -416,9 +416,9 @@ fn generate_session_name() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use self::image::*;
     use self::prompts::{is_default_network, upsert_container_toml_key};
+    use super::*;
 
     fn test_run_args() -> RunArgs {
         RunArgs {
