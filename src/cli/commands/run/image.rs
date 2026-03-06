@@ -76,18 +76,14 @@ pub(super) fn image_alias_to_layer(image: &str) -> Option<&str> {
 ///
 /// Full image paths (containing `/` or `:`) are passed through unchanged.
 pub(super) fn resolve_image_alias(image: &str) -> String {
-    // If the image contains '/' or ':', it's already a full path
     if image.contains('/') || image.contains(':') {
         return image.to_string();
     }
 
-    let image_name = match image {
-        "base" => "mino-base",
-        // Not a known alias, pass through (user might have a local image)
-        other => return other.to_string(),
-    };
-
-    format!("{}/{}:latest", IMAGE_REGISTRY, image_name)
+    match image {
+        "base" => format!("{}/mino-base:latest", IMAGE_REGISTRY),
+        other => other.to_string(),
+    }
 }
 
 /// Check if no explicit image was provided and config uses the default image.
@@ -106,10 +102,9 @@ pub(super) async fn resolve_image(
     runtime: &dyn ContainerRuntime,
     project_dir: &Path,
 ) -> MinoResult<(ImageResolution, bool)> {
-    let layer_names = resolve_layer_names(args, config);
-
-    // Check image alias redirect (e.g., --image typescript → layer composition)
-    let layer_names = layer_names.or_else(|| {
+    // Resolve layers from CLI/config, then check image alias redirect
+    // (e.g., --image typescript -> layer composition)
+    let layer_names = resolve_layer_names(args, config).or_else(|| {
         let raw = args
             .image
             .clone()
@@ -117,7 +112,6 @@ pub(super) async fn resolve_image(
         image_alias_to_layer(&raw).map(|name| vec![name.to_string()])
     });
 
-    // Interactive layer selection when no layers/image configured
     let layer_names =
         if layer_names.is_none() && ctx.is_interactive() && is_default_image(args, config) {
             spinner.clear();
@@ -135,7 +129,6 @@ pub(super) async fn resolve_image(
     let using_layers = layer_names.is_some();
 
     let resolution = if let Some(names) = layer_names {
-        // Phase 1: Resolve each layer with per-layer feedback
         let mut resolved = Vec::new();
         for name in &names {
             spinner.message(&format!("Resolving layer: {}...", name));
@@ -143,7 +136,6 @@ pub(super) async fn resolve_image(
             resolved.append(&mut layers);
         }
 
-        // Phase 2: Compose image (with streaming progress bar)
         spinner.clear();
 
         let label = names.join(", ");
@@ -158,18 +150,14 @@ pub(super) async fn resolve_image(
         progress.finish();
         let result = result?;
 
-        if result.was_cached {
-            debug!("Using cached composed image: {}", result.image_tag);
-        } else {
-            debug!("Built new composed image: {}", result.image_tag);
-        }
+        let action = if result.was_cached { "cached" } else { "built" };
+        debug!("Using {} composed image: {}", action, result.image_tag);
 
         ImageResolution {
             image: result.image_tag,
             layer_env: result.env,
         }
     } else {
-        // Single image path (no layers)
         let raw = args
             .image
             .clone()

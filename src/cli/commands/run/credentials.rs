@@ -29,7 +29,6 @@ pub(super) async fn gather_credentials(
         )
     };
 
-    // AWS credentials
     if use_aws {
         debug!("Fetching AWS credentials...");
         match AwsCredentials::get_session_token(&config.credentials.aws, &cache).await {
@@ -52,7 +51,6 @@ pub(super) async fn gather_credentials(
         }
     }
 
-    // GCP credentials
     if use_gcp {
         debug!("Fetching GCP credentials...");
         match GcpCredentials::get_access_token(&config.credentials.gcp, &cache).await {
@@ -70,7 +68,6 @@ pub(super) async fn gather_credentials(
         }
     }
 
-    // Azure credentials
     if use_azure {
         debug!("Fetching Azure credentials...");
         match AzureCredentials::get_access_token(&config.credentials.azure, &cache).await {
@@ -85,7 +82,6 @@ pub(super) async fn gather_credentials(
         }
     }
 
-    // GitHub token
     if !args.no_github {
         debug!("Fetching GitHub token...");
         match GithubCredentials::get_token(&config.credentials.github).await {
@@ -101,7 +97,6 @@ pub(super) async fn gather_credentials(
         }
     }
 
-    // Add user-specified env vars
     for (key, value) in &args.env {
         env_vars.insert(key.clone(), value.clone());
     }

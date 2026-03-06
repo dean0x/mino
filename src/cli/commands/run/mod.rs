@@ -31,17 +31,9 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Tracks cache volumes created during this session (for finalization)
+#[derive(Default)]
 struct CacheSession {
-    /// Volumes that need to be finalized on clean exit
     volumes_to_finalize: Vec<String>,
-}
-
-impl CacheSession {
-    fn new() -> Self {
-        Self {
-            volumes_to_finalize: Vec::new(),
-        }
-    }
 }
 
 /// Result of resolving the image to use
@@ -59,27 +51,21 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     spinner.start("Initializing sandbox...");
 
-    // Create platform-appropriate runtime (Arc for sharing with background tasks)
     let runtime: Arc<dyn ContainerRuntime> = Arc::from(create_runtime(config)?);
     debug!("Using runtime: {}", runtime.runtime_name());
 
-    // Validate environment (platform-specific checks)
     spinner.message(&format!("Checking {}...", runtime.runtime_name()));
     validate_environment().await?;
 
-    // Determine project directory
     let project_dir = resolve_project_dir(&args, config)?;
     debug!("Project directory: {}", project_dir.display());
 
-    // Ensure runtime is ready
     spinner.message(&format!("Starting {}...", runtime.runtime_name()));
     runtime.ensure_ready().await?;
 
-    // Resolve image or compose from layers
     let (resolution, using_layers) =
         resolve_image(&args, config, &ctx, &mut spinner, &*runtime, &project_dir).await?;
 
-    // Interactive network selection when no network mode configured
     let network_mode = if is_default_network(&args, config) && ctx.is_interactive() {
         spinner.clear();
         let mode = prompt_network_selection(&ctx, &project_dir).await?;
@@ -97,17 +83,14 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     };
     debug!("Network mode: {:?}", network_mode);
 
-    // Setup caching (if enabled)
     spinner.message("Setting up caches...");
     let (cache_mounts, cache_env, cache_session) =
         setup_caches(&*runtime, &args, config, &project_dir).await?;
 
-    // Check cache size and warn if approaching limit
     if !args.no_cache && config.cache.enabled {
         check_cache_size_warning(&*runtime, config).await;
     }
 
-    // Collect credentials
     spinner.message("Gathering credentials...");
     let (credentials, active_providers, cred_failures) = gather_credentials(&args, config).await?;
     if !cred_failures.is_empty() {
@@ -128,7 +111,6 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         spinner.start("Initializing sandbox...");
     }
 
-    // Create session manager and run cleanup
     let session_name = args.name.clone().unwrap_or_else(generate_session_name);
     let manager = SessionManager::new().await?;
 
@@ -139,10 +121,8 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         }
     }
 
-    // Initialize audit log
     let audit = AuditLog::new(config);
 
-    // Build container config (with cache mounts and env)
     let container_config = build_container_config(&ContainerBuildParams {
         args: &args,
         config,
@@ -154,9 +134,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         network_mode: &network_mode,
     })?;
 
-    // Determine command to run
-    // When using layers (composed on mino-base), default to /bin/zsh
-    // which has Oh My Zsh, plugins, and aliases configured.
+    // Layers compose on mino-base which has Oh My Zsh configured
     let command = if args.command.is_empty() {
         if using_layers {
             vec!["/bin/zsh".to_string()]
@@ -167,14 +145,12 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         args.command.clone()
     };
 
-    // Wrap command with iptables if using network allowlist
     let command = if let NetworkMode::Allow(ref rules) = network_mode {
         generate_iptables_wrapper(rules, &command)
     } else {
         command
     };
 
-    // Create session record
     let session = Session::new(
         session_name.clone(),
         project_dir.clone(),
@@ -208,7 +184,6 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
             .await;
     }
 
-    // Check if image needs pulling and update spinner accordingly
     if !runtime
         .image_exists(&container_config.image)
         .await
@@ -238,7 +213,6 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     Ok(())
 }
 
-/// Shared context for run_detached and run_interactive.
 struct RunContext<'a> {
     runtime: &'a Arc<dyn ContainerRuntime>,
     container_config: &'a ContainerConfig,
@@ -249,45 +223,53 @@ struct RunContext<'a> {
     spinner: &'a mut TaskSpinner,
 }
 
+impl RunContext<'_> {
+    /// Record a container creation failure in session state and audit log, then return the error.
+    async fn record_failure<T>(&self, error: MinoError) -> MinoResult<T> {
+        self.manager
+            .update_status(self.session_name, SessionStatus::Failed)
+            .await?;
+        self.audit
+            .log(
+                "session.failed",
+                &serde_json::json!({
+                    "name": self.session_name,
+                    "error": error.to_string(),
+                }),
+            )
+            .await;
+        Err(error)
+    }
+
+    /// Record a successful container start in session state and audit log.
+    async fn record_start(&self, container_id: &str) -> MinoResult<()> {
+        self.manager
+            .set_container_id(self.session_name, container_id)
+            .await?;
+        self.manager
+            .update_status(self.session_name, SessionStatus::Running)
+            .await?;
+        self.audit
+            .log(
+                "session.started",
+                &serde_json::json!({
+                    "name": self.session_name,
+                    "container_id": container_id,
+                }),
+            )
+            .await;
+        Ok(())
+    }
+}
+
 /// Run container in detached mode with background cache finalization.
 async fn run_detached(ctx: &mut RunContext<'_>, cache_session: CacheSession) -> MinoResult<()> {
-    // Detached mode: --rm auto-removes the container when its process exits,
-    // preventing credential persistence in `podman inspect`.
     let container_id = match ctx.runtime.run(ctx.container_config, ctx.command).await {
         Ok(id) => id,
-        Err(e) => {
-            ctx.manager
-                .update_status(ctx.session_name, SessionStatus::Failed)
-                .await?;
-            ctx.audit
-                .log(
-                    "session.failed",
-                    &serde_json::json!({
-                        "name": ctx.session_name,
-                        "error": e.to_string(),
-                    }),
-                )
-                .await;
-            return Err(e);
-        }
+        Err(e) => return ctx.record_failure(e).await,
     };
 
-    ctx.manager
-        .set_container_id(ctx.session_name, &container_id)
-        .await?;
-    ctx.manager
-        .update_status(ctx.session_name, SessionStatus::Running)
-        .await?;
-
-    ctx.audit
-        .log(
-            "session.started",
-            &serde_json::json!({
-                "name": ctx.session_name,
-                "container_id": &container_id,
-            }),
-        )
-        .await;
+    ctx.record_start(&container_id).await?;
 
     ctx.spinner.clear();
 
@@ -342,42 +324,12 @@ async fn run_detached(ctx: &mut RunContext<'_>, cache_session: CacheSession) -> 
 
 /// Run container in interactive mode with synchronous cache finalization.
 async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) -> MinoResult<()> {
-    // Interactive mode: create + start_attached (no race condition)
     let container_id = match ctx.runtime.create(ctx.container_config, ctx.command).await {
         Ok(id) => id,
-        Err(e) => {
-            ctx.manager
-                .update_status(ctx.session_name, SessionStatus::Failed)
-                .await?;
-            ctx.audit
-                .log(
-                    "session.failed",
-                    &serde_json::json!({
-                        "name": ctx.session_name,
-                        "error": e.to_string(),
-                    }),
-                )
-                .await;
-            return Err(e);
-        }
+        Err(e) => return ctx.record_failure(e).await,
     };
 
-    ctx.manager
-        .set_container_id(ctx.session_name, &container_id)
-        .await?;
-    ctx.manager
-        .update_status(ctx.session_name, SessionStatus::Running)
-        .await?;
-
-    ctx.audit
-        .log(
-            "session.started",
-            &serde_json::json!({
-                "name": ctx.session_name,
-                "container_id": &container_id,
-            }),
-        )
-        .await;
+    ctx.record_start(&container_id).await?;
 
     ctx.spinner.clear();
 
@@ -428,7 +380,6 @@ async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) 
 async fn validate_environment() -> MinoResult<()> {
     match Platform::detect() {
         Platform::MacOS => {
-            // On macOS, check OrbStack
             use crate::orchestration::OrbStack;
             if !OrbStack::is_installed().await {
                 return Err(MinoError::OrbStackNotFound);
@@ -437,9 +388,7 @@ async fn validate_environment() -> MinoResult<()> {
                 return Err(MinoError::OrbStackNotRunning);
             }
         }
-        Platform::Linux => {
-            // On Linux, basic checks are done in ensure_ready()
-        }
+        Platform::Linux => {} // Checked in ensure_ready()
         Platform::Unsupported => {
             return Err(MinoError::UnsupportedPlatform(
                 std::env::consts::OS.to_string(),

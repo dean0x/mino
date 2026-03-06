@@ -28,36 +28,22 @@ pub(super) struct ContainerBuildParams<'a> {
 pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResult<ContainerConfig> {
     let image = params.resolution.image.clone();
 
-    let mut volumes = vec![
-        // Mount project directory
-        format!(
-            "{}:{}",
-            params.project_dir.display(),
-            params.config.container.workdir
-        ),
-    ];
+    let mut volumes = vec![format!(
+        "{}:{}",
+        params.project_dir.display(),
+        params.config.container.workdir
+    )];
 
-    // Add cache volume mounts
-    for mount in params.cache_mounts {
-        volumes.push(mount.volume_arg());
-    }
+    volumes.extend(params.cache_mounts.iter().map(|m| m.volume_arg()));
 
-    // Add SSH agent socket if available and requested
     if !params.args.no_ssh_agent {
         if let Ok(sock) = env::var("SSH_AUTH_SOCK") {
             volumes.push(format!("{}:/ssh-agent", sock));
         }
     }
 
-    // Add user-specified volumes
-    for vol in &params.args.volume {
-        volumes.push(vol.clone());
-    }
-
-    // Add config volumes
-    for vol in &params.config.container.volumes {
-        volumes.push(vol.clone());
-    }
+    volumes.extend(params.args.volume.iter().cloned());
+    volumes.extend(params.config.container.volumes.iter().cloned());
 
     // Env precedence: config < layer < cache < credential < CLI -e
     let mut final_env = params.config.container.env.clone();
@@ -65,7 +51,6 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
     final_env.extend(params.cache_env.clone());
     final_env.extend(params.env_vars.clone());
 
-    // Set SSH_AUTH_SOCK inside container
     if !params.args.no_ssh_agent && env::var("SSH_AUTH_SOCK").is_ok() {
         final_env.insert("SSH_AUTH_SOCK".to_string(), "/ssh-agent".to_string());
     }

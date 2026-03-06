@@ -22,17 +22,15 @@ pub(super) async fn setup_caches(
     config: &Config,
     project_dir: &Path,
 ) -> MinoResult<(Vec<CacheMount>, HashMap<String, String>, CacheSession)> {
-    let mut cache_session = CacheSession::new();
+    let mut cache_session = CacheSession::default();
     let mut cache_mounts = Vec::new();
     let mut cache_env = HashMap::new();
 
-    // Check if caching is disabled
     if args.no_cache || !config.cache.enabled {
         debug!("Caching disabled");
         return Ok((cache_mounts, cache_env, cache_session));
     }
 
-    // Detect lockfiles in project
     let lockfiles = detect_lockfiles(project_dir)?;
     if lockfiles.is_empty() {
         debug!("No lockfiles detected, skipping cache setup");
@@ -41,12 +39,10 @@ pub(super) async fn setup_caches(
 
     debug!("Detected {} lockfile(s)", lockfiles.len());
 
-    // Process each lockfile
     for info in &lockfiles {
         let (mount, should_finalize) =
             setup_cache_for_lockfile(runtime, info, args.cache_fresh).await?;
 
-        // Add environment variables for this ecosystem
         for (key, value) in info.ecosystem.cache_env_vars() {
             cache_env.insert(key.to_string(), value.to_string());
         }
@@ -60,7 +56,6 @@ pub(super) async fn setup_caches(
         cache_mounts.push(mount);
     }
 
-    // Add XDG_CACHE_HOME for general caching
     cache_env.insert("XDG_CACHE_HOME".to_string(), "/cache/xdg".to_string());
 
     Ok((cache_mounts, cache_env, cache_session))
@@ -74,12 +69,10 @@ async fn setup_cache_for_lockfile(
 ) -> MinoResult<(CacheMount, bool)> {
     let volume_name = info.volume_name();
 
-    // Handle --cache-fresh: delete existing sidecar before proceeding
     if force_fresh {
         CacheSidecar::delete(&volume_name).await.ok();
     }
 
-    // Check existing volume state
     let existing = if force_fresh {
         None
     } else {
@@ -132,7 +125,6 @@ async fn setup_cache_for_lockfile(
             }
         }
         None => {
-            // Cache miss - create new volume (idempotent with --ignore)
             debug!(
                 "Cache miss for {} ({}), creating volume",
                 info.ecosystem,
@@ -142,7 +134,6 @@ async fn setup_cache_for_lockfile(
             let cache = CacheVolume::from_lockfile(info, CacheState::Building);
             runtime.volume_create(&volume_name, &cache.labels()).await?;
 
-            // Create sidecar for the new volume
             let mut sidecar = CacheSidecar::new(
                 volume_name.clone(),
                 info.ecosystem,

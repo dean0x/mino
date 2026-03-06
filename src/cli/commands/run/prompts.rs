@@ -80,7 +80,6 @@ pub(super) async fn prompt_network_selection(
         NetworkChoice::None => (NetworkMode::None, None),
     };
 
-    // Offer to save
     prompt_save_network(ctx, &choice, preset_name, project_dir).await?;
 
     Ok(mode)
@@ -105,14 +104,10 @@ async fn prompt_save_network(
 
     let target = ui::select(ctx, "Save this network setting?", &options).await?;
 
-    if target == SaveTarget::None {
-        return Ok(());
-    }
-
     let path = match target {
         SaveTarget::Local => project_dir.join(".mino.toml"),
         SaveTarget::Global => ConfigManager::default_config_path(),
-        SaveTarget::None => unreachable!(),
+        SaveTarget::None => return Ok(()),
     };
 
     let (key, toml_value): (&str, toml_edit::Value) = if let Some(preset) = preset_name {
@@ -141,14 +136,12 @@ pub(super) async fn upsert_container_toml_key(
     key: &str,
     value: toml_edit::Value,
 ) -> MinoResult<()> {
-    // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| {
             MinoError::io(format!("creating config directory {}", parent.display()), e)
         })?;
     }
 
-    // Attempt to read existing file; NotFound means create new
     let existing = match tokio::fs::read_to_string(path).await {
         Ok(content) => Some(content),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -166,7 +159,6 @@ pub(super) async fn upsert_container_toml_key(
         toml_edit::DocumentMut::new()
     };
 
-    // Navigate to or create [container] table
     if !doc.contains_key("container") {
         doc.insert("container", toml_edit::Item::Table(toml_edit::Table::new()));
     }
@@ -220,7 +212,6 @@ pub(super) async fn prompt_layer_selection(
         return Ok(None);
     }
 
-    // Ask where to save
     prompt_save_config(ctx, &selected, project_dir, config).await?;
 
     Ok(Some(selected))
