@@ -1,6 +1,7 @@
 //! CLI argument definitions using clap derive
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 /// Mino - Secure AI Agent Sandbox
@@ -62,6 +63,9 @@ pub enum Commands {
 
     /// Manage dependency caches
     Cache(CacheArgs),
+
+    /// Generate shell completions
+    Completions(CompletionsArgs),
 }
 
 /// Arguments for the setup command
@@ -319,6 +323,13 @@ pub enum CacheAction {
     },
 }
 
+/// Arguments for the completions command
+#[derive(Parser, Debug)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for
+    pub shell: Shell,
+}
+
 /// Parse environment variable in KEY=VALUE format
 fn parse_env_var(s: &str) -> Result<(String, String), String> {
     let pos = s
@@ -525,6 +536,33 @@ mod tests {
                 assert!(!args.strict_credentials);
             }
             _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_completions_bash() {
+        let cli = Cli::parse_from(["mino", "completions", "bash"]);
+        match cli.command {
+            Commands::Completions(args) => assert_eq!(args.shell, Shell::Bash),
+            _ => panic!("expected Completions command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_completions_zsh() {
+        let cli = Cli::parse_from(["mino", "completions", "zsh"]);
+        match cli.command {
+            Commands::Completions(args) => assert_eq!(args.shell, Shell::Zsh),
+            _ => panic!("expected Completions command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_completions_fish() {
+        let cli = Cli::parse_from(["mino", "completions", "fish"]);
+        match cli.command {
+            Commands::Completions(args) => assert_eq!(args.shell, Shell::Fish),
+            _ => panic!("expected Completions command"),
         }
     }
 }

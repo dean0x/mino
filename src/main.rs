@@ -41,9 +41,12 @@ async fn run() -> MinoResult<()> {
         .without_time()
         .init();
 
-    // Init command doesn't need config loading
+    // Commands that don't need config loading
     if let Commands::Init(args) = cli.command {
         return mino::cli::commands::init(args).await;
+    }
+    if let Commands::Completions(args) = cli.command {
+        return mino::cli::commands::completions(args).await;
     }
 
     // Load configuration
@@ -94,5 +97,6 @@ async fn run() -> MinoResult<()> {
         Commands::Setup(args) => mino::cli::commands::setup(args, &config).await,
         Commands::Config(args) => mino::cli::commands::config(args, &config).await,
         Commands::Cache(args) => mino::cli::commands::cache(args, &config).await,
+        Commands::Completions(_) => unreachable!("Completions handled above"),
     }
 }

@@ -1,6 +1,7 @@
 //! CLI command implementations
 
 pub mod cache;
+pub mod completions;
 pub mod config;
 pub mod init;
 pub mod list;
@@ -11,6 +12,7 @@ pub mod status;
 pub mod stop;
 
 pub use cache::execute as cache;
+pub use completions::execute as completions;
 pub use config::execute as config;
 pub use init::execute as init;
 pub use list::execute as list;

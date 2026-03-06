@@ -247,6 +247,31 @@ mino config [SUBCOMMAND]
 | `init [--force]` | Initialize default configuration |
 | `set <KEY> <VALUE>` | Set a configuration value (e.g., `vm.name myvm`) |
 
+#### `mino completions`
+
+Generate shell completion scripts.
+
+```bash
+mino completions <SHELL>
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
+
+**Installation:**
+
+```bash
+# Bash — write to completions directory
+mino completions bash > ~/.local/share/bash-completion/completions/mino
+
+# Zsh — write to fpath directory
+mino completions zsh > ${fpath[1]}/_mino
+
+# Fish — write to completions directory
+mino completions fish > ~/.config/fish/completions/mino.fish
+```
+
+Alternatively, add `eval "$(mino completions bash)"` or `eval "$(mino completions zsh)"` to your shell's rc file.
+
 ## Configuration
 
 Configuration is stored at `~/.config/mino/config.toml`:
