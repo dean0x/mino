@@ -18,13 +18,17 @@ mod tests {
     use super::*;
     use clap_complete::Shell;
 
-    #[test]
-    fn generates_bash_completions() {
+    fn generate_completions(shell: Shell) -> String {
         let mut cmd = Cli::command();
         let name = cmd.get_name().to_owned();
         let mut buf = Vec::new();
-        generate(Shell::Bash, &mut cmd, &name, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        generate(shell, &mut cmd, &name, &mut buf);
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn generates_bash_completions() {
+        let output = generate_completions(Shell::Bash);
         assert!(output.contains("mino"));
         assert!(output.contains("run"));
         assert!(output.contains("completions"));
@@ -32,22 +36,14 @@ mod tests {
 
     #[test]
     fn generates_zsh_completions() {
-        let mut cmd = Cli::command();
-        let name = cmd.get_name().to_owned();
-        let mut buf = Vec::new();
-        generate(Shell::Zsh, &mut cmd, &name, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let output = generate_completions(Shell::Zsh);
         assert!(output.contains("mino"));
         assert!(output.contains("run"));
     }
 
     #[test]
     fn generates_fish_completions() {
-        let mut cmd = Cli::command();
-        let name = cmd.get_name().to_owned();
-        let mut buf = Vec::new();
-        generate(Shell::Fish, &mut cmd, &name, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let output = generate_completions(Shell::Fish);
         assert!(output.contains("mino"));
         assert!(output.contains("run"));
     }

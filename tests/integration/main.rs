@@ -93,4 +93,31 @@ mod cli_tests {
             .success()
             .stdout(predicate::str::contains("Interactive setup wizard"));
     }
+
+    #[test]
+    fn completions_bash() {
+        mino()
+            .args(["completions", "bash"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("mino"));
+    }
+
+    #[test]
+    fn completions_zsh() {
+        mino()
+            .args(["completions", "zsh"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("mino"));
+    }
+
+    #[test]
+    fn completions_invalid_shell() {
+        mino()
+            .args(["completions", "invalid"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("invalid value"));
+    }
 }
