@@ -120,19 +120,6 @@ pub(crate) fn redact_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
     out
 }
 
-/// Information about a running container
-#[derive(Debug, Clone)]
-pub struct ContainerInfo {
-    /// Container ID
-    pub id: String,
-    /// Container name
-    pub name: String,
-    /// Container status (e.g., "Up 2 hours")
-    pub status: String,
-    /// Container image
-    pub image: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

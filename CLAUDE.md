@@ -95,7 +95,7 @@ cargo clippy            # Lints
 
 ### Adding a CLI flag
 1. Add to `RunArgs` in `src/cli/args.rs`
-2. Handle in `src/cli/commands/run.rs`
+2. Handle in `src/cli/commands/run/mod.rs` (or relevant submodule)
 
 ### Adding a config option
 1. Add field to struct in `src/config/schema.rs`
@@ -117,7 +117,7 @@ Only `mino-base` is a pre-built GHCR image. Language toolchains use the layer co
 
 3. Add `include_str!` in `src/layer/resolve.rs` for the new layer files
 
-4. Add alias in `src/cli/commands/run.rs` `image_alias_to_layer()`:
+4. Add alias in `src/cli/commands/run/image.rs` `image_alias_to_layer()`:
    ```rust
    "{language}" | "{alias}" => Some("{language}"),
    ```
