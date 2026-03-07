@@ -27,6 +27,8 @@ pub enum Ecosystem {
     Pip,
     /// Poetry/Python (poetry.lock)
     Poetry,
+    /// uv/Python (uv.lock)
+    Uv,
     /// Go modules (go.sum)
     Go,
 }
@@ -38,6 +40,7 @@ impl Ecosystem {
             Self::Npm | Self::Yarn | Self::Pnpm => "npm",
             Self::Cargo => "cargo",
             Self::Pip | Self::Poetry => "pip",
+            Self::Uv => "uv",
             Self::Go => "go",
         }
     }
@@ -63,6 +66,7 @@ impl Ecosystem {
                 ("POETRY_CACHE_DIR", "/cache/poetry"),
                 ("PIP_CACHE_DIR", "/cache/pip"),
             ],
+            Self::Uv => vec![("UV_CACHE_DIR", "/cache/uv")],
             Self::Go => vec![
                 ("GOMODCACHE", "/cache/go/mod"),
                 ("GOCACHE", "/cache/go/build"),
@@ -79,6 +83,7 @@ impl Ecosystem {
             Self::Cargo => &["Cargo.lock"],
             Self::Pip => &["requirements.txt", "Pipfile.lock"],
             Self::Poetry => &["poetry.lock"],
+            Self::Uv => &["uv.lock"],
             Self::Go => &["go.sum"],
         }
     }
@@ -92,6 +97,7 @@ impl Ecosystem {
             Self::Cargo,
             Self::Pip,
             Self::Poetry,
+            Self::Uv,
             Self::Go,
         ]
     }
@@ -106,6 +112,7 @@ impl fmt::Display for Ecosystem {
             Self::Cargo => "cargo",
             Self::Pip => "pip",
             Self::Poetry => "poetry",
+            Self::Uv => "uv",
             Self::Go => "go",
         };
         write!(f, "{}", name)
@@ -186,6 +193,7 @@ mod tests {
     fn ecosystem_display() {
         assert_eq!(Ecosystem::Npm.to_string(), "npm");
         assert_eq!(Ecosystem::Cargo.to_string(), "cargo");
+        assert_eq!(Ecosystem::Uv.to_string(), "uv");
     }
 
     #[test]
@@ -193,6 +201,7 @@ mod tests {
         assert_eq!(Ecosystem::Npm.cache_dir(), "npm");
         assert_eq!(Ecosystem::Yarn.cache_dir(), "npm");
         assert_eq!(Ecosystem::Cargo.cache_dir(), "cargo");
+        assert_eq!(Ecosystem::Uv.cache_dir(), "uv");
     }
 
     #[test]
@@ -268,5 +277,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let lockfiles = detect_lockfiles(dir.path()).unwrap();
         assert!(lockfiles.is_empty());
+    }
+
+    #[test]
+    fn detect_uv_lockfile() {
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("uv.lock");
+        fs::write(&lockfile, "version = 1\n[[package]]\nname = \"test\"").unwrap();
+
+        let lockfiles = detect_lockfiles(dir.path()).unwrap();
+
+        assert_eq!(lockfiles.len(), 1);
+        assert_eq!(lockfiles[0].ecosystem, Ecosystem::Uv);
+        assert_eq!(lockfiles[0].path, lockfile);
+    }
+
+    #[test]
+    fn uv_cache_env_vars() {
+        let env_vars = Ecosystem::Uv.cache_env_vars();
+        assert_eq!(env_vars, vec![("UV_CACHE_DIR", "/cache/uv")]);
     }
 }

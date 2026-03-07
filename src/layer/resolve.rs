@@ -14,6 +14,8 @@ const BUILTIN_RUST_MANIFEST: &str = include_str!("../../images/rust/layer.toml")
 const BUILTIN_RUST_INSTALL: &str = include_str!("../../images/rust/install.sh");
 const BUILTIN_TS_MANIFEST: &str = include_str!("../../images/typescript/layer.toml");
 const BUILTIN_TS_INSTALL: &str = include_str!("../../images/typescript/install.sh");
+const BUILTIN_PYTHON_MANIFEST: &str = include_str!("../../images/python/layer.toml");
+const BUILTIN_PYTHON_INSTALL: &str = include_str!("../../images/python/install.sh");
 
 /// A fully resolved layer ready for composition
 #[derive(Debug)]
@@ -187,6 +189,7 @@ fn resolve_builtin(name: &str) -> MinoResult<Option<ResolvedLayer>> {
     let (manifest_str, install_str) = match name {
         "rust" | "cargo" => (BUILTIN_RUST_MANIFEST, BUILTIN_RUST_INSTALL),
         "typescript" | "ts" | "node" => (BUILTIN_TS_MANIFEST, BUILTIN_TS_INSTALL),
+        "python" | "py" => (BUILTIN_PYTHON_MANIFEST, BUILTIN_PYTHON_INSTALL),
         _ => return Ok(None),
     };
 
@@ -226,6 +229,7 @@ pub async fn list_available_layers(project_dir: &Path) -> MinoResult<Vec<Availab
     for (name, manifest_str) in &[
         ("typescript", BUILTIN_TS_MANIFEST),
         ("rust", BUILTIN_RUST_MANIFEST),
+        ("python", BUILTIN_PYTHON_MANIFEST),
     ] {
         if seen.contains(*name) {
             continue;
@@ -308,7 +312,7 @@ mod tests {
 
     #[test]
     fn resolve_builtin_unknown() {
-        assert!(resolve_builtin("python").unwrap().is_none());
+        assert!(resolve_builtin("java").unwrap().is_none());
     }
 
     #[tokio::test]
@@ -445,6 +449,7 @@ version = "99"
         let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
         assert!(names.contains(&"typescript"));
         assert!(names.contains(&"rust"));
+        assert!(names.contains(&"python"));
         assert!(layers.iter().all(|l| l.source == LayerSource::BuiltIn));
     }
 
@@ -463,6 +468,28 @@ version = "99"
         let layers = list_available_layers(temp.path()).await.unwrap();
         let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
         assert!(names.contains(&"python"));
+    }
+
+    #[test]
+    fn resolve_builtin_python() {
+        let layer = resolve_builtin("python").unwrap().unwrap();
+        assert_eq!(layer.manifest.layer.name, "python");
+        assert!(matches!(layer.source, LayerSource::BuiltIn));
+        assert!(matches!(layer.install_script, LayerScript::Embedded(_)));
+    }
+
+    #[test]
+    fn resolve_builtin_python_alias() {
+        let layer = resolve_builtin("py").unwrap().unwrap();
+        assert_eq!(layer.manifest.layer.name, "python");
+    }
+
+    #[tokio::test]
+    async fn embedded_python_script_content() {
+        let layer = resolve_builtin("python").unwrap().unwrap();
+        let content = layer.install_script.content().await.unwrap();
+        assert!(content.contains("uv"));
+        assert!(content.contains("ruff"));
     }
 
     #[tokio::test]
