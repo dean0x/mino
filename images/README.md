@@ -131,6 +131,8 @@ Installed via `images/python/install.sh`, configured via `images/python/layer.to
 ```
 UV_CACHE_DIR=/cache/uv
 UV_PYTHON_INSTALL_DIR=/cache/uv/python
+UV_TOOL_DIR=/opt/uv-tools
+UV_TOOL_BIN_DIR=/opt/uv-tools/bin
 ```
 
 ## Layer System
