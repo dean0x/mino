@@ -459,6 +459,12 @@ mod tests {
     }
 
     #[test]
+    fn image_alias_to_layer_python() {
+        assert_eq!(image_alias_to_layer("python"), Some("python"));
+        assert_eq!(image_alias_to_layer("py"), Some("python"));
+    }
+
+    #[test]
     fn image_alias_to_layer_unknown() {
         assert_eq!(image_alias_to_layer("base"), None);
         assert_eq!(image_alias_to_layer("fedora"), None);

@@ -94,6 +94,7 @@ mino run --image ubuntu:22.04 -- bash
 # Use mino development images (with Claude Code pre-installed)
 mino run --image typescript -- claude    # TypeScript/Node.js
 mino run --image rust -- claude          # Rust
+mino run --image python -- claude        # Python
 mino run --image base -- claude          # Base tools only
 ```
 
@@ -123,7 +124,7 @@ mino run [OPTIONS] [-- COMMAND...]
 |--------|-------------|
 | `-n, --name <NAME>` | Session name (auto-generated if omitted) |
 | `-p, --project <PATH>` | Project directory to mount (default: current dir) |
-| `--image <IMAGE>` | Container image (default: fedora:43). Aliases: `typescript`/`ts`/`node`, `rust`/`cargo`, `base` |
+| `--image <IMAGE>` | Container image (default: fedora:43). Aliases: `typescript`/`ts`/`node`, `rust`/`cargo`, `python`/`py`, `base` |
 | `--aws` | Include AWS credentials |
 | `--gcp` | Include GCP credentials |
 | `--azure` | Include Azure credentials |
@@ -370,6 +371,7 @@ Mino automatically caches package manager dependencies using content-addressed v
    - `Cargo.lock` -> cargo
    - `requirements.txt` / `Pipfile.lock` -> pip
    - `poetry.lock` -> poetry
+   - `uv.lock` -> uv
    - `go.sum` -> go
 
 2. **Cache Key**: `sha256(lockfile_contents)[:12]` - same lockfile = same cache
@@ -386,6 +388,7 @@ Mino automatically caches package manager dependencies using content-addressed v
    npm_config_cache=/cache/npm
    CARGO_HOME=/cache/cargo
    PIP_CACHE_DIR=/cache/pip
+   UV_CACHE_DIR=/cache/uv
    XDG_CACHE_HOME=/cache/xdg
    ```
 
@@ -490,6 +493,7 @@ Mino uses a base image (`mino-base`) with a layer composition system for languag
 |-------|----------|----------|
 | `typescript`, `ts`, `node` | Layer composition from `mino-base` | Node.js 22 LTS, pnpm, tsx, TypeScript, biome |
 | `rust`, `cargo` | Layer composition from `mino-base` | rustup, cargo, clippy, bacon, sccache |
+| `python`, `py` | Layer composition from `mino-base` | Python 3.13, uv, ruff, pytest |
 | `base` | Pulls `ghcr.io/dean0x/mino-base` | Claude Code, git, delta, ripgrep, zoxide |
 
 Language aliases trigger layer composition at runtime — the toolchain is installed on top of `mino-base` using `install.sh` scripts. Layers can be composed together with `--layers typescript,rust`.
@@ -520,20 +524,20 @@ Each layer needs two files: `layer.toml` (metadata) and `install.sh` (setup scri
 
 ```toml
 [layer]
-name = "python"
-description = "Python 3.12 + pip + uv"
+name = "go"
+description = "Go toolchain + tools"
 version = "1"
 
 [env]
-UV_CACHE_DIR = "/cache/uv"
-PIP_CACHE_DIR = "/cache/pip"
-VIRTUAL_ENV = "/opt/venv"
+GOPATH = "/cache/go"
+GOMODCACHE = "/cache/go/mod"
+GOCACHE = "/cache/go/build"
 
 [env.path_prepend]
-dirs = ["/opt/venv/bin"]
+dirs = ["/usr/local/go/bin", "/cache/go/bin"]
 
 [cache]
-paths = ["/cache/uv", "/cache/pip"]
+paths = ["/cache/go"]
 ```
 
 **`install.sh`** — runs as root on `mino-base`. Must be idempotent (safe to re-run):
@@ -542,38 +546,38 @@ paths = ["/cache/uv", "/cache/pip"]
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Idempotent: skip if already installed
-if ! command -v python3.12 &>/dev/null; then
-    dnf install -y python3.12 python3.12-pip
+# Install Go (idempotent)
+if ! command -v go &>/dev/null; then
+    curl -LsSf https://go.dev/dl/go1.24.1.linux-amd64.tar.gz | tar -C /usr/local -xzf -
 fi
 
-# Install uv
-if ! command -v uv &>/dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-fi
+# Install tools
+export GOPATH=/opt/go-tools
+export PATH="/usr/local/go/bin:${GOPATH}/bin:${PATH}"
+go install golang.org/x/tools/gopls@latest
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
-# Create shared virtualenv
-python3.12 -m venv /opt/venv
-chmod -R a+rX /opt/venv
-chown -R developer:developer /opt/venv
+# Fix permissions
+chown -R developer:developer /opt/go-tools
+chmod -R a+rX /opt/go-tools
 
 # Verify
-python3.12 --version
-uv --version
+go version
+gopls version
 ```
 
 ### Using Custom Layers
 
 ```bash
 # Use by name (resolved from layer locations)
-mino run --layers python
+mino run --layers go
 
 # Compose multiple layers
-mino run --layers python,rust
+mino run --layers go,rust
 
 # Set via environment for CI
-export MINO_LAYERS=python
-mino run -- pytest
+export MINO_LAYERS=go
+mino run -- go test ./...
 ```
 
 ### Overriding Built-in Layers

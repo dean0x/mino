@@ -183,6 +183,7 @@ impl CacheVolume {
             "cargo" => Some(Ecosystem::Cargo),
             "pip" => Some(Ecosystem::Pip),
             "poetry" => Some(Ecosystem::Poetry),
+            "uv" => Some(Ecosystem::Uv),
             "go" => Some(Ecosystem::Go),
             _ => None,
         }

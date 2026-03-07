@@ -27,6 +27,8 @@ pub enum Ecosystem {
     Pip,
     /// Poetry/Python (poetry.lock)
     Poetry,
+    /// uv/Python (uv.lock)
+    Uv,
     /// Go modules (go.sum)
     Go,
 }
@@ -38,6 +40,7 @@ impl Ecosystem {
             Self::Npm | Self::Yarn | Self::Pnpm => "npm",
             Self::Cargo => "cargo",
             Self::Pip | Self::Poetry => "pip",
+            Self::Uv => "uv",
             Self::Go => "go",
         }
     }
@@ -63,6 +66,7 @@ impl Ecosystem {
                 ("POETRY_CACHE_DIR", "/cache/poetry"),
                 ("PIP_CACHE_DIR", "/cache/pip"),
             ],
+            Self::Uv => vec![("UV_CACHE_DIR", "/cache/uv")],
             Self::Go => vec![
                 ("GOMODCACHE", "/cache/go/mod"),
                 ("GOCACHE", "/cache/go/build"),
@@ -79,6 +83,7 @@ impl Ecosystem {
             Self::Cargo => &["Cargo.lock"],
             Self::Pip => &["requirements.txt", "Pipfile.lock"],
             Self::Poetry => &["poetry.lock"],
+            Self::Uv => &["uv.lock"],
             Self::Go => &["go.sum"],
         }
     }
@@ -92,6 +97,7 @@ impl Ecosystem {
             Self::Cargo,
             Self::Pip,
             Self::Poetry,
+            Self::Uv,
             Self::Go,
         ]
     }
@@ -106,6 +112,7 @@ impl fmt::Display for Ecosystem {
             Self::Cargo => "cargo",
             Self::Pip => "pip",
             Self::Poetry => "poetry",
+            Self::Uv => "uv",
             Self::Go => "go",
         };
         write!(f, "{}", name)

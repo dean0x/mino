@@ -13,13 +13,14 @@ Mino uses a single pre-built base image (`mino-base`) combined with a layer comp
 └─────────────────────────────────────────────────────────┘
                           │
             Layer composition at runtime
-          ┌───────────────┴───────────────┐
-          ▼                               ▼
-┌─────────────────────┐       ┌─────────────────────┐
-│  typescript layer   │       │    rust layer        │
-│  pnpm, tsx, tsc     │       │  cargo, clippy       │
-│  biome, turbo, vite │       │  nextest, sccache    │
-└─────────────────────┘       └─────────────────────┘
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+│  typescript   │ │    rust       │ │    python     │
+│  pnpm, tsx    │ │  cargo,       │ │  uv, ruff,    │
+│  biome, turbo │ │  clippy,      │ │  pytest       │
+│               │ │  sccache      │ │               │
+└───────────────┘ └───────────────┘ └───────────────┘
 ```
 
 Language toolchains are **not** pre-built GHCR images. Instead, they are composed at runtime using `install.sh` scripts on top of `mino-base`. This enables multi-toolchain composition (`--layers typescript,rust`) and eliminates CI flakes from language image builds.
@@ -30,6 +31,7 @@ Language toolchains are **not** pre-built GHCR images. Instead, they are compose
 # Use aliases with mino (triggers layer composition)
 mino run --image typescript -- claude
 mino run --image rust -- claude
+mino run --image python -- claude
 
 # Compose multiple toolchains
 mino run --layers typescript,rust -- claude
@@ -44,6 +46,7 @@ mino run --image base -- claude
 |-------|----------|
 | `typescript`, `ts`, `node` | Layer composition (TypeScript toolchain on `mino-base`) |
 | `rust`, `cargo` | Layer composition (Rust toolchain on `mino-base`) |
+| `python`, `py` | Layer composition (Python toolchain on `mino-base`) |
 | `base` | Direct pull of `ghcr.io/dean0x/mino-base:latest` |
 
 ## Tool Inventory
@@ -112,6 +115,24 @@ RUSTC_WRAPPER=sccache
 SCCACHE_DIR=/cache/sccache
 ```
 
+### Python Layer
+
+Installed via `images/python/install.sh`, configured via `images/python/layer.toml`.
+
+| Tool | Version | Description |
+|------|---------|-------------|
+| python3 | 3.13 | System Python (Fedora 43) |
+| python3-devel | 3.13 | Development headers for C extensions |
+| uv | latest | Universal Python package/project manager (replaces pip, virtualenv, pyenv) |
+| ruff | latest | Extremely fast linter + formatter (replaces flake8, black, isort) |
+| pytest | latest | Universal test framework |
+
+**Cache environment:**
+```
+UV_CACHE_DIR=/cache/uv
+UV_PYTHON_INSTALL_DIR=/cache/uv/python
+```
+
 ## Layer System
 
 Each language layer consists of two files:
@@ -145,7 +166,7 @@ Both are compiled into the `mino` binary via `include_str!`. At runtime, `--imag
    {tool} --version
    ```
 
-3. Add `include_str!` in `src/layer/mod.rs` for the new layer.
+3. Add `include_str!` in `src/layer/resolve.rs` for the new layer.
 
 4. Add alias in `src/cli/commands/run/image.rs` `image_alias_to_layer()`:
    ```rust
@@ -203,4 +224,5 @@ See `.github/workflows/images.yml` for details.
 
 - **Node.js**: LTS versions only (currently 22, becomes maintenance Apr 2027)
 - **Rust**: Stable toolchain via rustup (auto-updates)
+- **Python**: System Python from Fedora (currently 3.13), uv manages additional versions
 - **Tools**: Latest stable, base image rebuilt weekly for security updates

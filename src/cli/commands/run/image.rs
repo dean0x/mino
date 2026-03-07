@@ -65,6 +65,7 @@ pub(super) fn image_alias_to_layer(image: &str) -> Option<&str> {
     match image {
         "typescript" | "ts" | "node" => Some("typescript"),
         "rust" | "cargo" => Some("rust"),
+        "python" | "py" => Some("python"),
         _ => None,
     }
 }
