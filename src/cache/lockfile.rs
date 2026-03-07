@@ -193,6 +193,7 @@ mod tests {
     fn ecosystem_display() {
         assert_eq!(Ecosystem::Npm.to_string(), "npm");
         assert_eq!(Ecosystem::Cargo.to_string(), "cargo");
+        assert_eq!(Ecosystem::Uv.to_string(), "uv");
     }
 
     #[test]
@@ -200,6 +201,7 @@ mod tests {
         assert_eq!(Ecosystem::Npm.cache_dir(), "npm");
         assert_eq!(Ecosystem::Yarn.cache_dir(), "npm");
         assert_eq!(Ecosystem::Cargo.cache_dir(), "cargo");
+        assert_eq!(Ecosystem::Uv.cache_dir(), "uv");
     }
 
     #[test]
@@ -275,5 +277,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let lockfiles = detect_lockfiles(dir.path()).unwrap();
         assert!(lockfiles.is_empty());
+    }
+
+    #[test]
+    fn detect_uv_lockfile() {
+        let dir = TempDir::new().unwrap();
+        let lockfile = dir.path().join("uv.lock");
+        fs::write(&lockfile, "version = 1\n[[package]]\nname = \"test\"").unwrap();
+
+        let lockfiles = detect_lockfiles(dir.path()).unwrap();
+
+        assert_eq!(lockfiles.len(), 1);
+        assert_eq!(lockfiles[0].ecosystem, Ecosystem::Uv);
+        assert_eq!(lockfiles[0].path, lockfile);
+    }
+
+    #[test]
+    fn uv_cache_env_vars() {
+        let env_vars = Ecosystem::Uv.cache_env_vars();
+        assert_eq!(env_vars, vec![("UV_CACHE_DIR", "/cache/uv")]);
     }
 }

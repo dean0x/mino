@@ -400,6 +400,25 @@ mod tests {
     }
 
     #[test]
+    fn cache_volume_from_labels_uv() {
+        let mut labels = HashMap::new();
+        labels.insert(labels::MINO_CACHE.to_string(), "true".to_string());
+        labels.insert(labels::ECOSYSTEM.to_string(), "uv".to_string());
+        labels.insert(labels::HASH.to_string(), "uvhash123456".to_string());
+        labels.insert(labels::STATE.to_string(), "building".to_string());
+        labels.insert(
+            labels::CREATED_AT.to_string(),
+            "2024-06-01T12:00:00Z".to_string(),
+        );
+
+        let vol = CacheVolume::from_labels("mino-cache-uv-uvhash123456", &labels).unwrap();
+
+        assert_eq!(vol.ecosystem, Ecosystem::Uv);
+        assert_eq!(vol.hash, "uvhash123456");
+        assert_eq!(vol.state, CacheState::Building);
+    }
+
+    #[test]
     fn plan_cache_mounts_complete() {
         let lockfiles = vec![LockfileInfo {
             ecosystem: Ecosystem::Npm,
