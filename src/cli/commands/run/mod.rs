@@ -441,6 +441,7 @@ mod tests {
             network: None,
             network_allow: vec![],
             network_preset: None,
+            read_only: false,
             command: vec![],
         }
     }

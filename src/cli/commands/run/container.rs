@@ -55,6 +55,8 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
         final_env.insert("SSH_AUTH_SOCK".to_string(), "/ssh-agent".to_string());
     }
 
+    let read_only = params.args.read_only || params.config.container.read_only;
+
     Ok(ContainerConfig {
         image,
         workdir: params.config.container.workdir.clone(),
@@ -72,5 +74,15 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
         security_opt: vec!["no-new-privileges".to_string()],
         pids_limit: 4096,
         auto_remove: params.args.detach,
+        read_only,
+        tmpfs: if read_only {
+            vec![
+                "/tmp".to_string(),
+                "/run".to_string(),
+                "/home/developer".to_string(),
+            ]
+        } else {
+            vec![]
+        },
     })
 }

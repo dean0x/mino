@@ -32,6 +32,10 @@ pub struct ContainerConfig {
     pub pids_limit: u32,
     /// Automatically remove container when it exits (--rm)
     pub auto_remove: bool,
+    /// Mount root filesystem as read-only
+    pub read_only: bool,
+    /// Tmpfs mounts (e.g., "/tmp", "/run")
+    pub tmpfs: Vec<String>,
 }
 
 impl ContainerConfig {
@@ -66,6 +70,13 @@ impl ContainerConfig {
         if self.pids_limit > 0 {
             args.push("--pids-limit".to_string());
             args.push(self.pids_limit.to_string());
+        }
+        if self.read_only {
+            args.push("--read-only".to_string());
+        }
+        for t in &self.tmpfs {
+            args.push("--tmpfs".to_string());
+            args.push(t.clone());
         }
 
         for v in &self.volumes {
@@ -138,6 +149,8 @@ mod tests {
             security_opt: vec!["no-new-privileges".to_string()],
             pids_limit: 4096,
             auto_remove: false,
+            read_only: false,
+            tmpfs: vec![],
         }
     }
 
@@ -182,6 +195,37 @@ mod tests {
         let mut args = Vec::new();
         config.push_args(&mut args, &[]);
         assert!(!args.contains(&"--rm".to_string()));
+    }
+
+    #[test]
+    fn push_args_read_only_with_tmpfs() {
+        let mut config = test_config();
+        config.read_only = true;
+        config.tmpfs = vec!["/tmp".to_string(), "/run".to_string()];
+
+        let mut args = Vec::new();
+        config.push_args(&mut args, &[]);
+
+        assert!(args.contains(&"--read-only".to_string()));
+        let tmpfs_positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "--tmpfs")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(tmpfs_positions.len(), 2);
+        assert_eq!(args[tmpfs_positions[0] + 1], "/tmp");
+        assert_eq!(args[tmpfs_positions[1] + 1], "/run");
+    }
+
+    #[test]
+    fn push_args_no_read_only_by_default() {
+        let config = test_config();
+        let mut args = Vec::new();
+        config.push_args(&mut args, &[]);
+
+        assert!(!args.contains(&"--read-only".to_string()));
+        assert!(!args.contains(&"--tmpfs".to_string()));
     }
 
     #[test]
