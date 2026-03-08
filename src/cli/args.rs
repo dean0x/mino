@@ -155,13 +155,13 @@ pub struct RunArgs {
     #[arg(short, long)]
     pub detach: bool,
 
-    /// Disable dependency caching for this session
-    #[arg(long)]
-    pub no_cache: bool,
-
     /// Mount the container root filesystem as read-only
     #[arg(long)]
     pub read_only: bool,
+
+    /// Disable dependency caching for this session
+    #[arg(long)]
+    pub no_cache: bool,
 
     /// Force fresh cache (ignore existing caches)
     #[arg(long, conflicts_with = "no_cache")]
