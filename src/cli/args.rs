@@ -155,6 +155,10 @@ pub struct RunArgs {
     #[arg(short, long)]
     pub detach: bool,
 
+    /// Mount the container root filesystem as read-only
+    #[arg(long)]
+    pub read_only: bool,
+
     /// Disable dependency caching for this session
     #[arg(long)]
     pub no_cache: bool,
@@ -535,6 +539,24 @@ mod tests {
             Commands::Run(args) => {
                 assert!(!args.strict_credentials);
             }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_read_only() {
+        let cli = Cli::parse_from(["mino", "run", "--read-only", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => assert!(args.read_only),
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_read_only_default_false() {
+        let cli = Cli::parse_from(["mino", "run", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => assert!(!args.read_only),
             _ => panic!("expected Run command"),
         }
     }
