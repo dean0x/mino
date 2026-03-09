@@ -79,6 +79,7 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
             vec![
                 "/tmp".to_string(),
                 "/run".to_string(),
+                "/root".to_string(),
                 "/home/developer".to_string(),
             ]
         } else {
@@ -159,7 +160,7 @@ mod tests {
         let config = Config::default();
         let result = build_with(&args, &config);
         assert!(result.read_only);
-        assert_eq!(result.tmpfs, vec!["/tmp", "/run", "/home/developer"]);
+        assert_eq!(result.tmpfs, vec!["/tmp", "/run", "/root", "/home/developer"]);
     }
 
     #[test]
@@ -169,7 +170,7 @@ mod tests {
         config.container.read_only = true;
         let result = build_with(&args, &config);
         assert!(result.read_only);
-        assert_eq!(result.tmpfs, vec!["/tmp", "/run", "/home/developer"]);
+        assert_eq!(result.tmpfs, vec!["/tmp", "/run", "/root", "/home/developer"]);
     }
 
     #[test]
