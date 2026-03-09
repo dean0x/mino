@@ -160,7 +160,10 @@ mod tests {
         let config = Config::default();
         let result = build_with(&args, &config);
         assert!(result.read_only);
-        assert_eq!(result.tmpfs, vec!["/tmp", "/run", "/root", "/home/developer"]);
+        assert_eq!(
+            result.tmpfs,
+            vec!["/tmp", "/run", "/root", "/home/developer"]
+        );
     }
 
     #[test]
@@ -170,7 +173,10 @@ mod tests {
         config.container.read_only = true;
         let result = build_with(&args, &config);
         assert!(result.read_only);
-        assert_eq!(result.tmpfs, vec!["/tmp", "/run", "/root", "/home/developer"]);
+        assert_eq!(
+            result.tmpfs,
+            vec!["/tmp", "/run", "/root", "/home/developer"]
+        );
     }
 
     #[test]
