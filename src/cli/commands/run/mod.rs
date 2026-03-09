@@ -436,6 +436,7 @@ mod tests {
             env: vec![],
             volume: vec![],
             detach: false,
+            read_only: false,
             no_cache: false,
             cache_fresh: false,
             network: None,

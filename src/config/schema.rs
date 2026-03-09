@@ -102,6 +102,10 @@ pub struct ContainerConfig {
     /// Composable layers (overrides image when non-empty)
     #[serde(default)]
     pub layers: Vec<String>,
+
+    /// Mount root filesystem as read-only (default: false)
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 impl Default for ContainerConfig {
@@ -115,6 +119,7 @@ impl Default for ContainerConfig {
             network_allow: vec![],
             network_preset: None,
             layers: vec![],
+            read_only: false,
         }
     }
 }
@@ -276,6 +281,22 @@ mod tests {
     fn config_deserializes_empty() {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.vm.name, "mino");
+    }
+
+    #[test]
+    fn config_deserializes_read_only() {
+        let toml = r#"
+            [container]
+            read_only = true
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.container.read_only);
+    }
+
+    #[test]
+    fn config_read_only_defaults_false() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.container.read_only);
     }
 
     #[test]

@@ -55,6 +55,8 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
         final_env.insert("SSH_AUTH_SOCK".to_string(), "/ssh-agent".to_string());
     }
 
+    let read_only = params.args.read_only || params.config.container.read_only;
+
     Ok(ContainerConfig {
         image,
         workdir: params.config.container.workdir.clone(),
@@ -72,5 +74,119 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
         security_opt: vec!["no-new-privileges".to_string()],
         pids_limit: 4096,
         auto_remove: params.args.detach,
+        read_only,
+        tmpfs: if read_only {
+            vec![
+                "/tmp".to_string(),
+                "/run".to_string(),
+                "/root".to_string(),
+                "/home/developer".to_string(),
+            ]
+        } else {
+            vec![]
+        },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::args::RunArgs;
+    use std::path::PathBuf;
+
+    fn test_run_args() -> RunArgs {
+        RunArgs {
+            name: None,
+            project: None,
+            aws: false,
+            gcp: false,
+            azure: false,
+            all_clouds: false,
+            no_ssh_agent: true, // disable to avoid SSH_AUTH_SOCK dependency
+            no_github: false,
+            strict_credentials: false,
+            image: None,
+            layers: vec![],
+            env: vec![],
+            volume: vec![],
+            detach: false,
+            read_only: false,
+            no_cache: false,
+            cache_fresh: false,
+            network: None,
+            network_allow: vec![],
+            network_preset: None,
+            command: vec![],
+        }
+    }
+
+    fn test_resolution() -> ImageResolution {
+        ImageResolution {
+            image: "fedora:43".to_string(),
+            layer_env: HashMap::new(),
+        }
+    }
+
+    fn build_with(args: &RunArgs, config: &Config) -> crate::orchestration::ContainerConfig {
+        let resolution = test_resolution();
+        let project_dir = PathBuf::from("/tmp/project");
+        let network_mode = NetworkMode::Bridge;
+        let params = ContainerBuildParams {
+            args,
+            config,
+            project_dir: &project_dir,
+            resolution: &resolution,
+            env_vars: HashMap::new(),
+            cache_mounts: &[],
+            cache_env: HashMap::new(),
+            network_mode: &network_mode,
+        };
+        build_container_config(&params).unwrap()
+    }
+
+    #[test]
+    fn read_only_disabled_by_default() {
+        let args = test_run_args();
+        let config = Config::default();
+        let result = build_with(&args, &config);
+        assert!(!result.read_only);
+        assert!(result.tmpfs.is_empty());
+    }
+
+    #[test]
+    fn read_only_from_cli_flag() {
+        let mut args = test_run_args();
+        args.read_only = true;
+        let config = Config::default();
+        let result = build_with(&args, &config);
+        assert!(result.read_only);
+        assert_eq!(
+            result.tmpfs,
+            vec!["/tmp", "/run", "/root", "/home/developer"]
+        );
+    }
+
+    #[test]
+    fn read_only_from_config() {
+        let args = test_run_args();
+        let mut config = Config::default();
+        config.container.read_only = true;
+        let result = build_with(&args, &config);
+        assert!(result.read_only);
+        assert_eq!(
+            result.tmpfs,
+            vec!["/tmp", "/run", "/root", "/home/developer"]
+        );
+    }
+
+    #[test]
+    fn read_only_cli_or_config_either_enables() {
+        let mut args = test_run_args();
+        args.read_only = true;
+        let mut config = Config::default();
+        config.container.read_only = true;
+        let result = build_with(&args, &config);
+        assert!(result.read_only);
+        assert!(!result.tmpfs.is_empty());
+    }
 }
