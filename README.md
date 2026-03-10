@@ -7,7 +7,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/dean0x/mino)](https://github.com/dean0x/mino/releases)
 [![CI](https://github.com/dean0x/mino/actions/workflows/ci.yml/badge.svg)](https://github.com/dean0x/mino/actions/workflows/ci.yml)
 
-Secure sandbox wrapper for AI coding agents using OrbStack + Podman rootless containers.
+Secure sandbox wrapper for AI coding agents using rootless Podman containers.
 
 Wraps **any command** in isolated containers with temporary cloud credentials and SSH agent forwarding. Works with Claude Code, Aider, Cursor, or any CLI tool.
 
@@ -25,7 +25,7 @@ AI coding agents are powerful but require significant system access. Mino provid
 
 ## Features
 
-- **Rootless Containers**: Podman containers inside OrbStack VMs - no root required
+- **Rootless Containers**: Podman containers with no root required (OrbStack VM on macOS, native on Linux)
 - **Temporary Credentials**: Generates short-lived AWS/GCP/Azure tokens (1-12 hours)
 - **SSH Agent Forwarding**: Git authentication without exposing private keys
 - **Persistent Caching**: Content-addressed dependency caches survive session crashes
@@ -35,12 +35,11 @@ AI coding agents are powerful but require significant system access. Mino provid
 
 ## Requirements
 
-- **macOS** with [OrbStack](https://orbstack.dev) installed
-- Cloud CLIs (optional, for credential generation):
-  - `aws` - AWS credentials via STS
-  - `gcloud` - GCP access tokens
-  - `az` - Azure access tokens
-  - `gh` - GitHub token
+- **macOS**: [OrbStack](https://orbstack.dev) installed (manages a lightweight Linux VM with Podman)
+- **Linux**: [Podman](https://podman.io) installed in rootless mode (no VM needed)
+- Cloud CLIs (optional): `aws`, `gcloud`, `az`, `gh`
+
+Run `mino setup` to check and install prerequisites for your platform.
 
 ## Installation
 
@@ -466,6 +465,13 @@ When using `--network-allow`, Mino:
    - ACCEPT DNS (port 53, UDP + TCP)
    - ACCEPT each allowlisted host:port
 
+### Presets
+
+| Preset | Destinations | Use case |
+|--------|-------------|----------|
+| `dev` | github.com (443, 22), api.github.com, registry.npmjs.org, crates.io, static.crates.io, index.crates.io, pypi.org, files.pythonhosted.org, api.anthropic.com, api.openai.com | Dev with AI agents |
+| `registries` | registry.npmjs.org, crates.io, static.crates.io, index.crates.io, pypi.org, files.pythonhosted.org | Package install only |
+
 ### Configuration
 
 Set default network allowlist in config:
@@ -591,6 +597,8 @@ To customize a built-in layer, create a layer with the same name in your project
 
 ## Architecture
 
+### macOS (via OrbStack)
+
 ```
 macOS Host
     |
@@ -606,6 +614,23 @@ macOS Host
             - SSH agent socket forwarded
             - Temp credentials as env vars
             - NO access to: ~/.ssh, ~/, system dirs
+```
+
+### Linux (native Podman)
+
+```
+Linux Host
+    |
+    +- mino CLI (Rust binary)
+    |   - Validates environment (rootless Podman)
+    |   - Generates temp credentials (STS, gcloud, az)
+    |   - Manages session lifecycle
+    |
+    +-> Podman rootless container (no VM layer)
+        - Mounted: /workspace (project dir only)
+        - SSH agent socket forwarded
+        - Temp credentials as env vars
+        - NO access to: ~/.ssh, ~/, system dirs
 ```
 
 ## Credential Strategy
@@ -650,6 +675,27 @@ For maximum security:
 2. Use named sessions to track activity
 3. Use `--network none` or `--network-allow` for network-restricted sessions
 4. Use `--network-preset registries` to limit egress to package registries only
+
+## Audit Log
+
+Mino writes security events to `<state_dir>/mino/audit.log` in JSON Lines format. Enabled by default; disable with `general.audit_log = false` in config.
+
+Each line is a JSON object:
+```json
+{"timestamp":"2026-03-09T12:00:00Z","event":"session.created","data":{...}}
+```
+
+### Events
+
+| Event | When | Data fields |
+|-------|------|-------------|
+| `session.created` | Session state initialized | `name`, `project_dir`, `image`, `command` |
+| `credentials.injected` | Cloud credentials passed to container | `session_name`, `providers` |
+| `session.started` | Container running | `name`, `container_id` |
+| `session.stopped` | Container exited | `name`, `exit_code` |
+| `session.failed` | Container failed to start | `name`, `error` |
+
+Audit logging uses silent failure mode — IO errors are logged via `tracing::warn` but never block or crash the primary workflow.
 
 ## Development
 
