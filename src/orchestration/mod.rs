@@ -176,12 +176,7 @@ pub(crate) fn parse_volume_inspect_json(
 
     let volumes: Vec<serde_json::Value> = serde_json::from_str(stdout)?;
 
-    let vol = match volumes.first() {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-
-    Ok(Some(volume_info_from_json(vol, name)))
+    Ok(volumes.first().map(|vol| volume_info_from_json(vol, name)))
 }
 
 #[cfg(test)]
