@@ -556,7 +556,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         });
 
         let results: Vec<MinoResult<Option<(String, u64)>>> =
-            futures::future::join_all(futures).await;
+            futures_util::future::join_all(futures).await;
 
         super::collect_disk_usage(results)
     }
