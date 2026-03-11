@@ -585,9 +585,8 @@ impl ContainerRuntime for OrbStackRuntime {
         // Get volume sizes by inspecting each volume individually.
         // Note: `podman system df -v --format json` is not supported (flags conflict).
         let volumes = self.volume_list(prefix).await?;
-        let mut sizes = HashMap::new();
 
-        for vol in &volumes {
+        let futures = volumes.into_iter().map(|vol| async move {
             let output = self
                 .orbstack
                 .exec(&[
@@ -600,24 +599,29 @@ impl ContainerRuntime for OrbStackRuntime {
                 ])
                 .await?;
 
-            if output.status.success() {
-                let mountpoint = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !mountpoint.is_empty() {
-                    // Get directory size via du
-                    let du_output = self.orbstack.exec(&["du", "-sb", &mountpoint]).await?;
-                    if du_output.status.success() {
-                        let du_str = String::from_utf8_lossy(&du_output.stdout);
-                        if let Some(size_str) = du_str.split_whitespace().next() {
-                            if let Ok(size) = size_str.parse::<u64>() {
-                                sizes.insert(vol.name.clone(), size);
-                            }
-                        }
-                    }
+            if !output.status.success() {
+                return Ok(None);
+            }
+
+            let mountpoint = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if mountpoint.is_empty() {
+                return Ok(None);
+            }
+
+            let du_output = self.orbstack.exec(&["du", "-sb", &mountpoint]).await?;
+            if du_output.status.success() {
+                if let Some(size) = super::parse_du_bytes(&du_output.stdout) {
+                    return Ok(Some((vol.name.clone(), size)));
                 }
             }
-        }
 
-        Ok(sizes)
+            Ok(None)
+        });
+
+        let results: Vec<MinoResult<Option<(String, u64)>>> =
+            futures_util::future::join_all(futures).await;
+
+        super::collect_disk_usage(results)
     }
 
     async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>> {

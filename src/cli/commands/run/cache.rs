@@ -6,7 +6,7 @@ use crate::cache::{
 };
 use crate::cli::args::RunArgs;
 use crate::config::Config;
-use crate::error::MinoResult;
+use crate::error::{MinoError, MinoResult};
 use crate::orchestration::ContainerRuntime;
 use console::style;
 use std::collections::HashMap;
@@ -31,7 +31,12 @@ pub(super) async fn setup_caches(
         return Ok((cache_mounts, cache_env, cache_session));
     }
 
-    let lockfiles = detect_lockfiles(project_dir)?;
+    let lockfiles = {
+        let dir = project_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || detect_lockfiles(&dir))
+            .await
+            .map_err(|e| MinoError::Internal(format!("lockfile detection task failed: {e}")))?
+    }?;
     if lockfiles.is_empty() {
         debug!("No lockfiles detected, skipping cache setup");
         return Ok((cache_mounts, cache_env, cache_session));

@@ -206,7 +206,12 @@ async fn show_project_info(
     ui::key_value(&ctx, "Project", &project_dir.display().to_string());
 
     // Detect lockfiles
-    let lockfiles = detect_lockfiles(&project_dir)?;
+    let lockfiles = {
+        let dir = project_dir.clone();
+        tokio::task::spawn_blocking(move || detect_lockfiles(&dir))
+            .await
+            .map_err(|e| MinoError::Internal(format!("lockfile detection task failed: {e}")))?
+    }?;
 
     if lockfiles.is_empty() {
         ui::step_info(&ctx, "No lockfiles detected in this project.");
@@ -276,9 +281,8 @@ async fn show_project_info(
         }
     }
 
-    // Show total cache usage
-    let all_sizes = runtime.volume_disk_usage("mino-cache-").await?;
-    let total_size: u64 = all_sizes.values().sum();
+    // Show total cache usage (reuse sizes from earlier query)
+    let total_size: u64 = sizes.values().sum();
     let limit_bytes = gb_to_bytes(config.cache.max_total_gb);
     let percent = CacheSizeStatus::percentage(total_size, limit_bytes);
 
