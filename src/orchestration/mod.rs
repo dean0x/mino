@@ -19,7 +19,7 @@ pub use runtime::{ContainerRuntime, VolumeInfo};
 use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::error::{MinoError, MinoResult};
+use crate::error::MinoResult;
 
 /// Max number of output lines to include in build error messages.
 const BUILD_ERROR_TAIL_LINES: usize = 50;
@@ -133,13 +133,12 @@ pub(crate) fn parse_volume_list_json(stdout: &str, prefix: &str) -> MinoResult<V
         return Ok(Vec::new());
     }
 
-    let volumes: Vec<serde_json::Value> =
-        serde_json::from_str(stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
+    let volumes: Vec<serde_json::Value> = serde_json::from_str(stdout)?;
 
     let result = volumes
         .iter()
         .filter_map(|vol| {
-            let name = vol["Name"].as_str().unwrap_or_default();
+            let name = vol["Name"].as_str()?;
             if !name.starts_with(prefix) {
                 return None;
             }
@@ -171,8 +170,11 @@ pub(crate) fn parse_volume_inspect_json(
     stdout: &str,
     name: &str,
 ) -> MinoResult<Option<VolumeInfo>> {
-    let volumes: Vec<serde_json::Value> =
-        serde_json::from_str(stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
+    if stdout.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let volumes: Vec<serde_json::Value> = serde_json::from_str(stdout)?;
 
     let vol = match volumes.first() {
         Some(v) => v,
@@ -356,6 +358,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_volume_list_json_whitespace_only() {
+        let result = parse_volume_list_json("   \n  \t  ", "mino-cache-").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn parse_volume_list_json_empty_array() {
         let result = parse_volume_list_json("[]", "mino-cache-").unwrap();
         assert!(result.is_empty());
@@ -389,7 +397,7 @@ mod tests {
     #[test]
     fn parse_volume_list_json_invalid_json() {
         let err = parse_volume_list_json("not json", "mino-cache-").unwrap_err();
-        assert!(matches!(err, MinoError::Internal(_)));
+        assert!(matches!(err, MinoError::Json(_)));
     }
 
     // -- parse_volume_inspect_json --
@@ -408,6 +416,22 @@ mod tests {
             result.mountpoint.as_deref(),
             Some("/var/lib/volumes/test/_data")
         );
+        assert_eq!(
+            result.created_at.as_deref(),
+            Some("2026-03-10T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn parse_volume_inspect_json_empty_string() {
+        let result = parse_volume_inspect_json("", "my-vol").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_volume_inspect_json_whitespace_only() {
+        let result = parse_volume_inspect_json("   \n  \t  ", "my-vol").unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
@@ -447,7 +471,7 @@ mod tests {
     #[test]
     fn parse_volume_inspect_json_invalid_json() {
         let err = parse_volume_inspect_json("not json", "vol").unwrap_err();
-        assert!(matches!(err, MinoError::Internal(_)));
+        assert!(matches!(err, MinoError::Json(_)));
     }
 
     #[test]
