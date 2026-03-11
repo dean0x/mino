@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-03-11
+
+### Added
+
+- `--read-only` flag for immutable container filesystems — enhances sandbox security by preventing writes outside mounted volumes (#38).
+- Python language layer with uv, ruff, and pytest toolchain support (#26).
+- `mino completions <shell>` command for bash, zsh, fish, elvish, and PowerShell (#28).
+- Parallelized volume queries for faster `cache list` and `cache clear` operations (#39).
+
+### Changed
+
+- Decomposed monolithic `run.rs` into focused submodules for maintainability (#23).
+- Deduplicated volume JSON parsing between NativePodmanRuntime and OrbStackRuntime into shared helpers (#40).
+
+### Removed
+
+- Local Homebrew formula copy (now maintained in `dean0x/homebrew-tap`).
+
 ## [1.2.2] - 2026-03-04
 
 ### Fixed
@@ -92,6 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
+[1.3.0]: https://github.com/dean0x/mino/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/dean0x/mino/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/dean0x/mino/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/dean0x/mino/compare/v1.1.0...v1.2.0
