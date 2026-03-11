@@ -424,7 +424,6 @@ impl ContainerRuntime for NativePodmanRuntime {
     }
 
     async fn volume_list(&self, prefix: &str) -> MinoResult<Vec<VolumeInfo>> {
-        // Use JSON format for reliable parsing
         let output = self.exec(&["volume", "ls", "--format", "json"]).await?;
 
         if !output.status.success() {
@@ -433,43 +432,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Parse JSON array of volumes
-        let volumes: Vec<serde_json::Value> =
-            serde_json::from_str(&stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
-
-        let mut result = Vec::new();
-        for vol in volumes {
-            let name = vol["Name"].as_str().unwrap_or_default();
-
-            // Filter by prefix
-            if !name.starts_with(prefix) {
-                continue;
-            }
-
-            // Parse labels
-            let labels: HashMap<String, String> = vol["Labels"]
-                .as_object()
-                .map(|obj| {
-                    obj.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            result.push(VolumeInfo {
-                name: name.to_string(),
-                labels,
-                mountpoint: vol["Mountpoint"].as_str().map(String::from),
-                created_at: vol["CreatedAt"].as_str().map(String::from),
-                size_bytes: None,
-            });
-        }
-
-        Ok(result)
+        super::parse_volume_list_json(&stdout, prefix)
     }
 
     async fn volume_inspect(&self, name: &str) -> MinoResult<Option<VolumeInfo>> {
@@ -486,33 +449,7 @@ impl ContainerRuntime for NativePodmanRuntime {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Parse JSON array (inspect returns array even for single volume)
-        let volumes: Vec<serde_json::Value> =
-            serde_json::from_str(&stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
-
-        let vol = match volumes.first() {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-
-        // Parse labels
-        let labels: HashMap<String, String> = vol["Labels"]
-            .as_object()
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(Some(VolumeInfo {
-            name: name.to_string(),
-            labels,
-            mountpoint: vol["Mountpoint"].as_str().map(String::from),
-            created_at: vol["CreatedAt"].as_str().map(String::from),
-            size_bytes: None,
-        }))
+        super::parse_volume_inspect_json(&stdout, name)
     }
 
     async fn volume_disk_usage(&self, prefix: &str) -> MinoResult<HashMap<String, u64>> {
@@ -546,13 +483,13 @@ impl ContainerRuntime for NativePodmanRuntime {
                 .await
                 .map_err(|e| MinoError::io("du", e))?;
 
-            if du_output.status.success() {
-                if let Some(size) = super::parse_du_bytes(&du_output.stdout) {
-                    return Ok(Some((vol.name.clone(), size)));
-                }
-            }
+            let size = du_output
+                .status
+                .success()
+                .then(|| super::parse_du_bytes(&du_output.stdout))
+                .flatten();
 
-            Ok(None)
+            Ok(size.map(|s| (vol.name.clone(), s)))
         });
 
         let results: Vec<MinoResult<Option<(String, u64)>>> =
