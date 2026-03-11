@@ -102,10 +102,7 @@ pub(crate) fn parse_du_bytes(output: &[u8]) -> Option<u64> {
 pub(crate) fn collect_disk_usage(
     results: Vec<MinoResult<Option<(String, u64)>>>,
 ) -> MinoResult<HashMap<String, u64>> {
-    results
-        .into_iter()
-        .filter_map(|r| r.transpose())
-        .collect()
+    results.into_iter().filter_map(|r| r.transpose()).collect()
 }
 
 /// Extract labels from a Podman volume JSON object.
@@ -411,10 +408,7 @@ mod tests {
             result.mountpoint.as_deref(),
             Some("/var/lib/volumes/test/_data")
         );
-        assert_eq!(
-            result.created_at.as_deref(),
-            Some("2026-03-10T12:00:00Z")
-        );
+        assert_eq!(result.created_at.as_deref(), Some("2026-03-10T12:00:00Z"));
     }
 
     #[test]
