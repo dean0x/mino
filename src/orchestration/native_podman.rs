@@ -483,13 +483,13 @@ impl ContainerRuntime for NativePodmanRuntime {
                 .await
                 .map_err(|e| MinoError::io("du", e))?;
 
-            if du_output.status.success() {
-                if let Some(size) = super::parse_du_bytes(&du_output.stdout) {
-                    return Ok(Some((vol.name.clone(), size)));
-                }
-            }
+            let size = du_output
+                .status
+                .success()
+                .then(|| super::parse_du_bytes(&du_output.stdout))
+                .flatten();
 
-            Ok(None)
+            Ok(size.map(|s| (vol.name.clone(), s)))
         });
 
         let results: Vec<MinoResult<Option<(String, u64)>>> =

@@ -546,13 +546,14 @@ impl ContainerRuntime for OrbStackRuntime {
             }
 
             let du_output = self.orbstack.exec(&["du", "-sb", &mountpoint]).await?;
-            if du_output.status.success() {
-                if let Some(size) = super::parse_du_bytes(&du_output.stdout) {
-                    return Ok(Some((vol.name.clone(), size)));
-                }
-            }
 
-            Ok(None)
+            let size = du_output
+                .status
+                .success()
+                .then(|| super::parse_du_bytes(&du_output.stdout))
+                .flatten();
+
+            Ok(size.map(|s| (vol.name.clone(), s)))
         });
 
         let results: Vec<MinoResult<Option<(String, u64)>>> =

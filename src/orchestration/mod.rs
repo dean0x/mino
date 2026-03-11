@@ -102,13 +102,10 @@ pub(crate) fn parse_du_bytes(output: &[u8]) -> Option<u64> {
 pub(crate) fn collect_disk_usage(
     results: Vec<MinoResult<Option<(String, u64)>>>,
 ) -> MinoResult<HashMap<String, u64>> {
-    let mut sizes = HashMap::new();
-    for result in results {
-        if let Some((name, size)) = result? {
-            sizes.insert(name, size);
-        }
-    }
-    Ok(sizes)
+    results
+        .into_iter()
+        .filter_map(|r| r.transpose())
+        .collect()
 }
 
 /// Extract labels from a Podman volume JSON object.
@@ -139,24 +136,29 @@ pub(crate) fn parse_volume_list_json(stdout: &str, prefix: &str) -> MinoResult<V
     let volumes: Vec<serde_json::Value> =
         serde_json::from_str(stdout).map_err(|e| MinoError::Internal(e.to_string()))?;
 
-    let mut result = Vec::new();
-    for vol in volumes {
-        let name = vol["Name"].as_str().unwrap_or_default();
-
-        if !name.starts_with(prefix) {
-            continue;
-        }
-
-        result.push(VolumeInfo {
-            name: name.to_string(),
-            labels: parse_volume_labels(&vol),
-            mountpoint: vol["Mountpoint"].as_str().map(String::from),
-            created_at: vol["CreatedAt"].as_str().map(String::from),
-            size_bytes: None,
-        });
-    }
+    let result = volumes
+        .iter()
+        .filter_map(|vol| {
+            let name = vol["Name"].as_str().unwrap_or_default();
+            if !name.starts_with(prefix) {
+                return None;
+            }
+            Some(volume_info_from_json(vol, name))
+        })
+        .collect();
 
     Ok(result)
+}
+
+/// Build a `VolumeInfo` from a Podman volume JSON object using the given name.
+fn volume_info_from_json(vol: &serde_json::Value, name: &str) -> VolumeInfo {
+    VolumeInfo {
+        name: name.to_string(),
+        labels: parse_volume_labels(vol),
+        mountpoint: vol["Mountpoint"].as_str().map(String::from),
+        created_at: vol["CreatedAt"].as_str().map(String::from),
+        size_bytes: None,
+    }
 }
 
 /// Parse `podman volume inspect --format json` output into an optional `VolumeInfo`.
@@ -177,13 +179,7 @@ pub(crate) fn parse_volume_inspect_json(
         None => return Ok(None),
     };
 
-    Ok(Some(VolumeInfo {
-        name: name.to_string(),
-        labels: parse_volume_labels(vol),
-        mountpoint: vol["Mountpoint"].as_str().map(String::from),
-        created_at: vol["CreatedAt"].as_str().map(String::from),
-        size_bytes: None,
-    }))
+    Ok(Some(volume_info_from_json(vol, name)))
 }
 
 #[cfg(test)]
