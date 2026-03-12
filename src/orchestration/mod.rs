@@ -5,6 +5,8 @@
 //! - Linux: Native rootless Podman
 
 mod factory;
+#[cfg(test)]
+pub(crate) mod mock;
 mod native_podman;
 pub mod orbstack;
 mod orbstack_runtime;

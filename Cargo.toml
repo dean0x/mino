@@ -48,6 +48,7 @@ futures-util = "0.3"
 tempfile = "3.19"
 assert_cmd = "2.0"
 predicates = "3.1"
+serial_test = "3.2"
 
 [profile.release]
 lto = true

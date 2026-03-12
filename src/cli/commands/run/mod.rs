@@ -718,4 +718,123 @@ mod tests {
         config.container.network_allow = vec!["github.com:443".to_string()];
         assert!(!is_default_network(&args, &config));
     }
+
+    use crate::orchestration::mock::{test_container_config, MockRuntime};
+    use serial_test::serial;
+
+    /// Guard that deletes a session file on drop (even on panic).
+    struct SessionCleanup {
+        name: String,
+    }
+
+    impl Drop for SessionCleanup {
+        fn drop(&mut self) {
+            let path =
+                crate::config::ConfigManager::sessions_dir().join(format!("{}.json", self.name));
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn smoke_run_interactive() {
+        let session_name = format!("test-smoke-int-{}", &Uuid::new_v4().to_string()[..8]);
+        let _cleanup = SessionCleanup {
+            name: session_name.clone(),
+        };
+
+        let manager = SessionManager::new().await.unwrap();
+        let session = Session::new(
+            session_name.clone(),
+            PathBuf::from("/tmp/test-project"),
+            vec!["bash".to_string()],
+            SessionStatus::Starting,
+        );
+        manager.create(&session).await.unwrap();
+
+        let mock = Arc::new(MockRuntime::new());
+        let runtime: Arc<dyn ContainerRuntime> = mock.clone();
+        let container_config = test_container_config();
+        let command = vec!["bash".to_string()];
+
+        let mut config = Config::default();
+        config.general.audit_log = false;
+        let audit = AuditLog::new(&config);
+
+        let ctx = UiContext::detect();
+        let mut spinner = TaskSpinner::new(&ctx);
+
+        let mut run_ctx = RunContext {
+            runtime: &runtime,
+            container_config: &container_config,
+            command: &command,
+            session_name: &session_name,
+            manager: &manager,
+            audit: &audit,
+            spinner: &mut spinner,
+        };
+
+        let cache_session = CacheSession::default();
+        run_interactive(&mut run_ctx, cache_session).await.unwrap();
+
+        mock.assert_called("create", 1);
+        mock.assert_called("start_attached", 1);
+        mock.assert_called("remove", 1);
+
+        // Session status should be Stopped after interactive run
+        let updated = manager.get(&session_name).await.unwrap().unwrap();
+        assert_eq!(updated.status, SessionStatus::Stopped);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn smoke_run_detached() {
+        let session_name = format!("test-smoke-det-{}", &Uuid::new_v4().to_string()[..8]);
+        let _cleanup = SessionCleanup {
+            name: session_name.clone(),
+        };
+
+        let manager = SessionManager::new().await.unwrap();
+        let session = Session::new(
+            session_name.clone(),
+            PathBuf::from("/tmp/test-project"),
+            vec!["bash".to_string()],
+            SessionStatus::Starting,
+        );
+        manager.create(&session).await.unwrap();
+
+        let mock = Arc::new(MockRuntime::new());
+        let runtime: Arc<dyn ContainerRuntime> = mock.clone();
+        let container_config = test_container_config();
+        let command = vec!["bash".to_string()];
+
+        let mut config = Config::default();
+        config.general.audit_log = false;
+        let audit = AuditLog::new(&config);
+
+        let ctx = UiContext::detect();
+        let mut spinner = TaskSpinner::new(&ctx);
+
+        let mut run_ctx = RunContext {
+            runtime: &runtime,
+            container_config: &container_config,
+            command: &command,
+            session_name: &session_name,
+            manager: &manager,
+            audit: &audit,
+            spinner: &mut spinner,
+        };
+
+        // Empty volumes_to_finalize so tokio::spawn is skipped
+        let cache_session = CacheSession::default();
+        run_detached(&mut run_ctx, cache_session).await.unwrap();
+
+        // Only assert the synchronous `run` call (not background task)
+        mock.assert_called("run", 1);
+
+        // Session should have container_id and Running status
+        let updated = manager.get(&session_name).await.unwrap().unwrap();
+        assert_eq!(updated.status, SessionStatus::Running);
+        assert!(updated.container_id.is_some());
+    }
 }
