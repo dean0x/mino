@@ -236,15 +236,19 @@ impl ContainerRuntime for MockRuntime {
     }
 
     async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
-        let mut args = vec![config.image.clone()];
-        args.extend(command.iter().cloned());
+        let args = std::iter::once(&config.image)
+            .chain(command)
+            .cloned()
+            .collect();
         self.record("run", args);
         self.take_string("run", "mock-container-id")
     }
 
     async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
-        let mut args = vec![config.image.clone()];
-        args.extend(command.iter().cloned());
+        let args = std::iter::once(&config.image)
+            .chain(command)
+            .cloned()
+            .collect();
         self.record("create", args);
         self.take_string("create", "mock-container-id")
     }
@@ -320,13 +324,15 @@ impl ContainerRuntime for MockRuntime {
     }
 
     async fn volume_create(&self, name: &str, labels: &HashMap<String, String>) -> MinoResult<()> {
-        let mut args = vec![name.to_string()];
-        let mut label_entries: Vec<String> = labels
+        let mut sorted_labels: Vec<String> = labels
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
-        label_entries.sort();
-        args.extend(label_entries);
+        sorted_labels.sort();
+
+        let args = std::iter::once(name.to_string())
+            .chain(sorted_labels)
+            .collect();
         self.record("volume_create", args);
         self.take_unit("volume_create")
     }
