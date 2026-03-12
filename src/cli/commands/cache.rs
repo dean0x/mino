@@ -535,7 +535,9 @@ async fn clear_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::format_bytes;
+    use crate::orchestration::mock::{MockResponse, MockRuntime};
+    use crate::orchestration::VolumeInfo;
+    use std::collections::HashMap;
 
     #[test]
     fn cache_state_display() {
@@ -551,5 +553,89 @@ mod tests {
         assert_eq!(format_bytes(1536), "1.5 KB");
         assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
         assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+    }
+
+    fn mino_cache_volume(name: &str) -> VolumeInfo {
+        let labels = HashMap::from([
+            ("io.mino.cache".to_string(), "true".to_string()),
+            ("io.mino.cache.ecosystem".to_string(), "npm".to_string()),
+            ("io.mino.cache.hash".to_string(), "abcdef123456".to_string()),
+            ("io.mino.cache.state".to_string(), "complete".to_string()),
+        ]);
+        VolumeInfo {
+            name: name.to_string(),
+            labels,
+            mountpoint: None,
+            created_at: Some("2026-01-01T00:00:00Z".to_string()),
+            size_bytes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn list_empty_volumes() {
+        let mock = MockRuntime::new();
+        let config = Config::default();
+
+        list_caches(&mock, OutputFormat::Plain, &config)
+            .await
+            .unwrap();
+        mock.assert_called("volume_list", 1);
+    }
+
+    #[tokio::test]
+    async fn clear_volumes_removes_all() {
+        let volumes = vec![
+            mino_cache_volume("mino-cache-npm-abc123"),
+            mino_cache_volume("mino-cache-cargo-def456"),
+        ];
+        let sizes = HashMap::from([
+            ("mino-cache-npm-abc123".to_string(), 1024u64),
+            ("mino-cache-cargo-def456".to_string(), 2048u64),
+        ]);
+
+        let mock = MockRuntime::new()
+            .on("volume_list", Ok(MockResponse::VolumeInfoVec(volumes)))
+            .on("volume_disk_usage", Ok(MockResponse::DiskUsageMap(sizes)));
+
+        clear_artifacts(&mock, true, false, true).await.unwrap();
+
+        mock.assert_called("volume_remove", 2);
+        mock.assert_called_with("volume_remove", &["mino-cache-npm-abc123"]);
+        mock.assert_called_with("volume_remove", &["mino-cache-cargo-def456"]);
+    }
+
+    #[tokio::test]
+    async fn clear_images_removes_all() {
+        let images = vec![
+            "mino-composed-rust:latest".to_string(),
+            "mino-composed-python:latest".to_string(),
+        ];
+
+        let mock =
+            MockRuntime::new().on("image_list_prefixed", Ok(MockResponse::StringVec(images)));
+
+        clear_artifacts(&mock, false, true, true).await.unwrap();
+
+        mock.assert_called("container_prune", 1);
+        mock.assert_called("image_remove", 2);
+        mock.assert_called_with("image_remove", &["mino-composed-rust:latest"]);
+        mock.assert_called_with("image_remove", &["mino-composed-python:latest"]);
+    }
+
+    #[tokio::test]
+    async fn gc_dry_run_no_deletes() {
+        let mut vol = mino_cache_volume("mino-cache-npm-abc123");
+        vol.created_at = Some("2025-01-01T00:00:00Z".to_string());
+
+        let sizes = HashMap::from([("mino-cache-npm-abc123".to_string(), 1024u64)]);
+
+        let mock = MockRuntime::new()
+            .on("volume_disk_usage", Ok(MockResponse::DiskUsageMap(sizes)))
+            .on("volume_list", Ok(MockResponse::VolumeInfoVec(vec![vol])));
+
+        let config = Config::default();
+        gc_caches(&mock, &config, Some(30), true).await.unwrap();
+
+        mock.assert_called("volume_remove", 0);
     }
 }

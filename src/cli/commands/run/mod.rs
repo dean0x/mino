@@ -419,6 +419,8 @@ mod tests {
     use self::image::*;
     use self::prompts::{is_default_network, upsert_container_toml_key};
     use super::*;
+    use crate::orchestration::mock::{test_container_config, MockRuntime};
+    use serial_test::serial;
 
     fn test_run_args() -> RunArgs {
         RunArgs {
@@ -598,11 +600,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_layer_names_config_layers() {
         let args = test_run_args();
         let mut config = Config::default();
         config.container.layers = vec!["rust".to_string()];
-        // Clear MINO_LAYERS to avoid interference from environment
         std::env::remove_var("MINO_LAYERS");
         assert_eq!(
             resolve_layer_names(&args, &config),
@@ -611,6 +613,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_layer_names_none_when_empty() {
         let args = test_run_args();
         let config = Config::default();
@@ -623,7 +626,6 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join(".mino.toml");
 
-        // Write existing config with other settings
         tokio::fs::write(
             &path,
             "[container]\nimage = \"custom:latest\"\nnetwork = \"none\"\n",
@@ -639,11 +641,9 @@ mod tests {
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let parsed: toml::Value = content.parse().unwrap();
-        // Layers added
         let layers = parsed["container"]["layers"].as_array().unwrap();
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].as_str().unwrap(), "typescript");
-        // Existing fields preserved
         assert_eq!(
             parsed["container"]["image"].as_str().unwrap(),
             "custom:latest"
@@ -656,7 +656,6 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("bad.toml");
 
-        // Write config where container is a string, not a table
         tokio::fs::write(&path, "container = \"not-a-table\"\n")
             .await
             .unwrap();
@@ -717,5 +716,117 @@ mod tests {
         let mut config = Config::default();
         config.container.network_allow = vec!["github.com:443".to_string()];
         assert!(!is_default_network(&args, &config));
+    }
+
+    /// Guard that deletes a session file on drop (even on panic).
+    struct SessionCleanup {
+        name: String,
+    }
+
+    impl Drop for SessionCleanup {
+        fn drop(&mut self) {
+            let path =
+                crate::config::ConfigManager::sessions_dir().join(format!("{}.json", self.name));
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// All scaffolding needed by `run_interactive` and `run_detached` smoke tests.
+    struct SmokeTestFixture {
+        mock: Arc<MockRuntime>,
+        runtime: Arc<dyn ContainerRuntime>,
+        manager: SessionManager,
+        session_name: String,
+        _cleanup: SessionCleanup,
+        container_config: ContainerConfig,
+        command: Vec<String>,
+        audit: AuditLog,
+        spinner: TaskSpinner,
+    }
+
+    impl SmokeTestFixture {
+        async fn new(prefix: &str) -> Self {
+            let session_name = format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..8]);
+            let cleanup = SessionCleanup {
+                name: session_name.clone(),
+            };
+
+            let manager = SessionManager::new().await.unwrap();
+            let session = Session::new(
+                session_name.clone(),
+                PathBuf::from("/tmp/test-project"),
+                vec!["bash".to_string()],
+                SessionStatus::Starting,
+            );
+            manager.create(&session).await.unwrap();
+
+            let mock = Arc::new(MockRuntime::new());
+            let runtime: Arc<dyn ContainerRuntime> = mock.clone();
+
+            let container_config = test_container_config();
+            let command = vec!["bash".to_string()];
+            let mut config = Config::default();
+            config.general.audit_log = false;
+            let audit = AuditLog::new(&config);
+            let ctx = UiContext::detect();
+            let spinner = TaskSpinner::new(&ctx);
+
+            Self {
+                mock,
+                runtime,
+                manager,
+                session_name,
+                _cleanup: cleanup,
+                container_config,
+                command,
+                audit,
+                spinner,
+            }
+        }
+
+        fn run_ctx(&mut self) -> RunContext<'_> {
+            RunContext {
+                runtime: &self.runtime,
+                container_config: &self.container_config,
+                command: &self.command,
+                session_name: &self.session_name,
+                manager: &self.manager,
+                audit: &self.audit,
+                spinner: &mut self.spinner,
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn smoke_run_interactive() {
+        let mut f = SmokeTestFixture::new("test-smoke-int").await;
+
+        run_interactive(&mut f.run_ctx(), CacheSession::default())
+            .await
+            .unwrap();
+
+        f.mock.assert_called("create", 1);
+        f.mock.assert_called("start_attached", 1);
+        f.mock.assert_called("remove", 1);
+
+        let updated = f.manager.get(&f.session_name).await.unwrap().unwrap();
+        assert_eq!(updated.status, SessionStatus::Stopped);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn smoke_run_detached() {
+        let mut f = SmokeTestFixture::new("test-smoke-det").await;
+
+        run_detached(&mut f.run_ctx(), CacheSession::default())
+            .await
+            .unwrap();
+
+        f.mock.assert_called("run", 1);
+
+        let updated = f.manager.get(&f.session_name).await.unwrap().unwrap();
+        assert_eq!(updated.status, SessionStatus::Running);
+        assert!(updated.container_id.is_some());
     }
 }
