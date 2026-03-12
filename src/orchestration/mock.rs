@@ -324,10 +324,8 @@ impl ContainerRuntime for MockRuntime {
     }
 
     async fn volume_create(&self, name: &str, labels: &HashMap<String, String>) -> MinoResult<()> {
-        let mut sorted_labels: Vec<String> = labels
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
+        let mut sorted_labels: Vec<String> =
+            labels.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
         sorted_labels.sort();
 
         let args = std::iter::once(name.to_string())
@@ -470,18 +468,13 @@ mod tests {
 
         mock.assert_called_with(
             "volume_create",
-            &[
-                "vol-1",
-                "io.mino.cache.ecosystem=npm",
-                "io.mino.cache=true",
-            ],
+            &["vol-1", "io.mino.cache.ecosystem=npm", "io.mino.cache=true"],
         );
     }
 
     #[tokio::test]
     async fn verify_all_consumed_passes_when_empty() {
-        let mock = MockRuntime::new()
-            .on("logs", Ok(MockResponse::String("output".to_string())));
+        let mock = MockRuntime::new().on("logs", Ok(MockResponse::String("output".to_string())));
 
         mock.logs("abc", 10).await.unwrap();
         mock.verify_all_consumed();
@@ -490,8 +483,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "unconsumed mock responses")]
     async fn verify_all_consumed_panics_on_leftover() {
-        let mock = MockRuntime::new()
-            .on("logs", Ok(MockResponse::String("output".to_string())));
+        let mock = MockRuntime::new().on("logs", Ok(MockResponse::String("output".to_string())));
 
         // Never call logs -- the queued response should remain unconsumed
         mock.verify_all_consumed();
