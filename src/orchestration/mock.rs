@@ -8,7 +8,7 @@ use crate::orchestration::podman::ContainerConfig;
 use crate::orchestration::runtime::{ContainerRuntime, VolumeInfo};
 use crate::session::{Session, SessionStatus};
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -38,7 +38,7 @@ pub struct CallRecord {
 /// Supports queued per-method responses (FIFO) with sensible defaults,
 /// and records all calls for assertion.
 pub struct MockRuntime {
-    responses: Mutex<HashMap<String, Vec<MinoResult<MockResponse>>>>,
+    responses: Mutex<HashMap<String, VecDeque<MinoResult<MockResponse>>>>,
     pub calls: Mutex<Vec<CallRecord>>,
 }
 
@@ -57,7 +57,7 @@ impl MockRuntime {
             .unwrap()
             .entry(method.to_string())
             .or_default()
-            .push(response);
+            .push_back(response);
         self
     }
 
@@ -110,6 +110,25 @@ impl MockRuntime {
         assert!(calls.is_empty(), "expected no calls, got: {:?}", *calls);
     }
 
+    /// Assert all queued responses have been consumed.
+    ///
+    /// Panics with details of unconsumed responses if any remain. This catches
+    /// typos in method names passed to `.on()` and missing test coverage.
+    #[allow(dead_code)]
+    pub fn verify_all_consumed(&self) {
+        let responses = self.responses.lock().unwrap();
+        let unconsumed: Vec<(&String, usize)> = responses
+            .iter()
+            .filter(|(_, queue)| !queue.is_empty())
+            .map(|(method, queue)| (method, queue.len()))
+            .collect();
+        assert!(
+            unconsumed.is_empty(),
+            "unconsumed mock responses: {:?}",
+            unconsumed
+        );
+    }
+
     fn record(&self, method: &str, args: Vec<String>) {
         self.calls.lock().unwrap().push(CallRecord {
             method: method.to_string(),
@@ -120,7 +139,7 @@ impl MockRuntime {
     fn take_response(&self, method: &str) -> Option<MinoResult<MockResponse>> {
         let mut responses = self.responses.lock().unwrap();
         let queue = responses.get_mut(method)?;
-        (!queue.is_empty()).then(|| queue.remove(0))
+        queue.pop_front()
     }
 
     fn take_unit(&self, method: &str) -> MinoResult<()> {
@@ -216,13 +235,17 @@ impl ContainerRuntime for MockRuntime {
         self.take_unit("ensure_ready")
     }
 
-    async fn run(&self, _config: &ContainerConfig, _command: &[String]) -> MinoResult<String> {
-        self.record("run", vec![]);
+    async fn run(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
+        let mut args = vec![config.image.clone()];
+        args.extend(command.iter().cloned());
+        self.record("run", args);
         self.take_string("run", "mock-container-id")
     }
 
-    async fn create(&self, _config: &ContainerConfig, _command: &[String]) -> MinoResult<String> {
-        self.record("create", vec![]);
+    async fn create(&self, config: &ContainerConfig, command: &[String]) -> MinoResult<String> {
+        let mut args = vec![config.image.clone()];
+        args.extend(command.iter().cloned());
+        self.record("create", args);
         self.take_string("create", "mock-container-id")
     }
 
@@ -296,8 +319,15 @@ impl ContainerRuntime for MockRuntime {
         "mock"
     }
 
-    async fn volume_create(&self, name: &str, _labels: &HashMap<String, String>) -> MinoResult<()> {
-        self.record("volume_create", vec![name.to_string()]);
+    async fn volume_create(&self, name: &str, labels: &HashMap<String, String>) -> MinoResult<()> {
+        let mut args = vec![name.to_string()];
+        let mut label_entries: Vec<String> = labels
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        label_entries.sort();
+        args.extend(label_entries);
+        self.record("volume_create", args);
         self.take_unit("volume_create")
     }
 
@@ -408,5 +438,56 @@ mod tests {
         mock.assert_called("remove", 1);
         mock.assert_called_with("stop", &["container-1"]);
         mock.assert_called_with("kill", &["container-2"]);
+    }
+
+    #[tokio::test]
+    async fn mock_run_and_create_record_image_and_command() {
+        let mock = MockRuntime::new();
+        let config = test_container_config();
+        let command = vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()];
+
+        mock.run(&config, &command).await.unwrap();
+        mock.create(&config, &command).await.unwrap();
+
+        mock.assert_called_with("run", &["test-image:latest", "bash", "-c", "echo hi"]);
+        mock.assert_called_with("create", &["test-image:latest", "bash", "-c", "echo hi"]);
+    }
+
+    #[tokio::test]
+    async fn mock_volume_create_records_labels() {
+        let mock = MockRuntime::new();
+        let mut labels = HashMap::new();
+        labels.insert("io.mino.cache".to_string(), "true".to_string());
+        labels.insert("io.mino.cache.ecosystem".to_string(), "npm".to_string());
+
+        mock.volume_create("vol-1", &labels).await.unwrap();
+
+        mock.assert_called_with(
+            "volume_create",
+            &[
+                "vol-1",
+                "io.mino.cache.ecosystem=npm",
+                "io.mino.cache=true",
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_all_consumed_passes_when_empty() {
+        let mock = MockRuntime::new()
+            .on("logs", Ok(MockResponse::String("output".to_string())));
+
+        mock.logs("abc", 10).await.unwrap();
+        mock.verify_all_consumed();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "unconsumed mock responses")]
+    async fn verify_all_consumed_panics_on_leftover() {
+        let mock = MockRuntime::new()
+            .on("logs", Ok(MockResponse::String("output".to_string())));
+
+        // Never call logs -- the queued response should remain unconsumed
+        mock.verify_all_consumed();
     }
 }
