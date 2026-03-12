@@ -600,6 +600,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_layer_names_config_layers() {
         let args = test_run_args();
         let mut config = Config::default();
@@ -612,6 +613,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_layer_names_none_when_empty() {
         let args = test_run_args();
         let config = Config::default();
@@ -729,104 +731,101 @@ mod tests {
         }
     }
 
-    /// Create a session, mock runtime, and all scaffolding needed by `run_interactive`
-    /// and `run_detached`. Returns `(mock, runtime, manager, session_name, cleanup)`.
-    async fn setup_smoke_test(
-        prefix: &str,
-    ) -> (
-        Arc<MockRuntime>,
-        Arc<dyn ContainerRuntime>,
-        SessionManager,
-        String,
-        SessionCleanup,
-    ) {
-        let session_name = format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..8]);
-        let cleanup = SessionCleanup {
-            name: session_name.clone(),
-        };
+    /// All scaffolding needed by `run_interactive` and `run_detached` smoke tests.
+    struct SmokeTestFixture {
+        mock: Arc<MockRuntime>,
+        runtime: Arc<dyn ContainerRuntime>,
+        manager: SessionManager,
+        session_name: String,
+        _cleanup: SessionCleanup,
+        container_config: ContainerConfig,
+        command: Vec<String>,
+        audit: AuditLog,
+        spinner: TaskSpinner,
+    }
 
-        let manager = SessionManager::new().await.unwrap();
-        let session = Session::new(
-            session_name.clone(),
-            PathBuf::from("/tmp/test-project"),
-            vec!["bash".to_string()],
-            SessionStatus::Starting,
-        );
-        manager.create(&session).await.unwrap();
+    impl SmokeTestFixture {
+        async fn new(prefix: &str) -> Self {
+            let session_name = format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..8]);
+            let cleanup = SessionCleanup {
+                name: session_name.clone(),
+            };
 
-        let mock = Arc::new(MockRuntime::new());
-        let runtime: Arc<dyn ContainerRuntime> = mock.clone();
+            let manager = SessionManager::new().await.unwrap();
+            let session = Session::new(
+                session_name.clone(),
+                PathBuf::from("/tmp/test-project"),
+                vec!["bash".to_string()],
+                SessionStatus::Starting,
+            );
+            manager.create(&session).await.unwrap();
 
-        (mock, runtime, manager, session_name, cleanup)
+            let mock = Arc::new(MockRuntime::new());
+            let runtime: Arc<dyn ContainerRuntime> = mock.clone();
+
+            let container_config = test_container_config();
+            let command = vec!["bash".to_string()];
+            let mut config = Config::default();
+            config.general.audit_log = false;
+            let audit = AuditLog::new(&config);
+            let ctx = UiContext::detect();
+            let spinner = TaskSpinner::new(&ctx);
+
+            Self {
+                mock,
+                runtime,
+                manager,
+                session_name,
+                _cleanup: cleanup,
+                container_config,
+                command,
+                audit,
+                spinner,
+            }
+        }
+
+        fn run_ctx(&mut self) -> RunContext<'_> {
+            RunContext {
+                runtime: &self.runtime,
+                container_config: &self.container_config,
+                command: &self.command,
+                session_name: &self.session_name,
+                manager: &self.manager,
+                audit: &self.audit,
+                spinner: &mut self.spinner,
+            }
+        }
     }
 
     #[tokio::test]
     #[serial]
     async fn smoke_run_interactive() {
-        let (mock, runtime, manager, session_name, _cleanup) =
-            setup_smoke_test("test-smoke-int").await;
+        let mut f = SmokeTestFixture::new("test-smoke-int").await;
 
-        let container_config = test_container_config();
-        let command = vec!["bash".to_string()];
-        let mut config = Config::default();
-        config.general.audit_log = false;
-        let audit = AuditLog::new(&config);
-        let ctx = UiContext::detect();
-        let mut spinner = TaskSpinner::new(&ctx);
-
-        let mut run_ctx = RunContext {
-            runtime: &runtime,
-            container_config: &container_config,
-            command: &command,
-            session_name: &session_name,
-            manager: &manager,
-            audit: &audit,
-            spinner: &mut spinner,
-        };
-
-        run_interactive(&mut run_ctx, CacheSession::default())
+        run_interactive(&mut f.run_ctx(), CacheSession::default())
             .await
             .unwrap();
 
-        mock.assert_called("create", 1);
-        mock.assert_called("start_attached", 1);
-        mock.assert_called("remove", 1);
+        f.mock.assert_called("create", 1);
+        f.mock.assert_called("start_attached", 1);
+        f.mock.assert_called("remove", 1);
 
-        let updated = manager.get(&session_name).await.unwrap().unwrap();
+        let updated = f.manager.get(&f.session_name).await.unwrap().unwrap();
         assert_eq!(updated.status, SessionStatus::Stopped);
     }
 
     #[tokio::test]
     #[serial]
     async fn smoke_run_detached() {
-        let (mock, runtime, manager, session_name, _cleanup) =
-            setup_smoke_test("test-smoke-det").await;
+        let mut f = SmokeTestFixture::new("test-smoke-det").await;
 
-        let container_config = test_container_config();
-        let command = vec!["bash".to_string()];
-        let mut config = Config::default();
-        config.general.audit_log = false;
-        let audit = AuditLog::new(&config);
-        let ctx = UiContext::detect();
-        let mut spinner = TaskSpinner::new(&ctx);
-
-        let mut run_ctx = RunContext {
-            runtime: &runtime,
-            container_config: &container_config,
-            command: &command,
-            session_name: &session_name,
-            manager: &manager,
-            audit: &audit,
-            spinner: &mut spinner,
-        };
-
-        run_detached(&mut run_ctx, CacheSession::default())
+        run_detached(&mut f.run_ctx(), CacheSession::default())
             .await
             .unwrap();
 
-        mock.assert_called("run", 1);
+        f.mock.assert_called("run", 1);
 
-        let updated = manager.get(&session_name).await.unwrap().unwrap();
+        let updated = f.manager.get(&f.session_name).await.unwrap().unwrap();
         assert_eq!(updated.status, SessionStatus::Running);
         assert!(updated.container_id.is_some());
     }
