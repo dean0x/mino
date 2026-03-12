@@ -49,7 +49,6 @@ async fn get_logs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::args::LogsArgs;
     use crate::orchestration::mock::{test_session, MockResponse, MockRuntime};
     use crate::session::SessionStatus;
 

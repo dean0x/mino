@@ -120,11 +120,7 @@ impl MockRuntime {
     fn take_response(&self, method: &str) -> Option<MinoResult<MockResponse>> {
         let mut responses = self.responses.lock().unwrap();
         let queue = responses.get_mut(method)?;
-        if queue.is_empty() {
-            None
-        } else {
-            Some(queue.remove(0))
-        }
+        (!queue.is_empty()).then(|| queue.remove(0))
     }
 
     fn take_unit(&self, method: &str) -> MinoResult<()> {

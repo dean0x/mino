@@ -535,9 +535,9 @@ async fn clear_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::format_bytes;
     use crate::orchestration::mock::{MockResponse, MockRuntime};
     use crate::orchestration::VolumeInfo;
+    use std::collections::HashMap;
 
     #[test]
     fn cache_state_display() {
@@ -556,11 +556,12 @@ mod tests {
     }
 
     fn mino_cache_volume(name: &str) -> VolumeInfo {
-        let mut labels = std::collections::HashMap::new();
-        labels.insert("io.mino.cache".to_string(), "true".to_string());
-        labels.insert("io.mino.cache.ecosystem".to_string(), "npm".to_string());
-        labels.insert("io.mino.cache.hash".to_string(), "abcdef123456".to_string());
-        labels.insert("io.mino.cache.state".to_string(), "complete".to_string());
+        let labels = HashMap::from([
+            ("io.mino.cache".to_string(), "true".to_string()),
+            ("io.mino.cache.ecosystem".to_string(), "npm".to_string()),
+            ("io.mino.cache.hash".to_string(), "abcdef123456".to_string()),
+            ("io.mino.cache.state".to_string(), "complete".to_string()),
+        ]);
         VolumeInfo {
             name: name.to_string(),
             labels,
@@ -587,15 +588,15 @@ mod tests {
             mino_cache_volume("mino-cache-npm-abc123"),
             mino_cache_volume("mino-cache-cargo-def456"),
         ];
-        let mut sizes = std::collections::HashMap::new();
-        sizes.insert("mino-cache-npm-abc123".to_string(), 1024u64);
-        sizes.insert("mino-cache-cargo-def456".to_string(), 2048u64);
+        let sizes = HashMap::from([
+            ("mino-cache-npm-abc123".to_string(), 1024u64),
+            ("mino-cache-cargo-def456".to_string(), 2048u64),
+        ]);
 
         let mock = MockRuntime::new()
             .on("volume_list", Ok(MockResponse::VolumeInfoVec(volumes)))
             .on("volume_disk_usage", Ok(MockResponse::DiskUsageMap(sizes)));
 
-        // clear_volumes=true, clear_images=false, skip_confirm=true
         clear_artifacts(&mock, true, false, true).await.unwrap();
 
         mock.assert_called("volume_remove", 2);
@@ -613,7 +614,6 @@ mod tests {
         let mock =
             MockRuntime::new().on("image_list_prefixed", Ok(MockResponse::StringVec(images)));
 
-        // clear_volumes=false, clear_images=true, skip_confirm=true
         clear_artifacts(&mock, false, true, true).await.unwrap();
 
         mock.assert_called("container_prune", 1);
@@ -624,12 +624,10 @@ mod tests {
 
     #[tokio::test]
     async fn gc_dry_run_no_deletes() {
-        // Create volumes with old dates so GC would select them
         let mut vol = mino_cache_volume("mino-cache-npm-abc123");
         vol.created_at = Some("2025-01-01T00:00:00Z".to_string());
 
-        let mut sizes = std::collections::HashMap::new();
-        sizes.insert("mino-cache-npm-abc123".to_string(), 1024u64);
+        let sizes = HashMap::from([("mino-cache-npm-abc123".to_string(), 1024u64)]);
 
         let mock = MockRuntime::new()
             .on("volume_disk_usage", Ok(MockResponse::DiskUsageMap(sizes)))
@@ -638,7 +636,6 @@ mod tests {
         let config = Config::default();
         gc_caches(&mock, &config, Some(30), true).await.unwrap();
 
-        // Dry run should NOT call volume_remove
         mock.assert_called("volume_remove", 0);
     }
 }

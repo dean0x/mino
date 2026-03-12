@@ -419,6 +419,8 @@ mod tests {
     use self::image::*;
     use self::prompts::{is_default_network, upsert_container_toml_key};
     use super::*;
+    use crate::orchestration::mock::{test_container_config, MockRuntime};
+    use serial_test::serial;
 
     fn test_run_args() -> RunArgs {
         RunArgs {
@@ -602,7 +604,6 @@ mod tests {
         let args = test_run_args();
         let mut config = Config::default();
         config.container.layers = vec!["rust".to_string()];
-        // Clear MINO_LAYERS to avoid interference from environment
         std::env::remove_var("MINO_LAYERS");
         assert_eq!(
             resolve_layer_names(&args, &config),
@@ -623,7 +624,6 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join(".mino.toml");
 
-        // Write existing config with other settings
         tokio::fs::write(
             &path,
             "[container]\nimage = \"custom:latest\"\nnetwork = \"none\"\n",
@@ -639,11 +639,9 @@ mod tests {
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let parsed: toml::Value = content.parse().unwrap();
-        // Layers added
         let layers = parsed["container"]["layers"].as_array().unwrap();
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].as_str().unwrap(), "typescript");
-        // Existing fields preserved
         assert_eq!(
             parsed["container"]["image"].as_str().unwrap(),
             "custom:latest"
@@ -656,7 +654,6 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let path = temp.path().join("bad.toml");
 
-        // Write config where container is a string, not a table
         tokio::fs::write(&path, "container = \"not-a-table\"\n")
             .await
             .unwrap();
@@ -719,9 +716,6 @@ mod tests {
         assert!(!is_default_network(&args, &config));
     }
 
-    use crate::orchestration::mock::{test_container_config, MockRuntime};
-    use serial_test::serial;
-
     /// Guard that deletes a session file on drop (even on panic).
     struct SessionCleanup {
         name: String,
@@ -735,11 +729,19 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn smoke_run_interactive() {
-        let session_name = format!("test-smoke-int-{}", &Uuid::new_v4().to_string()[..8]);
-        let _cleanup = SessionCleanup {
+    /// Create a session, mock runtime, and all scaffolding needed by `run_interactive`
+    /// and `run_detached`. Returns `(mock, runtime, manager, session_name, cleanup)`.
+    async fn setup_smoke_test(
+        prefix: &str,
+    ) -> (
+        Arc<MockRuntime>,
+        Arc<dyn ContainerRuntime>,
+        SessionManager,
+        String,
+        SessionCleanup,
+    ) {
+        let session_name = format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..8]);
+        let cleanup = SessionCleanup {
             name: session_name.clone(),
         };
 
@@ -754,13 +756,21 @@ mod tests {
 
         let mock = Arc::new(MockRuntime::new());
         let runtime: Arc<dyn ContainerRuntime> = mock.clone();
+
+        (mock, runtime, manager, session_name, cleanup)
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn smoke_run_interactive() {
+        let (mock, runtime, manager, session_name, _cleanup) =
+            setup_smoke_test("test-smoke-int").await;
+
         let container_config = test_container_config();
         let command = vec!["bash".to_string()];
-
         let mut config = Config::default();
         config.general.audit_log = false;
         let audit = AuditLog::new(&config);
-
         let ctx = UiContext::detect();
         let mut spinner = TaskSpinner::new(&ctx);
 
@@ -774,14 +784,14 @@ mod tests {
             spinner: &mut spinner,
         };
 
-        let cache_session = CacheSession::default();
-        run_interactive(&mut run_ctx, cache_session).await.unwrap();
+        run_interactive(&mut run_ctx, CacheSession::default())
+            .await
+            .unwrap();
 
         mock.assert_called("create", 1);
         mock.assert_called("start_attached", 1);
         mock.assert_called("remove", 1);
 
-        // Session status should be Stopped after interactive run
         let updated = manager.get(&session_name).await.unwrap().unwrap();
         assert_eq!(updated.status, SessionStatus::Stopped);
     }
@@ -789,29 +799,14 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn smoke_run_detached() {
-        let session_name = format!("test-smoke-det-{}", &Uuid::new_v4().to_string()[..8]);
-        let _cleanup = SessionCleanup {
-            name: session_name.clone(),
-        };
+        let (mock, runtime, manager, session_name, _cleanup) =
+            setup_smoke_test("test-smoke-det").await;
 
-        let manager = SessionManager::new().await.unwrap();
-        let session = Session::new(
-            session_name.clone(),
-            PathBuf::from("/tmp/test-project"),
-            vec!["bash".to_string()],
-            SessionStatus::Starting,
-        );
-        manager.create(&session).await.unwrap();
-
-        let mock = Arc::new(MockRuntime::new());
-        let runtime: Arc<dyn ContainerRuntime> = mock.clone();
         let container_config = test_container_config();
         let command = vec!["bash".to_string()];
-
         let mut config = Config::default();
         config.general.audit_log = false;
         let audit = AuditLog::new(&config);
-
         let ctx = UiContext::detect();
         let mut spinner = TaskSpinner::new(&ctx);
 
@@ -825,14 +820,12 @@ mod tests {
             spinner: &mut spinner,
         };
 
-        // Empty volumes_to_finalize so tokio::spawn is skipped
-        let cache_session = CacheSession::default();
-        run_detached(&mut run_ctx, cache_session).await.unwrap();
+        run_detached(&mut run_ctx, CacheSession::default())
+            .await
+            .unwrap();
 
-        // Only assert the synchronous `run` call (not background task)
         mock.assert_called("run", 1);
 
-        // Session should have container_id and Running status
         let updated = manager.get(&session_name).await.unwrap().unwrap();
         assert_eq!(updated.status, SessionStatus::Running);
         assert!(updated.container_id.is_some());
