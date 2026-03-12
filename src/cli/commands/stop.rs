@@ -7,6 +7,7 @@ use crate::orchestration::{create_runtime, ContainerRuntime};
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, TaskSpinner, UiContext};
 use console::style;
+use tracing::warn;
 
 /// Execute the stop command
 pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
@@ -96,8 +97,14 @@ async fn stop_container(
         }
     }
 
-    // Remove container (already tolerates "no such container")
-    let _ = runtime.remove(container_id).await;
+    // Remove container (best-effort; log failures instead of propagating)
+    if let Err(e) = runtime.remove(container_id).await {
+        warn!(
+            "Failed to remove container {}: {}",
+            &container_id[..12.min(container_id.len())],
+            e
+        );
+    }
 
     Ok(true)
 }
