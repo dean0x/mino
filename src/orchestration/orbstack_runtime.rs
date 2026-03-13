@@ -569,19 +569,15 @@ impl ContainerRuntime for OrbStackRuntime {
         tty: bool,
     ) -> MinoResult<i32> {
         debug!("Exec into container: {}", container_id);
-        let mut args = vec![
-            "podman".to_string(),
-            "exec".to_string(),
-            "-i".to_string(),
-        ];
+        let mut args = vec!["podman", "exec", "-i"];
         if tty {
-            args.push("-t".to_string());
+            args.push("-t");
         }
-        args.push(container_id.to_string());
-        args.push("--".to_string());
-        args.extend(command.iter().cloned());
-        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        self.orbstack.exec_interactive(&args_refs).await
+        args.push(container_id);
+        args.push("--");
+        let cmd_refs: Vec<&str> = command.iter().map(String::as_str).collect();
+        args.extend(cmd_refs);
+        self.orbstack.exec_interactive(&args).await
     }
 
     async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>> {
