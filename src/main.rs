@@ -91,14 +91,16 @@ async fn run() -> MinoResult<ExitCode> {
     // Dispatch to command
     match cli.command {
         Commands::Init(_) | Commands::Completions(_) => unreachable!("handled above"),
-        Commands::Exec(args) => mino::cli::commands::exec(args, &config).await,
-        Commands::Run(args) => { mino::cli::commands::run(args, &config).await?; Ok(ExitCode::SUCCESS) }
-        Commands::List(args) => { mino::cli::commands::list(args, &config).await?; Ok(ExitCode::SUCCESS) }
-        Commands::Stop(args) => { mino::cli::commands::stop(args, &config).await?; Ok(ExitCode::SUCCESS) }
-        Commands::Logs(args) => { mino::cli::commands::logs(args, &config).await?; Ok(ExitCode::SUCCESS) }
-        Commands::Status => { mino::cli::commands::status(&config).await?; Ok(ExitCode::SUCCESS) }
-        Commands::Setup(args) => { mino::cli::commands::setup(args, &config).await?; Ok(ExitCode::SUCCESS) }
-        Commands::Config(args) => { mino::cli::commands::config(args, &config).await?; Ok(ExitCode::SUCCESS) }
-        Commands::Cache(args) => { mino::cli::commands::cache(args, &config).await?; Ok(ExitCode::SUCCESS) }
-    }
+        Commands::Exec(args) => mino::cli::commands::exec(args, &config).await?,
+        Commands::Run(args) => mino::cli::commands::run(args, &config).await?,
+        Commands::List(args) => mino::cli::commands::list(args, &config).await?,
+        Commands::Stop(args) => mino::cli::commands::stop(args, &config).await?,
+        Commands::Logs(args) => mino::cli::commands::logs(args, &config).await?,
+        Commands::Status => mino::cli::commands::status(&config).await?,
+        Commands::Setup(args) => mino::cli::commands::setup(args, &config).await?,
+        Commands::Config(args) => mino::cli::commands::config(args, &config).await?,
+        Commands::Cache(args) => mino::cli::commands::cache(args, &config).await?,
+    };
+
+    Ok(ExitCode::SUCCESS)
 }

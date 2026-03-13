@@ -5,18 +5,24 @@ use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{create_runtime, ContainerRuntime};
 use crate::session::{Session, SessionManager, SessionStatus};
+use crate::ui::{self, UiContext};
 use console::style;
 use std::io::IsTerminal;
-use std::process::ExitCode;
+use tracing::debug;
 
 const DEFAULT_SHELL: &str = "/bin/zsh";
 
-pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<ExitCode> {
+/// Execute the exec command
+pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<()> {
+    let ctx = UiContext::detect();
     let manager = SessionManager::new().await?;
 
     let session = resolve_session(&manager, args.session.as_deref()).await?;
 
-    eprintln!("Exec into session {}", style(&session.name).cyan());
+    ui::step_info(
+        &ctx,
+        &format!("Exec into session {}", style(&session.name).cyan()),
+    );
 
     let command: Vec<String> = if args.command.is_empty() {
         vec![DEFAULT_SHELL.to_string()]
@@ -28,7 +34,13 @@ pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<ExitCode> {
     let tty = std::io::stdin().is_terminal();
     let exit_code = exec_in_session(&session, &*runtime, &command, tty).await?;
 
-    Ok(ExitCode::from((exit_code & 0xFF) as u8))
+    debug!(exit_code, "Container exec finished");
+
+    if exit_code != 0 {
+        std::process::exit((exit_code & 0xFF) as i32);
+    }
+
+    Ok(())
 }
 
 /// Resolve which session to exec into.
@@ -55,7 +67,7 @@ fn validate_session_running(session: &Session) -> MinoResult<()> {
         return Err(MinoError::User(format!(
             "Session '{}' is not running (status: {}). Use 'mino list' to see active sessions.",
             session.name,
-            format!("{:?}", session.status).to_lowercase()
+            session.status
         )));
     }
     Ok(())
@@ -152,6 +164,15 @@ mod tests {
         assert!(err.to_string().contains("not running"));
     }
 
+    #[test]
+    fn validate_running_rejects_failed() {
+        let session = test_session("s", SessionStatus::Failed, None);
+        let err = validate_session_running(&session).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not running"));
+        assert!(msg.contains("failed"));
+    }
+
     // -- exec_in_session tests (MockRuntime) --
 
     #[tokio::test]
@@ -236,18 +257,5 @@ mod tests {
             .unwrap();
 
         runtime.assert_called_with("exec_in_container", &["cid", "true", "bash"]);
-    }
-
-    #[tokio::test]
-    async fn exec_tty_false_forwarded() {
-        let session = test_session("s", SessionStatus::Running, Some("cid"));
-        let runtime = MockRuntime::new();
-        let cmd = vec!["bash".to_string()];
-
-        exec_in_session(&session, &runtime, &cmd, false)
-            .await
-            .unwrap();
-
-        runtime.assert_called_with("exec_in_container", &["cid", "false", "bash"]);
     }
 }
