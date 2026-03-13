@@ -24,7 +24,7 @@ pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<()> {
         &format!("Exec into session {}", style(&session.name).cyan()),
     );
 
-    let command: Vec<String> = if args.command.is_empty() {
+    let command = if args.command.is_empty() {
         vec![DEFAULT_SHELL.to_string()]
     } else {
         args.command

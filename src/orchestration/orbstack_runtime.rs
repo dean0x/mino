@@ -575,8 +575,7 @@ impl ContainerRuntime for OrbStackRuntime {
         }
         args.push(container_id);
         args.push("--");
-        let cmd_refs: Vec<&str> = command.iter().map(String::as_str).collect();
-        args.extend(cmd_refs);
+        args.extend(command.iter().map(String::as_str));
         self.orbstack.exec_interactive(&args).await
     }
 
