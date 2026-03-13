@@ -29,7 +29,7 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
             &format!(
                 "Session {} is already {}",
                 style(&args.session).cyan(),
-                format!("{:?}", session.status).to_lowercase()
+                session.status
             ),
         );
         return Ok(());
