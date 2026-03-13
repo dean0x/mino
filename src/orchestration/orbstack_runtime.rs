@@ -562,6 +562,28 @@ impl ContainerRuntime for OrbStackRuntime {
         super::collect_disk_usage(results)
     }
 
+    async fn exec_in_container(
+        &self,
+        container_id: &str,
+        command: &[String],
+        tty: bool,
+    ) -> MinoResult<i32> {
+        debug!("Exec into container: {}", container_id);
+        let mut args = vec![
+            "podman".to_string(),
+            "exec".to_string(),
+            "-i".to_string(),
+        ];
+        if tty {
+            args.push("-t".to_string());
+        }
+        args.push(container_id.to_string());
+        args.push("--".to_string());
+        args.extend(command.iter().cloned());
+        let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.orbstack.exec_interactive(&args_refs).await
+    }
+
     async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>> {
         debug!("Waiting for container exit: {}", container_id);
 

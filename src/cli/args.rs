@@ -40,6 +40,9 @@ pub enum Commands {
     /// Start a sandboxed session
     Run(RunArgs),
 
+    /// Execute a command in a running session
+    Exec(ExecArgs),
+
     /// Initialize a project-local .mino.toml config
     Init(InitArgs),
 
@@ -66,6 +69,17 @@ pub enum Commands {
 
     /// Generate shell completions
     Completions(CompletionsArgs),
+}
+
+/// Arguments for the exec command
+#[derive(Parser, Debug)]
+pub struct ExecArgs {
+    /// Session name (defaults to most recent running session)
+    pub session: Option<String>,
+
+    /// Command to execute (defaults to /bin/zsh)
+    #[arg(last = true)]
+    pub command: Vec<String>,
 }
 
 /// Arguments for the setup command
@@ -576,6 +590,54 @@ mod tests {
         match cli.command {
             Commands::Completions(args) => assert_eq!(args.shell, Shell::Zsh),
             _ => panic!("expected Completions command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_exec_no_args() {
+        let cli = Cli::parse_from(["mino", "exec"]);
+        match cli.command {
+            Commands::Exec(args) => {
+                assert!(args.session.is_none());
+                assert!(args.command.is_empty());
+            }
+            _ => panic!("expected Exec command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_exec_with_session() {
+        let cli = Cli::parse_from(["mino", "exec", "my-session"]);
+        match cli.command {
+            Commands::Exec(args) => {
+                assert_eq!(args.session.as_deref(), Some("my-session"));
+                assert!(args.command.is_empty());
+            }
+            _ => panic!("expected Exec command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_exec_with_command() {
+        let cli = Cli::parse_from(["mino", "exec", "--", "ls", "-la"]);
+        match cli.command {
+            Commands::Exec(args) => {
+                assert!(args.session.is_none());
+                assert_eq!(args.command, vec!["ls", "-la"]);
+            }
+            _ => panic!("expected Exec command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_exec_with_session_and_command() {
+        let cli = Cli::parse_from(["mino", "exec", "my-session", "--", "ls", "-la"]);
+        match cli.command {
+            Commands::Exec(args) => {
+                assert_eq!(args.session.as_deref(), Some("my-session"));
+                assert_eq!(args.command, vec!["ls", "-la"]);
+            }
+            _ => panic!("expected Exec command"),
         }
     }
 

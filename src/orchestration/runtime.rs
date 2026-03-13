@@ -108,6 +108,17 @@ pub trait ContainerRuntime: Send + Sync {
     /// Returns a map of volume name -> size in bytes
     async fn volume_disk_usage(&self, prefix: &str) -> MinoResult<HashMap<String, u64>>;
 
+    /// Execute a command inside a running container.
+    ///
+    /// When `tty` is true, allocates a pseudo-terminal for interactive use.
+    /// Returns the command's exit code.
+    async fn exec_in_container(
+        &self,
+        container_id: &str,
+        command: &[String],
+        tty: bool,
+    ) -> MinoResult<i32>;
+
     /// Wait for a container to exit and return its exit code.
     ///
     /// Uses `podman wait` which blocks until the container stops, then returns

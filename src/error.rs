@@ -226,6 +226,7 @@ impl MinoError {
             }
             Self::ImageBuild { .. } => Some("Check build output above. Use -v for details."),
             Self::PodmanRootlessSetup { .. } => Some("Run: mino setup"),
+            Self::NoActiveSessions => Some("Start a session with: mino run"),
             Self::NetworkPolicy(_) => Some("Use --network bridge with --network-allow, or --network none without --network-allow."),
             _ => None,
         }
