@@ -144,6 +144,27 @@ mino run [OPTIONS] [-- COMMAND...]
 
 Set `MINO_LAYERS=rust,typescript` in your environment for non-interactive layer selection (CI, IDE plugins). When no layers or image are configured and the terminal is interactive, `mino run` prompts for layer selection with an option to save to config.
 
+#### `mino exec`
+
+Execute a command in a running session.
+
+```bash
+mino exec [SESSION] [-- COMMAND...]
+```
+
+| Option | Description |
+|--------|-------------|
+| `SESSION` | Session name (defaults to most recent running session) |
+| `COMMAND` | Command to run (defaults to `/bin/zsh`) |
+
+Examples:
+
+```bash
+mino exec                              # Shell into most recent session
+mino exec my-session                   # Shell into named session
+mino exec my-session -- ls -la         # Run command in named session
+```
+
 #### `mino list`
 
 List sessions.

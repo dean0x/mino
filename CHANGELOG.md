@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-03-14
+
+### Added
+
+- `mino exec` command for executing commands inside running session containers (#42).
+  - Resolves sessions by name or picks the most recent running session
+  - TTY detection for interactive use
+  - Exit code propagation from container process
+  - Defaults to `/bin/zsh` shell when no command specified
+
+### Changed
+
+- Added MockRuntime and comprehensive unit tests for all command modules (#41).
+
 ## [1.3.0] - 2026-03-11
 
 ### Added
@@ -110,6 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
+[1.4.0]: https://github.com/dean0x/mino/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/dean0x/mino/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/dean0x/mino/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/dean0x/mino/compare/v1.2.0...v1.2.1

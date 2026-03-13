@@ -1,4 +1,4 @@
-# Mino v1.3.0 — Terminal Demo
+# Mino v1.4.0 — Terminal Demo
 # Record with: vhs demo.tape
 # Output: demo.gif
 
