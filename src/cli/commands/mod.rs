@@ -3,6 +3,7 @@
 pub mod cache;
 pub mod completions;
 pub mod config;
+pub mod exec;
 pub mod init;
 pub mod list;
 pub mod logs;
@@ -14,6 +15,7 @@ pub mod stop;
 pub use cache::execute as cache;
 pub use completions::execute as completions;
 pub use config::execute as config;
+pub use exec::execute as exec;
 pub use init::execute as init;
 pub use list::execute as list;
 pub use logs::execute as logs;

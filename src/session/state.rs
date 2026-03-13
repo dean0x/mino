@@ -18,6 +18,17 @@ pub enum SessionStatus {
     Failed,
 }
 
+impl std::fmt::Display for SessionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Starting => write!(f, "starting"),
+            Self::Running => write!(f, "running"),
+            Self::Stopped => write!(f, "stopped"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
 /// Session record
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -78,6 +89,7 @@ impl Session {
 
     /// Load session from file
     pub async fn load(name: &str) -> MinoResult<Option<Self>> {
+        validate_session_name(name)?;
         let path = ConfigManager::sessions_dir().join(format!("{}.json", name));
 
         if !path.exists() {
@@ -96,6 +108,7 @@ impl Session {
     /// Uses O_CREAT | O_EXCL for kernel-level atomic create-or-fail,
     /// eliminating the TOCTOU race in load-then-save.
     pub async fn create_file(&self) -> MinoResult<()> {
+        validate_session_name(&self.name)?;
         let path = self.file_path();
 
         if let Some(parent) = path.parent() {
@@ -193,6 +206,29 @@ impl Session {
     }
 }
 
+/// Validate that a session name is safe (no path traversal, no special characters).
+pub fn validate_session_name(name: &str) -> MinoResult<()> {
+    if name.is_empty() {
+        return Err(MinoError::User("Session name cannot be empty".to_string()));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") || name.contains('\0') {
+        return Err(MinoError::User(format!(
+            "Invalid session name '{}': must not contain path separators or '..'",
+            name
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(MinoError::User(format!(
+            "Invalid session name '{}': must contain only alphanumeric characters, hyphens, or underscores",
+            name
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +262,50 @@ mod tests {
 
         let parsed: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, session.name);
+    }
+
+    // -- validate_session_name tests --
+
+    #[test]
+    fn valid_session_names() {
+        assert!(validate_session_name("my-session").is_ok());
+        assert!(validate_session_name("session_1").is_ok());
+        assert!(validate_session_name("abc123").is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_name() {
+        let err = validate_session_name("").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn rejects_path_traversal() {
+        assert!(validate_session_name("../../../etc/passwd").is_err());
+        assert!(validate_session_name("..").is_err());
+        assert!(validate_session_name("foo/bar").is_err());
+        assert!(validate_session_name("foo\\bar").is_err());
+    }
+
+    #[test]
+    fn rejects_null_byte() {
+        assert!(validate_session_name("foo\0bar").is_err());
+    }
+
+    #[test]
+    fn rejects_special_characters() {
+        assert!(validate_session_name("foo bar").is_err());
+        assert!(validate_session_name("foo.bar").is_err());
+        assert!(validate_session_name("foo@bar").is_err());
+    }
+
+    // -- SessionStatus Display tests --
+
+    #[test]
+    fn status_display() {
+        assert_eq!(SessionStatus::Starting.to_string(), "starting");
+        assert_eq!(SessionStatus::Running.to_string(), "running");
+        assert_eq!(SessionStatus::Stopped.to_string(), "stopped");
+        assert_eq!(SessionStatus::Failed.to_string(), "failed");
     }
 }

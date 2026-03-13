@@ -355,6 +355,18 @@ impl ContainerRuntime for MockRuntime {
         self.take_disk_usage_map("volume_disk_usage")
     }
 
+    async fn exec_in_container(
+        &self,
+        container_id: &str,
+        command: &[String],
+        tty: bool,
+    ) -> MinoResult<i32> {
+        let mut args = vec![container_id.to_string(), tty.to_string()];
+        args.extend(command.iter().cloned());
+        self.record("exec_in_container", args);
+        self.take_int("exec_in_container", 0)
+    }
+
     async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>> {
         self.record("get_container_exit_code", vec![container_id.to_string()]);
         self.take_optional_int("get_container_exit_code", Some(0))
@@ -413,6 +425,12 @@ mod tests {
         assert!(mock.volume_inspect("vol").await.unwrap().is_none());
         assert!(mock.volume_disk_usage("pfx").await.unwrap().is_empty());
         assert_eq!(mock.get_container_exit_code("abc").await.unwrap(), Some(0));
+        assert_eq!(
+            mock.exec_in_container("abc", &["bash".to_string()], false)
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
