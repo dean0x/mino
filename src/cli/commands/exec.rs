@@ -66,8 +66,7 @@ fn validate_session_running(session: &Session) -> MinoResult<()> {
     if session.status != SessionStatus::Running {
         return Err(MinoError::User(format!(
             "Session '{}' is not running (status: {}). Use 'mino list' to see active sessions.",
-            session.name,
-            session.status
+            session.name, session.status
         )));
     }
     Ok(())
@@ -206,7 +205,11 @@ mod tests {
     async fn exec_passes_command_args() {
         let session = test_session("s", SessionStatus::Running, Some("abc123"));
         let runtime = MockRuntime::new();
-        let cmd = vec!["ls".to_string(), "-la".to_string(), "/workspace".to_string()];
+        let cmd = vec![
+            "ls".to_string(),
+            "-la".to_string(),
+            "/workspace".to_string(),
+        ];
 
         exec_in_session(&session, &runtime, &cmd, true)
             .await
@@ -221,8 +224,7 @@ mod tests {
     #[tokio::test]
     async fn exec_propagates_exit_code() {
         let session = test_session("s", SessionStatus::Running, Some("abc123"));
-        let runtime =
-            MockRuntime::new().on("exec_in_container", Ok(MockResponse::Int(42)));
+        let runtime = MockRuntime::new().on("exec_in_container", Ok(MockResponse::Int(42)));
         let cmd = vec!["false".to_string()];
 
         let code = exec_in_session(&session, &runtime, &cmd, false)
