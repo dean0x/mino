@@ -844,39 +844,27 @@ mod tests {
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let parsed: toml::Value = content.parse().unwrap();
-        assert_eq!(
-            parsed["container"]["image"].as_str().unwrap(),
-            "base",
-        );
+        assert_eq!(parsed["container"]["image"].as_str().unwrap(), "base",);
     }
 
     #[test]
     fn sentinel_base_only_alone_yields_empty() {
         let selected = vec![BASE_ONLY.to_string()];
-        let layer_names: Vec<String> = selected
-            .into_iter()
-            .filter(|s| s != BASE_ONLY)
-            .collect();
+        let layer_names: Vec<String> = selected.into_iter().filter(|s| s != BASE_ONLY).collect();
         assert!(layer_names.is_empty());
     }
 
     #[test]
     fn sentinel_base_only_with_layer_yields_layer_only() {
         let selected = vec![BASE_ONLY.to_string(), "typescript".to_string()];
-        let layer_names: Vec<String> = selected
-            .into_iter()
-            .filter(|s| s != BASE_ONLY)
-            .collect();
+        let layer_names: Vec<String> = selected.into_iter().filter(|s| s != BASE_ONLY).collect();
         assert_eq!(layer_names, vec!["typescript"]);
     }
 
     #[test]
     fn sentinel_no_base_only_passes_through() {
         let selected = vec!["rust".to_string()];
-        let layer_names: Vec<String> = selected
-            .into_iter()
-            .filter(|s| s != BASE_ONLY)
-            .collect();
+        let layer_names: Vec<String> = selected.into_iter().filter(|s| s != BASE_ONLY).collect();
         assert_eq!(layer_names, vec!["rust"]);
     }
 

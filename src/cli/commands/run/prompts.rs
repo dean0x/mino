@@ -239,10 +239,7 @@ pub(super) async fn prompt_layer_selection(
     .await?;
 
     // Filter out the sentinel — remaining entries are real layer names
-    let layer_names: Vec<String> = selected
-        .into_iter()
-        .filter(|s| s != BASE_ONLY)
-        .collect();
+    let layer_names: Vec<String> = selected.into_iter().filter(|s| s != BASE_ONLY).collect();
 
     if layer_names.is_empty() {
         // User selected "Base only" (or only "Base only") — offer to persist
