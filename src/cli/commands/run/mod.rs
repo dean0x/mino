@@ -46,6 +46,9 @@ struct ImageResolution {
 
 /// Execute the run command
 pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
+    #[cfg(unix)]
+    let _terminal_guard = crate::terminal::TerminalGuard::save();
+
     let ctx = UiContext::detect();
     let mut spinner = TaskSpinner::new(&ctx);
 

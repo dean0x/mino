@@ -113,21 +113,23 @@ pub(super) async fn resolve_image(
         image_alias_to_layer(&raw).map(|name| vec![name.to_string()])
     });
 
-    let layer_names =
+    // Track whether the interactive prompt selected "Base only" (no layers but use mino-base)
+    let (layer_names, base_only) =
         if layer_names.is_none() && ctx.is_interactive() && is_default_image(args, config) {
             spinner.clear();
             match super::prompts::prompt_layer_selection(ctx, project_dir, config).await? {
                 Some(selected) => {
                     spinner.start("Initializing sandbox...");
-                    Some(selected)
+                    (Some(selected), false)
                 }
-                None => None,
+                None => (None, true),
             }
         } else {
-            layer_names
+            (layer_names, false)
         };
 
-    let using_layers = layer_names.is_some();
+    // base_only uses mino-base with zsh, same as layer composition
+    let using_layers = layer_names.is_some() || base_only;
 
     let resolution = if let Some(names) = layer_names {
         let mut resolved = Vec::new();
@@ -157,6 +159,12 @@ pub(super) async fn resolve_image(
         ImageResolution {
             image: result.image_tag,
             layer_env: result.env,
+        }
+    } else if base_only {
+        debug!("Using base image without layers: {}", LAYER_BASE_IMAGE);
+        ImageResolution {
+            image: LAYER_BASE_IMAGE.to_string(),
+            layer_env: HashMap::new(),
         }
     } else {
         let raw = args

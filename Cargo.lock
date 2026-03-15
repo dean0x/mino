@@ -612,6 +612,7 @@ dependencies = [
  "futures-util",
  "hex",
  "indicatif 0.17.11",
+ "libc",
  "predicates",
  "serde",
  "serde_json",

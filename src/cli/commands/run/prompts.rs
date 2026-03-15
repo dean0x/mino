@@ -179,22 +179,31 @@ pub(super) async fn upsert_container_toml_key(
     Ok(())
 }
 
+/// Sentinel value for the "Base only" multiselect option.
+const BASE_ONLY: &str = "__base__";
+
 /// Prompt user to select development tool layers interactively.
-/// Returns Some(layer_names) if layers selected, None for bare container.
+/// Returns Some(layer_names) if layers selected, None for base-only container.
 pub(super) async fn prompt_layer_selection(
     ctx: &UiContext,
     project_dir: &Path,
     config: &Config,
 ) -> MinoResult<Option<Vec<String>>> {
     let available = list_available_layers(project_dir).await?;
-    if available.is_empty() {
-        return Ok(None);
-    }
 
-    let options: Vec<(String, String, String)> = available
-        .iter()
-        .map(|l| (l.name.clone(), l.name.clone(), l.description.clone()))
-        .collect();
+    // Build options: "Base only" first, then available layers
+    let mut options: Vec<(String, String, String)> = vec![(
+        BASE_ONLY.to_string(),
+        "Base only".to_string(),
+        "Claude Code, zsh, git — no extra language tools".to_string(),
+    )];
+
+    options.extend(
+        available
+            .iter()
+            .map(|l| (l.name.clone(), l.name.clone(), l.description.clone())),
+    );
+
     let option_refs: Vec<(String, &str, &str)> = options
         .iter()
         .map(|(v, l, h)| (v.clone(), l.as_str(), h.as_str()))
@@ -204,17 +213,55 @@ pub(super) async fn prompt_layer_selection(
         ctx,
         "Select development tools (space to toggle, enter to confirm)",
         &option_refs,
-        false,
+        true,
     )
     .await?;
 
-    if selected.is_empty() {
+    // Filter out the sentinel — remaining entries are real layer names
+    let layer_names: Vec<String> = selected
+        .into_iter()
+        .filter(|s| s != BASE_ONLY)
+        .collect();
+
+    if layer_names.is_empty() {
+        // User selected "Base only" (or only "Base only") — offer to persist
+        prompt_save_base_only(ctx, project_dir).await?;
         return Ok(None);
     }
 
-    prompt_save_config(ctx, &selected, project_dir, config).await?;
+    prompt_save_config(ctx, &layer_names, project_dir, config).await?;
 
-    Ok(Some(selected))
+    Ok(Some(layer_names))
+}
+
+/// Prompt user to save "Base only" selection to config.
+///
+/// Saves `image = "base"` under `[container]`, which `resolve_image_alias`
+/// maps to `ghcr.io/dean0x/mino-base:latest`. On next run, `is_default_image`
+/// returns false (image != "fedora:43"), skipping the layer prompt entirely.
+async fn prompt_save_base_only(ctx: &UiContext, project_dir: &Path) -> MinoResult<()> {
+    let options: Vec<(SaveTarget, &str, &str)> = vec![
+        (SaveTarget::Local, "Save to .mino.toml", "this project only"),
+        (
+            SaveTarget::Global,
+            "Save to global config",
+            "~/.config/mino/config.toml",
+        ),
+        (SaveTarget::None, "Don't save", "prompt again next time"),
+    ];
+
+    let target = ui::select(ctx, "Save this configuration?", &options).await?;
+
+    let path = match target {
+        SaveTarget::Local => project_dir.join(".mino.toml"),
+        SaveTarget::Global => ConfigManager::default_config_path(),
+        SaveTarget::None => return Ok(()),
+    };
+
+    upsert_container_toml_key(&path, "image", "base".into()).await?;
+    println!("  {} Saved to {}", style("✓").green(), path.display());
+
+    Ok(())
 }
 
 /// Prompt user to save selected layers to config.
