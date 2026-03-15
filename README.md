@@ -142,7 +142,9 @@ mino run [OPTIONS] [-- COMMAND...]
 
 **Layer precedence**: `--layers` flag > `--image` flag > `MINO_LAYERS` env var > config `container.layers` > interactive selection > config `container.image`.
 
-Set `MINO_LAYERS=rust,typescript` in your environment for non-interactive layer selection (CI, IDE plugins). When no layers or image are configured and the terminal is interactive, `mino run` prompts for layer selection with an option to save to config.
+Set `MINO_LAYERS=rust,typescript` in your environment for non-interactive layer selection (CI, IDE plugins). When no layers or image are configured and the terminal is interactive, `mino run` prompts for layer selection with an option to save to config. Selecting "Base only" persists `image = "base"` to your config, skipping the prompt on subsequent runs.
+
+On Unix systems, Mino automatically saves and restores terminal state when a session is interrupted (e.g., Ctrl+C during a prompt or container run), preventing shell corruption.
 
 #### `mino exec`
 
