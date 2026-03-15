@@ -85,12 +85,16 @@ pub(super) async fn prompt_network_selection(
     Ok(mode)
 }
 
-/// Save network selection to config.
-async fn prompt_save_network(
+/// Prompt user to choose where to save a config key, then persist it.
+///
+/// Returns early (with `Ok(())`) if the user chooses "Don't save".
+async fn prompt_and_save(
     ctx: &UiContext,
-    choice: &NetworkChoice,
-    preset_name: Option<&str>,
+    prompt: &str,
+    skip_hint: &str,
     project_dir: &Path,
+    key: &str,
+    value: toml_edit::Value,
 ) -> MinoResult<()> {
     let options: Vec<(SaveTarget, &str, &str)> = vec![
         (SaveTarget::Local, "Save to .mino.toml", "this project only"),
@@ -99,10 +103,10 @@ async fn prompt_save_network(
             "Save to global config",
             "~/.config/mino/config.toml",
         ),
-        (SaveTarget::None, "Don't save", "prompt again next time"),
+        (SaveTarget::None, "Don't save", skip_hint),
     ];
 
-    let target = ui::select(ctx, "Save this network setting?", &options).await?;
+    let target = ui::select(ctx, prompt, &options).await?;
 
     let path = match target {
         SaveTarget::Local => project_dir.join(".mino.toml"),
@@ -110,7 +114,20 @@ async fn prompt_save_network(
         SaveTarget::None => return Ok(()),
     };
 
-    let (key, toml_value): (&str, toml_edit::Value) = if let Some(preset) = preset_name {
+    upsert_container_toml_key(&path, key, value).await?;
+    println!("  {} Saved to {}", style("✓").green(), path.display());
+
+    Ok(())
+}
+
+/// Save network selection to config.
+async fn prompt_save_network(
+    ctx: &UiContext,
+    choice: &NetworkChoice,
+    preset_name: Option<&str>,
+    project_dir: &Path,
+) -> MinoResult<()> {
+    let (key, value): (&str, toml_edit::Value) = if let Some(preset) = preset_name {
         ("network_preset", preset.to_string().into())
     } else {
         let net = match choice {
@@ -121,10 +138,15 @@ async fn prompt_save_network(
         ("network", net.to_string().into())
     };
 
-    upsert_container_toml_key(&path, key, toml_value).await?;
-    println!("  {} Saved to {}", style("✓").green(), path.display());
-
-    Ok(())
+    prompt_and_save(
+        ctx,
+        "Save this network setting?",
+        "prompt again next time",
+        project_dir,
+        key,
+        value,
+    )
+    .await
 }
 
 /// Insert or update a key under [container] in a TOML config file.
@@ -240,28 +262,15 @@ pub(super) async fn prompt_layer_selection(
 /// maps to `ghcr.io/dean0x/mino-base:latest`. On next run, `is_default_image`
 /// returns false (image != "fedora:43"), skipping the layer prompt entirely.
 async fn prompt_save_base_only(ctx: &UiContext, project_dir: &Path) -> MinoResult<()> {
-    let options: Vec<(SaveTarget, &str, &str)> = vec![
-        (SaveTarget::Local, "Save to .mino.toml", "this project only"),
-        (
-            SaveTarget::Global,
-            "Save to global config",
-            "~/.config/mino/config.toml",
-        ),
-        (SaveTarget::None, "Don't save", "prompt again next time"),
-    ];
-
-    let target = ui::select(ctx, "Save this configuration?", &options).await?;
-
-    let path = match target {
-        SaveTarget::Local => project_dir.join(".mino.toml"),
-        SaveTarget::Global => ConfigManager::default_config_path(),
-        SaveTarget::None => return Ok(()),
-    };
-
-    upsert_container_toml_key(&path, "image", "base".into()).await?;
-    println!("  {} Saved to {}", style("✓").green(), path.display());
-
-    Ok(())
+    prompt_and_save(
+        ctx,
+        "Save this configuration?",
+        "prompt again next time",
+        project_dir,
+        "image",
+        "base".into(),
+    )
+    .await
 }
 
 /// Prompt user to save selected layers to config.
@@ -271,30 +280,18 @@ async fn prompt_save_config(
     project_dir: &Path,
     _config: &Config,
 ) -> MinoResult<()> {
-    let options: Vec<(SaveTarget, &str, &str)> = vec![
-        (SaveTarget::Local, "Save to .mino.toml", "this project only"),
-        (
-            SaveTarget::Global,
-            "Save to global config",
-            "~/.config/mino/config.toml",
-        ),
-        (SaveTarget::None, "Don't save", "one-time, no persistence"),
-    ];
-
-    let target = ui::select(ctx, "Save this configuration?", &options).await?;
-
-    let path = match target {
-        SaveTarget::Local => project_dir.join(".mino.toml"),
-        SaveTarget::Global => ConfigManager::default_config_path(),
-        SaveTarget::None => return Ok(()),
-    };
-
     let mut layers_arr = toml_edit::Array::new();
     for l in layers {
         layers_arr.push(l.as_str());
     }
-    upsert_container_toml_key(&path, "layers", toml_edit::Value::Array(layers_arr)).await?;
-    println!("  {} Saved to {}", style("✓").green(), path.display());
 
-    Ok(())
+    prompt_and_save(
+        ctx,
+        "Save this configuration?",
+        "one-time, no persistence",
+        project_dir,
+        "layers",
+        toml_edit::Value::Array(layers_arr),
+    )
+    .await
 }

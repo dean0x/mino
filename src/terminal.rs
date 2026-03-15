@@ -21,7 +21,6 @@ impl TerminalGuard {
     pub(crate) fn save() -> Option<Self> {
         let fd = std::io::stdin().as_raw_fd();
 
-        // Only save if stdin is a real terminal
         if unsafe { libc::isatty(fd) } != 1 {
             return None;
         }
@@ -53,7 +52,7 @@ impl Drop for TerminalGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

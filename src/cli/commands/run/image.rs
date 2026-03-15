@@ -103,15 +103,15 @@ pub(super) async fn resolve_image(
     runtime: &dyn ContainerRuntime,
     project_dir: &Path,
 ) -> MinoResult<(ImageResolution, bool)> {
+    let raw_image = args
+        .image
+        .clone()
+        .unwrap_or_else(|| config.container.image.clone());
+
     // Resolve layers from CLI/config, then check image alias redirect
     // (e.g., --image typescript -> layer composition)
-    let layer_names = resolve_layer_names(args, config).or_else(|| {
-        let raw = args
-            .image
-            .clone()
-            .unwrap_or_else(|| config.container.image.clone());
-        image_alias_to_layer(&raw).map(|name| vec![name.to_string()])
-    });
+    let layer_names = resolve_layer_names(args, config)
+        .or_else(|| image_alias_to_layer(&raw_image).map(|name| vec![name.to_string()]));
 
     // Track whether the interactive prompt selected "Base only" (no layers but use mino-base)
     let (layer_names, base_only) =
@@ -167,13 +167,8 @@ pub(super) async fn resolve_image(
             layer_env: HashMap::new(),
         }
     } else {
-        let raw = args
-            .image
-            .clone()
-            .unwrap_or_else(|| config.container.image.clone());
-        let image = resolve_image_alias(&raw);
         ImageResolution {
-            image,
+            image: resolve_image_alias(&raw_image),
             layer_env: HashMap::new(),
         }
     };
