@@ -50,8 +50,10 @@ impl TerminalGuard {
         // TCSADRAIN waits for pending output to drain before restoring.
         let ret = unsafe { libc::tcsetattr(self.fd, libc::TCSADRAIN, &self.original) };
         if ret != 0 {
-            eprintln!("mino: failed to restore terminal attributes (errno: {})",
-                std::io::Error::last_os_error());
+            eprintln!(
+                "mino: failed to restore terminal attributes (errno: {})",
+                std::io::Error::last_os_error()
+            );
         }
     }
 }
@@ -77,6 +79,5 @@ mod tests {
         } else {
             assert!(guard.is_some(), "expected Some for TTY stdin");
         }
-        drop(guard);
     }
 }

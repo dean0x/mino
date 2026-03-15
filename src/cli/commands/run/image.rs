@@ -94,31 +94,20 @@ pub(super) fn is_default_image(args: &RunArgs, config: &Config) -> bool {
 
 /// Resolve the final image when no layer composition is needed.
 ///
-/// Handles two cases:
-/// - `base_only=true`: use `LAYER_BASE_IMAGE` with empty env (user selected "Base only")
-/// - `base_only=false`: resolve the raw image alias to a full path
-///
-/// Returns `(ImageResolution, using_layers)`.
-pub(super) fn resolve_final_image(
-    raw_image: &str,
-    base_only: bool,
-) -> (ImageResolution, bool) {
-    let using_layers = base_only;
-
-    let resolution = if base_only {
+/// When `base_only` is true, uses `LAYER_BASE_IMAGE` (user selected "Base only").
+/// Otherwise, resolves the raw image alias to a full path.
+pub(super) fn resolve_final_image(raw_image: &str, base_only: bool) -> ImageResolution {
+    let image = if base_only {
         debug!("Using base image without layers: {}", LAYER_BASE_IMAGE);
-        ImageResolution {
-            image: LAYER_BASE_IMAGE.to_string(),
-            layer_env: HashMap::new(),
-        }
+        LAYER_BASE_IMAGE.to_string()
     } else {
-        ImageResolution {
-            image: resolve_image_alias(raw_image),
-            layer_env: HashMap::new(),
-        }
+        resolve_image_alias(raw_image)
     };
 
-    (resolution, using_layers)
+    ImageResolution {
+        image,
+        layer_env: HashMap::new(),
+    }
 }
 
 /// Resolve the image to use, handling layers, aliases, and interactive prompts.
@@ -190,8 +179,7 @@ pub(super) async fn resolve_image(
             layer_env: result.env,
         }
     } else {
-        let (res, _) = resolve_final_image(&raw_image, base_only);
-        res
+        resolve_final_image(&raw_image, base_only)
     };
 
     Ok((resolution, using_layers))
