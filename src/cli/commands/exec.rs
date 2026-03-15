@@ -14,6 +14,9 @@ const DEFAULT_SHELL: &str = "/bin/zsh";
 
 /// Execute the exec command
 pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<()> {
+    #[cfg(unix)]
+    let _terminal_guard = crate::terminal::TerminalGuard::save();
+
     let ctx = UiContext::detect();
     let manager = SessionManager::new().await?;
 

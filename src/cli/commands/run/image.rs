@@ -92,6 +92,24 @@ pub(super) fn is_default_image(args: &RunArgs, config: &Config) -> bool {
     args.image.is_none() && config.container.image == "fedora:43"
 }
 
+/// Resolve the final image when no layer composition is needed.
+///
+/// When `base_only` is true, uses `LAYER_BASE_IMAGE` (user selected "Base only").
+/// Otherwise, resolves the raw image alias to a full path.
+pub(super) fn resolve_final_image(raw_image: &str, base_only: bool) -> ImageResolution {
+    let image = if base_only {
+        debug!("Using base image without layers: {}", LAYER_BASE_IMAGE);
+        LAYER_BASE_IMAGE.to_string()
+    } else {
+        resolve_image_alias(raw_image)
+    };
+
+    ImageResolution {
+        image,
+        layer_env: HashMap::new(),
+    }
+}
+
 /// Resolve the image to use, handling layers, aliases, and interactive prompts.
 ///
 /// Returns `(ImageResolution, using_layers)`.
@@ -103,31 +121,33 @@ pub(super) async fn resolve_image(
     runtime: &dyn ContainerRuntime,
     project_dir: &Path,
 ) -> MinoResult<(ImageResolution, bool)> {
+    let raw_image = args
+        .image
+        .clone()
+        .unwrap_or_else(|| config.container.image.clone());
+
     // Resolve layers from CLI/config, then check image alias redirect
     // (e.g., --image typescript -> layer composition)
-    let layer_names = resolve_layer_names(args, config).or_else(|| {
-        let raw = args
-            .image
-            .clone()
-            .unwrap_or_else(|| config.container.image.clone());
-        image_alias_to_layer(&raw).map(|name| vec![name.to_string()])
-    });
+    let layer_names = resolve_layer_names(args, config)
+        .or_else(|| image_alias_to_layer(&raw_image).map(|name| vec![name.to_string()]));
 
-    let layer_names =
+    // Track whether the interactive prompt selected "Base only" (no layers but use mino-base)
+    let (layer_names, base_only) =
         if layer_names.is_none() && ctx.is_interactive() && is_default_image(args, config) {
             spinner.clear();
-            match super::prompts::prompt_layer_selection(ctx, project_dir, config).await? {
+            match super::prompts::prompt_layer_selection(ctx, project_dir).await? {
                 Some(selected) => {
                     spinner.start("Initializing sandbox...");
-                    Some(selected)
+                    (Some(selected), false)
                 }
-                None => None,
+                None => (None, true),
             }
         } else {
-            layer_names
+            (layer_names, false)
         };
 
-    let using_layers = layer_names.is_some();
+    // base_only uses mino-base with zsh, same as layer composition
+    let using_layers = layer_names.is_some() || base_only;
 
     let resolution = if let Some(names) = layer_names {
         let mut resolved = Vec::new();
@@ -159,15 +179,7 @@ pub(super) async fn resolve_image(
             layer_env: result.env,
         }
     } else {
-        let raw = args
-            .image
-            .clone()
-            .unwrap_or_else(|| config.container.image.clone());
-        let image = resolve_image_alias(&raw);
-        ImageResolution {
-            image,
-            layer_env: HashMap::new(),
-        }
+        resolve_final_image(&raw_image, base_only)
     };
 
     Ok((resolution, using_layers))
