@@ -202,14 +202,13 @@ pub(super) async fn upsert_container_toml_key(
 }
 
 /// Sentinel value for the "Base only" multiselect option.
-const BASE_ONLY: &str = "__base__";
+pub(super) const BASE_ONLY: &str = "__base__";
 
 /// Prompt user to select development tool layers interactively.
 /// Returns Some(layer_names) if layers selected, None for base-only container.
 pub(super) async fn prompt_layer_selection(
     ctx: &UiContext,
     project_dir: &Path,
-    config: &Config,
 ) -> MinoResult<Option<Vec<String>>> {
     let available = list_available_layers(project_dir).await?;
 
@@ -251,7 +250,7 @@ pub(super) async fn prompt_layer_selection(
         return Ok(None);
     }
 
-    prompt_save_config(ctx, &layer_names, project_dir, config).await?;
+    prompt_save_config(ctx, &layer_names, project_dir).await?;
 
     Ok(Some(layer_names))
 }
@@ -278,7 +277,6 @@ async fn prompt_save_config(
     ctx: &UiContext,
     layers: &[String],
     project_dir: &Path,
-    _config: &Config,
 ) -> MinoResult<()> {
     let mut layers_arr = toml_edit::Array::new();
     for l in layers {
@@ -288,7 +286,7 @@ async fn prompt_save_config(
     prompt_and_save(
         ctx,
         "Save this configuration?",
-        "one-time, no persistence",
+        "prompt again next time",
         project_dir,
         "layers",
         toml_edit::Value::Array(layers_arr),

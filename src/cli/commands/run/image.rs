@@ -92,6 +92,35 @@ pub(super) fn is_default_image(args: &RunArgs, config: &Config) -> bool {
     args.image.is_none() && config.container.image == "fedora:43"
 }
 
+/// Resolve the final image when no layer composition is needed.
+///
+/// Handles two cases:
+/// - `base_only=true`: use `LAYER_BASE_IMAGE` with empty env (user selected "Base only")
+/// - `base_only=false`: resolve the raw image alias to a full path
+///
+/// Returns `(ImageResolution, using_layers)`.
+pub(super) fn resolve_final_image(
+    raw_image: &str,
+    base_only: bool,
+) -> (ImageResolution, bool) {
+    let using_layers = base_only;
+
+    let resolution = if base_only {
+        debug!("Using base image without layers: {}", LAYER_BASE_IMAGE);
+        ImageResolution {
+            image: LAYER_BASE_IMAGE.to_string(),
+            layer_env: HashMap::new(),
+        }
+    } else {
+        ImageResolution {
+            image: resolve_image_alias(raw_image),
+            layer_env: HashMap::new(),
+        }
+    };
+
+    (resolution, using_layers)
+}
+
 /// Resolve the image to use, handling layers, aliases, and interactive prompts.
 ///
 /// Returns `(ImageResolution, using_layers)`.
@@ -117,7 +146,7 @@ pub(super) async fn resolve_image(
     let (layer_names, base_only) =
         if layer_names.is_none() && ctx.is_interactive() && is_default_image(args, config) {
             spinner.clear();
-            match super::prompts::prompt_layer_selection(ctx, project_dir, config).await? {
+            match super::prompts::prompt_layer_selection(ctx, project_dir).await? {
                 Some(selected) => {
                     spinner.start("Initializing sandbox...");
                     (Some(selected), false)
@@ -160,17 +189,9 @@ pub(super) async fn resolve_image(
             image: result.image_tag,
             layer_env: result.env,
         }
-    } else if base_only {
-        debug!("Using base image without layers: {}", LAYER_BASE_IMAGE);
-        ImageResolution {
-            image: LAYER_BASE_IMAGE.to_string(),
-            layer_env: HashMap::new(),
-        }
     } else {
-        ImageResolution {
-            image: resolve_image_alias(&raw_image),
-            layer_env: HashMap::new(),
-        }
+        let (res, _) = resolve_final_image(&raw_image, base_only);
+        res
     };
 
     Ok((resolution, using_layers))

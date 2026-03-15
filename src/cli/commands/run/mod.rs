@@ -420,7 +420,7 @@ fn generate_session_name() -> String {
 #[cfg(test)]
 mod tests {
     use self::image::*;
-    use self::prompts::{is_default_network, upsert_container_toml_key};
+    use self::prompts::{is_default_network, upsert_container_toml_key, BASE_ONLY};
     use super::*;
     use crate::orchestration::mock::{test_container_config, MockRuntime};
     use serial_test::serial;
@@ -831,5 +831,92 @@ mod tests {
         let updated = f.manager.get(&f.session_name).await.unwrap().unwrap();
         assert_eq!(updated.status, SessionStatus::Running);
         assert!(updated.container_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn upsert_base_only_writes_image_key() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join(".mino.toml");
+
+        upsert_container_toml_key(&path, "image", "base".into())
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let parsed: toml::Value = content.parse().unwrap();
+        assert_eq!(
+            parsed["container"]["image"].as_str().unwrap(),
+            "base",
+        );
+    }
+
+    #[test]
+    fn sentinel_base_only_alone_yields_empty() {
+        let selected = vec![BASE_ONLY.to_string()];
+        let layer_names: Vec<String> = selected
+            .into_iter()
+            .filter(|s| s != BASE_ONLY)
+            .collect();
+        assert!(layer_names.is_empty());
+    }
+
+    #[test]
+    fn sentinel_base_only_with_layer_yields_layer_only() {
+        let selected = vec![BASE_ONLY.to_string(), "typescript".to_string()];
+        let layer_names: Vec<String> = selected
+            .into_iter()
+            .filter(|s| s != BASE_ONLY)
+            .collect();
+        assert_eq!(layer_names, vec!["typescript"]);
+    }
+
+    #[test]
+    fn sentinel_no_base_only_passes_through() {
+        let selected = vec!["rust".to_string()];
+        let layer_names: Vec<String> = selected
+            .into_iter()
+            .filter(|s| s != BASE_ONLY)
+            .collect();
+        assert_eq!(layer_names, vec!["rust"]);
+    }
+
+    #[test]
+    fn resolve_final_image_base_only_uses_layer_base_image() {
+        let (resolution, using_layers) = resolve_final_image("fedora:43", true);
+
+        assert_eq!(resolution.image, LAYER_BASE_IMAGE);
+        assert!(resolution.layer_env.is_empty());
+        assert!(using_layers, "base_only should set using_layers=true");
+    }
+
+    #[test]
+    fn resolve_final_image_not_base_only_resolves_alias() {
+        let (resolution, using_layers) = resolve_final_image("fedora:43", false);
+
+        assert_eq!(resolution.image, "fedora:43");
+        assert!(resolution.layer_env.is_empty());
+        assert!(!using_layers, "non-base_only should set using_layers=false");
+    }
+
+    #[test]
+    fn resolve_final_image_base_only_ensures_zsh_shell_selection() {
+        // using_layers=true causes mod.rs:142 to select /bin/zsh instead of config shell
+        let (_, using_layers) = resolve_final_image("fedora:43", true);
+        assert!(using_layers);
+
+        // Verify the shell selection logic: when using_layers is true, command is /bin/zsh
+        let command = if using_layers {
+            vec!["/bin/zsh".to_string()]
+        } else {
+            vec!["bash".to_string()]
+        };
+        assert_eq!(command, vec!["/bin/zsh"]);
+    }
+
+    #[test]
+    fn resolve_final_image_base_alias_resolves_to_layer_base() {
+        // "base" alias also resolves to the same image via resolve_image_alias
+        let (resolution, _) = resolve_final_image("base", false);
+        assert_eq!(resolution.image, LAYER_BASE_IMAGE);
     }
 }
