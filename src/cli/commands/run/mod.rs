@@ -66,6 +66,38 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     spinner.message(&format!("Starting {}...", runtime.runtime_name()));
     runtime.ensure_ready().await?;
 
+    // Version checks (interactive only, silent on failure)
+    if ctx.is_interactive() {
+        let stale = crate::version::check_stale_images(&*runtime).await;
+        let update = crate::version::check_for_update(config).await;
+
+        if stale.is_some() || update.is_some() {
+            spinner.clear();
+            if let Some(info) = stale {
+                ui::step_warn_hint(
+                    &ctx,
+                    &format!(
+                        "Mino updated ({} \u{2192} {}). Cached layer images may be outdated",
+                        info.old, info.new
+                    ),
+                    "Run `mino cache clear --images` to rebuild",
+                );
+            }
+            if let Some(info) = update {
+                let method = crate::version::detect_install_method();
+                let hint = crate::version::update_hint(&method);
+                ui::step_info(
+                    &ctx,
+                    &format!(
+                        "Mino v{} available (current: v{}). {}",
+                        info.latest, info.current, hint
+                    ),
+                );
+            }
+            spinner.start("Initializing sandbox...");
+        }
+    }
+
     let (resolution, using_layers) =
         resolve_image(&args, config, &ctx, &mut spinner, &*runtime, &project_dir).await?;
 

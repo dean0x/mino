@@ -40,6 +40,9 @@ pub struct GeneralConfig {
 
     /// Enable audit logging (security events written to state dir)
     pub audit_log: bool,
+
+    /// Enable periodic update checks (default: true)
+    pub update_check: bool,
 }
 
 impl Default for GeneralConfig {
@@ -48,6 +51,7 @@ impl Default for GeneralConfig {
             verbose: false,
             log_format: "text".to_string(),
             audit_log: true,
+            update_check: true,
         }
     }
 }
@@ -297,6 +301,22 @@ mod tests {
     fn config_read_only_defaults_false() {
         let config: Config = toml::from_str("").unwrap();
         assert!(!config.container.read_only);
+    }
+
+    #[test]
+    fn config_deserializes_update_check() {
+        let toml = r#"
+            [general]
+            update_check = false
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.general.update_check);
+    }
+
+    #[test]
+    fn config_update_check_defaults_true() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.general.update_check);
     }
 
     #[test]
