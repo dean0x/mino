@@ -66,6 +66,52 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     spinner.message(&format!("Starting {}...", runtime.runtime_name()));
     runtime.ensure_ready().await?;
 
+    // Version checks (interactive only, silent on failure)
+    if ctx.is_interactive() {
+        let stale = crate::version::check_stale_images(&*runtime).await;
+        let update = crate::version::check_for_update(config).await;
+
+        if stale.is_some() || update.is_some() {
+            spinner.clear();
+
+            if let Some(info) = stale {
+                let confirmed = ui::confirm(
+                    &ctx,
+                    &format!(
+                        "Mino upgraded ({} \u{2192} {}). Clear cached layer images to rebuild with the new version?",
+                        info.old, info.new
+                    ),
+                    true,
+                )
+                .await
+                .unwrap_or(false);
+
+                if confirmed {
+                    if let Err(e) = crate::version::clear_composed_images(&*runtime).await {
+                        warn!("Failed to clear composed images: {}", e);
+                    }
+                    ui::step_ok(
+                        &ctx,
+                        "Cached layer images cleared. They'll rebuild on this run.",
+                    );
+                }
+            }
+
+            if let Some(info) = update {
+                let method = crate::version::detect_install_method();
+                let hint = crate::version::update_hint(&method);
+                ui::step_info(
+                    &ctx,
+                    &format!(
+                        "Mino v{} available (current: v{}). {}",
+                        info.latest, info.current, hint
+                    ),
+                );
+            }
+            spinner.start("Initializing sandbox...");
+        }
+    }
+
     let (resolution, using_layers) =
         resolve_image(&args, config, &ctx, &mut spinner, &*runtime, &project_dir).await?;
 
@@ -205,6 +251,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         manager: &manager,
         audit: &audit,
         spinner: &mut spinner,
+        config,
     };
 
     if args.detach {
@@ -224,6 +271,7 @@ struct RunContext<'a> {
     manager: &'a SessionManager,
     audit: &'a AuditLog,
     spinner: &'a mut TaskSpinner,
+    config: &'a Config,
 }
 
 impl RunContext<'_> {
@@ -374,6 +422,19 @@ async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) 
             "{} Session exited with code {}",
             style("!").yellow(),
             exit_code
+        );
+    }
+
+    // Show update notification on exit (uses cached check, no new HTTP request)
+    if let Some(update) = crate::version::check_for_update(ctx.config).await {
+        let method = crate::version::detect_install_method();
+        let hint = crate::version::update_hint(&method);
+        println!(
+            "\n  {} Mino v{} available (current: v{}). {}",
+            style("ℹ").cyan(),
+            update.latest,
+            update.current,
+            hint
         );
     }
 
@@ -743,6 +804,7 @@ mod tests {
         _cleanup: SessionCleanup,
         container_config: ContainerConfig,
         command: Vec<String>,
+        config: Config,
         audit: AuditLog,
         spinner: TaskSpinner,
     }
@@ -770,6 +832,7 @@ mod tests {
             let command = vec!["bash".to_string()];
             let mut config = Config::default();
             config.general.audit_log = false;
+            config.general.update_check = false;
             let audit = AuditLog::new(&config);
             let ctx = UiContext::detect();
             let spinner = TaskSpinner::new(&ctx);
@@ -782,6 +845,7 @@ mod tests {
                 _cleanup: cleanup,
                 container_config,
                 command,
+                config,
                 audit,
                 spinner,
             }
@@ -796,6 +860,7 @@ mod tests {
                 manager: &self.manager,
                 audit: &self.audit,
                 spinner: &mut self.spinner,
+                config: &self.config,
             }
         }
     }

@@ -16,5 +16,6 @@ pub mod orchestration;
 pub mod session;
 pub(crate) mod terminal;
 pub mod ui;
+pub mod version;
 
 pub use error::{MinoError, MinoResult};

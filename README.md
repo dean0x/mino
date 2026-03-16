@@ -304,6 +304,7 @@ Configuration is stored at `~/.config/mino/config.toml`:
 verbose = false
 log_format = "text"    # "text" or "json"
 audit_log = true       # Security events written to state dir
+update_check = true    # Check for new versions (once/24h)
 
 [vm]
 name = "mino"
@@ -359,6 +360,7 @@ Use `mino config set <key> <value>` to modify:
 general.verbose
 general.log_format
 general.audit_log
+general.update_check
 vm.name
 vm.distro
 container.image
