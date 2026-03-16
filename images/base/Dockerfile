@@ -3,6 +3,10 @@
 #
 # This is the foundation for all mino language images.
 # Contains shell tools, git utilities, and the Claude Code CLI.
+#
+# CLI tools live in /opt/mino-tools/ and are symlinked to ~/.local/bin/
+# by the bootstrap script. Users can override any tool by placing their
+# own binary in ~/.local/bin/ — bootstrap won't overwrite real files.
 
 FROM fedora:43
 
@@ -13,16 +17,10 @@ LABEL org.opencontainers.image.description="Mino base image with Claude Code and
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
-# System packages (single layer for efficiency)
+# System packages — only things that genuinely require root/dnf
 RUN dnf install -y --setopt=install_weak_deps=False \
     # Core utilities
     git curl wget jq openssh-clients ca-certificates tar gzip unzip which \
-    # Modern replacements for grep/find/cat
-    ripgrep fd-find bat fzf \
-    # Git diff and smart cd (from Fedora repos)
-    git-delta zoxide \
-    # Editor
-    neovim \
     # Shell
     zsh \
     # Networking & capabilities
@@ -32,21 +30,81 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
+# Create /opt/mino-tools/ for pre-built CLI tool binaries
+RUN mkdir -p /opt/mino-tools
+
+# ripgrep
+ARG RG_VERSION=14.1.1
+RUN ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
+    tar -xz --strip-components=1 -C /opt/mino-tools "ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl/rg" && \
+    chmod +x /opt/mino-tools/rg
+
+# fd
+ARG FD_VERSION=v10.2.0
+RUN ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/sharkdp/fd/releases/download/${FD_VERSION}/fd-${FD_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
+    tar -xz --strip-components=1 -C /opt/mino-tools "fd-${FD_VERSION}-${ARCH}-unknown-linux-musl/fd" && \
+    chmod +x /opt/mino-tools/fd
+
+# bat
+ARG BAT_VERSION=v0.24.0
+RUN ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/sharkdp/bat/releases/download/${BAT_VERSION}/bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
+    tar -xz --strip-components=1 -C /opt/mino-tools "bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl/bat" && \
+    chmod +x /opt/mino-tools/bat
+
+# fzf
+ARG FZF_VERSION=v0.57.0
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+        x86_64) FZF_ARCH="amd64" ;; \
+        aarch64) FZF_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/junegunn/fzf/releases/download/${FZF_VERSION}/fzf-${FZF_VERSION#v}-linux_${FZF_ARCH}.tar.gz" | \
+    tar -xz -C /opt/mino-tools fzf && \
+    chmod +x /opt/mino-tools/fzf
+
+# delta (git diff)
+ARG DELTA_VERSION=0.18.2
+RUN ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
+    tar -xz --strip-components=1 -C /opt/mino-tools "delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl/delta" && \
+    chmod +x /opt/mino-tools/delta
+
+# zoxide (smart cd)
+ARG ZOXIDE_VERSION=v0.9.6
+RUN ARCH=$(uname -m) && \
+    curl -fsSL "https://github.com/ajeetdsouza/zoxide/releases/download/${ZOXIDE_VERSION}/zoxide-${ZOXIDE_VERSION#v}-${ARCH}-unknown-linux-musl.tar.gz" | \
+    tar -xz -C /opt/mino-tools zoxide && \
+    chmod +x /opt/mino-tools/zoxide
+
 # GitHub CLI
-RUN dnf install -y 'dnf-command(config-manager)' \
-    && dnf config-manager addrepo --from-repofile=https://cli.github.com/packages/rpm/gh-cli.repo \
-    && dnf install -y gh \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
+ARG GH_VERSION=2.65.0
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+        x86_64) GH_ARCH="amd64" ;; \
+        aarch64) GH_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" | \
+    tar -xz --strip-components=2 -C /opt/mino-tools "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" && \
+    chmod +x /opt/mino-tools/gh
 
-# Node.js 22 LTS (required for Claude Code)
-RUN curl -fsSL https://rpm.nodesource.com/setup_22.x | bash - \
-    && dnf install -y nodejs \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf \
-    && node --version && npm --version
+# neovim
+ARG NVIM_VERSION=v0.10.3
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+        x86_64) NVIM_ARCH="x86_64" ;; \
+        aarch64) NVIM_ARCH="aarch64" ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-${NVIM_ARCH}.tar.gz" | \
+    tar -xz --strip-components=2 -C /opt/mino-tools "nvim-linux-${NVIM_ARCH}/bin/nvim" && \
+    chmod +x /opt/mino-tools/nvim
 
-# yq (YAML processor) - download pre-built binary
+# yq (YAML processor)
 ARG YQ_VERSION=v4.44.3
 RUN ARCH=$(uname -m) && \
     case "$ARCH" in \
@@ -55,24 +113,24 @@ RUN ARCH=$(uname -m) && \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
     curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${YQ_ARCH}" \
-        -o /usr/local/bin/yq && \
-    chmod +x /usr/local/bin/yq
+        -o /opt/mino-tools/yq && \
+    chmod +x /opt/mino-tools/yq
 
-# tokei (code statistics) - download pre-built binary
+# tokei (code statistics)
 ARG TOKEI_VERSION=v12.1.2
 RUN ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/XAMPPRocky/tokei/releases/download/${TOKEI_VERSION}/tokei-${ARCH}-unknown-linux-gnu.tar.gz" | \
-    tar -xz -C /usr/local/bin tokei && \
-    chmod +x /usr/local/bin/tokei
+    tar -xz -C /opt/mino-tools tokei && \
+    chmod +x /opt/mino-tools/tokei
 
-# eza (modern ls/tree replacement) - download pre-built binary
+# eza (modern ls/tree replacement)
 ARG EZA_VERSION=v0.20.22
 RUN ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/eza-community/eza/releases/download/${EZA_VERSION}/eza_${ARCH}-unknown-linux-gnu.tar.gz" | \
-    tar -xz -C /usr/local/bin ./eza && \
-    chmod +x /usr/local/bin/eza
+    tar -xz -C /opt/mino-tools ./eza && \
+    chmod +x /opt/mino-tools/eza
 
-# sd (modern sed replacement) - download pre-built binary
+# sd (modern sed replacement)
 ARG SD_VERSION=v1.0.0
 RUN ARCH=$(uname -m) && \
     case "$ARCH" in \
@@ -81,16 +139,16 @@ RUN ARCH=$(uname -m) && \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
     curl -fsSL "https://github.com/chmln/sd/releases/download/${SD_VERSION}/sd-${SD_VERSION}-${SD_TARGET}.tar.gz" | \
-    tar -xz --strip-components=1 -C /usr/local/bin "sd-${SD_VERSION}-${SD_TARGET}/sd" && \
-    chmod +x /usr/local/bin/sd
+    tar -xz --strip-components=1 -C /opt/mino-tools "sd-${SD_VERSION}-${SD_TARGET}/sd" && \
+    chmod +x /opt/mino-tools/sd
 
 # Create non-root user with pinned UID for volume stability
 RUN useradd -m -s /bin/zsh -u 1000 developer \
     && mkdir -p /workspace /cache \
     && chown -R developer:developer /workspace /cache
 
-# PATH for user-level tool installs (must be set before Claude Code install)
-ENV PATH="/home/developer/.local/bin:/home/developer/.npm-global/bin:${PATH}"
+# PATH: ~/.local/bin (symlinks) > ~/.npm-global/bin > /opt/mino-tools (fallback)
+ENV PATH="/home/developer/.local/bin:/home/developer/.npm-global/bin:/opt/mino-tools:${PATH}"
 
 # Git configuration for better diffs
 RUN git config --system core.pager delta \
@@ -103,7 +161,7 @@ RUN git config --system core.pager delta \
 # Loaded BEFORE ~/.zshrc — must not depend on user config (no OMZ sourcing)
 RUN mkdir -p /etc/zsh/zshrc.d \
     && cat > /etc/zsh/zshrc.d/mino.zsh << 'MINORC'
-# Modern CLI replacements
+# Modern CLI replacements (resolve via PATH — works from ~/.local/bin or /opt/mino-tools)
 alias ls="eza --color=auto"
 alias ll="eza -la --color=auto"
 alias la="eza -a --color=auto"
@@ -128,6 +186,11 @@ bindkey '^[[B' history-substring-search-down
 
 # PATH for user-local tool installs
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+
+# Layer-injected PATH prepend (set by mino for user-install layers)
+if [ -n "$MINO_PATH_PREPEND" ]; then
+    export PATH="$MINO_PATH_PREPEND:$PATH"
+fi
 MINORC
 
 # Source system zshrc.d files from /etc/zsh/zshrc (before user's ~/.zshrc)
@@ -141,8 +204,8 @@ RUN chmod +x /usr/local/bin/mino-bootstrap /usr/local/bin/mino-entrypoint
 ARG MINO_BASE_VERSION=dev
 RUN echo "$MINO_BASE_VERSION" > /etc/mino-base-version
 
-# Healthcheck script
-RUN printf '#!/bin/bash\nset -e\ncommand -v claude >/dev/null 2>&1\ncommand -v git >/dev/null 2>&1\ncommand -v node >/dev/null 2>&1\ntest -d /workspace\ntest -d /cache\ntest "$(whoami)" = "developer"\necho "ok"\n' \
+# Healthcheck script (uses nvm node via PATH — sourced in bootstrap)
+RUN printf '#!/bin/bash\nset -e\ncommand -v claude >/dev/null 2>&1\ncommand -v git >/dev/null 2>&1\n# Check node via nvm or PATH\nif [ -d "$HOME/.nvm" ]; then\n  export NVM_DIR="$HOME/.nvm"\n  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"\nfi\ncommand -v node >/dev/null 2>&1\ntest -d /workspace\ntest -d /cache\ntest "$(whoami)" = "developer"\necho "ok"\n' \
     > /usr/local/bin/mino-healthcheck \
     && chmod +x /usr/local/bin/mino-healthcheck
 
@@ -161,9 +224,10 @@ RUN git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
 RUN git clone --depth=1 https://github.com/zsh-users/zsh-history-substring-search \
     ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-history-substring-search
 
-# nvm (Node Version Manager) - system Node remains as fallback
+# nvm (Node Version Manager) — install nvm + Node.js 22 LTS
 ARG NVM_VERSION=v0.40.1
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh | bash
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh | bash \
+    && bash -c 'source ~/.nvm/nvm.sh && nvm install 22 && nvm alias default 22'
 
 # User's ~/.zshrc (OMZ sourcing + user customizable)
 # System aliases/tools are in /etc/zsh/zshrc.d/mino.zsh (loaded first)
@@ -199,23 +263,24 @@ RUN cat /etc/mino-base-version > /home/developer/.mino-bootstrapped
 
 WORKDIR /workspace
 
-# Verify installations
+# Verify CLI tools in /opt/mino-tools/
+RUN /opt/mino-tools/rg --version \
+    && /opt/mino-tools/fd --version \
+    && /opt/mino-tools/bat --version \
+    && /opt/mino-tools/fzf --version \
+    && /opt/mino-tools/delta --version \
+    && /opt/mino-tools/zoxide --version \
+    && /opt/mino-tools/gh --version \
+    && /opt/mino-tools/nvim --version | head -1 \
+    && /opt/mino-tools/yq --version \
+    && /opt/mino-tools/tokei --version \
+    && /opt/mino-tools/eza --version \
+    && /opt/mino-tools/sd --version
+
+# Verify user-level installs
 RUN claude --version \
     && git --version \
-    && gh --version \
-    && delta --version \
-    && node --version \
-    && npm --version \
-    && rg --version \
-    && fd --version \
-    && bat --version \
-    && fzf --version \
-    && nvim --version | head -1 \
-    && zoxide --version \
-    && eza --version \
-    && sd --version \
-    && yq --version \
-    && tokei --version
+    && bash -c 'source ~/.nvm/nvm.sh && node --version && npm --version'
 
 HEALTHCHECK CMD mino-healthcheck
 

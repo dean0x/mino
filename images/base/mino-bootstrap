@@ -6,26 +6,155 @@ MARKER="$HOME/.mino-bootstrapped"
 IMAGE_VERSION_FILE="/etc/mino-base-version"
 IMAGE_VERSION=$(cat "$IMAGE_VERSION_FILE" 2>/dev/null || echo "unknown")
 
+# Per-step marker directory
+STEP_DIR="$HOME/.mino-bootstrap.d"
+mkdir -p "$STEP_DIR" 2>/dev/null || true
+
+# Quiet mode suppresses all bootstrap output (detached/non-interactive)
+if [ -n "$MINO_QUIET_BOOTSTRAP" ]; then
+    INSTALL_REDIRECT="/dev/null"
+else
+    INSTALL_REDIRECT="/dev/stderr"
+fi
+
 # Skip if already bootstrapped with current version
 if [ -f "$MARKER" ]; then
     BOOTSTRAPPED_VERSION=$(head -1 "$MARKER" 2>/dev/null || echo "")
-    if [ "$BOOTSTRAPPED_VERSION" != "$IMAGE_VERSION" ]; then
-        echo "Home bootstrapped with $BOOTSTRAPPED_VERSION, current image is $IMAGE_VERSION." >&2
-        echo "Run 'mino cache clear --home' to reset, or ignore this message." >&2
+    if [ "$BOOTSTRAPPED_VERSION" = "$IMAGE_VERSION" ]; then
+        # Version matches — still refresh CLI tool symlinks (fast, idempotent)
+        if [ -d "/opt/mino-tools" ]; then
+            mkdir -p "$HOME/.local/bin" 2>/dev/null || true
+            for tool in /opt/mino-tools/*; do
+                name=$(basename "$tool")
+                target="$HOME/.local/bin/$name"
+                # Only symlink if: doesn't exist, OR is already a symlink (refresh)
+                # Never overwrite a real file (user override)
+                if [ ! -e "$target" ] || [ -L "$target" ]; then
+                    ln -sf "$tool" "$target" 2>/dev/null || true
+                fi
+            done
+        fi
+        exit 0
+    fi
+    echo "Home bootstrapped with $BOOTSTRAPPED_VERSION, current image is $IMAGE_VERSION." >&2
+    echo "Run 'mino cache clear --home' to reset, or ignore this message." >&2
+    # Still refresh tool symlinks on version mismatch
+    if [ -d "/opt/mino-tools" ]; then
+        mkdir -p "$HOME/.local/bin" 2>/dev/null || true
+        for tool in /opt/mino-tools/*; do
+            name=$(basename "$tool")
+            target="$HOME/.local/bin/$name"
+            if [ ! -e "$target" ] || [ -L "$target" ]; then
+                ln -sf "$tool" "$target" 2>/dev/null || true
+            fi
+        done
     fi
     exit 0
 fi
 
 [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Bootstrapping home directory..." >&2
-for item in .oh-my-zsh .nvm .local .zshrc .zsh_history; do
-    if [ ! -e "$HOME/$item" ] && [ -e "/etc/skel/$item" ]; then
-        cp -a "/etc/skel/$item" "$HOME/$item" 2>/dev/null || true
-    fi
-done
 
-# Setup user-level npm prefix
-mkdir -p "$HOME/.npm-global" 2>/dev/null || true
-npm config set prefix "$HOME/.npm-global" 2>/dev/null || true
+# --- Step: skeleton (copy dotfiles from /etc/skel/) ---
+if [ ! -f "$STEP_DIR/skeleton" ]; then
+    for item in .oh-my-zsh .nvm .local .zshrc .zsh_history; do
+        if [ ! -e "$HOME/$item" ] && [ -e "/etc/skel/$item" ]; then
+            cp -a "/etc/skel/$item" "$HOME/$item" 2>/dev/null || true
+        fi
+    done
+    mkdir -p "$HOME/.npm-global" 2>/dev/null || true
+    # Ensure nvm node is available for npm config
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    npm config set prefix "$HOME/.npm-global" 2>/dev/null || true
+    echo "$IMAGE_VERSION" > "$STEP_DIR/skeleton" 2>/dev/null || true
+fi
 
+# --- Step: CLI tools (symlink from /opt/mino-tools/) ---
+if [ -d "/opt/mino-tools" ]; then
+    mkdir -p "$HOME/.local/bin" 2>/dev/null || true
+    for tool in /opt/mino-tools/*; do
+        name=$(basename "$tool")
+        target="$HOME/.local/bin/$name"
+        # Only symlink if: doesn't exist, OR is already a symlink (refresh)
+        # Never overwrite a real file (user override)
+        if [ ! -e "$target" ] || [ -L "$target" ]; then
+            ln -sf "$tool" "$target" 2>/dev/null || true
+        fi
+    done
+fi
+
+# --- Step: layer installs (from MINO_LAYER_MANIFEST env var) ---
+if [ -n "$MINO_LAYER_MANIFEST" ]; then
+    # Ensure nvm is available for npm operations
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+    echo "$MINO_LAYER_MANIFEST" | jq -c '.[]' 2>/dev/null | while read -r layer; do
+        name=$(echo "$layer" | jq -r '.name')
+        runtime=$(echo "$layer" | jq -r '.runtime // empty')
+
+        # Skip if already installed
+        if [ -f "$STEP_DIR/layer-$name" ]; then
+            continue
+        fi
+
+        [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Installing layer: $name..." >&2
+
+        case "$runtime" in
+            nvm)
+                version=$(echo "$layer" | jq -r '.runtime_version // "22"')
+                nvm install "$version" > "$INSTALL_REDIRECT" 2>&1 || true
+                nvm alias default "$version" > "$INSTALL_REDIRECT" 2>&1 || true
+                # Install npm globals
+                echo "$layer" | jq -r '.npm_globals[]? // empty' | while read -r pkg; do
+                    [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "  npm install -g $pkg" >&2
+                    npm install -g "$pkg" > "$INSTALL_REDIRECT" 2>&1 || true
+                done
+                ;;
+            rustup)
+                [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Layer '$name' requires network access for first-run install..." >&2
+                version=$(echo "$layer" | jq -r '.runtime_version // "stable"')
+                if ! command -v rustup >/dev/null 2>&1; then
+                    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+                        sh -s -- -y --default-toolchain "$version" > "$INSTALL_REDIRECT" 2>&1 || true
+                fi
+                # shellcheck disable=SC1091
+                source "$HOME/.cargo/env" 2>/dev/null || true
+                # Install cargo tools via binstall
+                if ! command -v cargo-binstall >/dev/null 2>&1; then
+                    curl -L --proto '=https' --tlsv1.2 -sSf \
+                        https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | \
+                        bash > "$INSTALL_REDIRECT" 2>&1 || true
+                fi
+                echo "$layer" | jq -r '.cargo_tools[]? // empty' | while read -r tool; do
+                    [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "  cargo binstall $tool" >&2
+                    cargo binstall -y "$tool" > "$INSTALL_REDIRECT" 2>&1 || true
+                done
+                ;;
+            uv)
+                [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Layer '$name' requires network access for first-run install..." >&2
+                if ! command -v uv >/dev/null 2>&1; then
+                    curl -LsSf https://astral.sh/uv/install.sh | sh > "$INSTALL_REDIRECT" 2>&1 || true
+                fi
+                # Ensure uv is in PATH after install
+                export PATH="$HOME/.local/bin:$PATH"
+                echo "$layer" | jq -r '.uv_tools[]? // empty' | while read -r tool; do
+                    [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "  uv tool install $tool" >&2
+                    uv tool install "$tool" > "$INSTALL_REDIRECT" 2>&1 || true
+                done
+                ;;
+            "")
+                # No runtime — skip
+                ;;
+            *)
+                echo "Unknown runtime '$runtime' for layer '$name', skipping" >&2
+                ;;
+        esac
+
+        echo "$IMAGE_VERSION" > "$STEP_DIR/layer-$name" 2>/dev/null || true
+    done
+fi
+
+# Top-level marker
 echo "$IMAGE_VERSION" > "$MARKER" 2>/dev/null || true
 [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Bootstrap complete." >&2

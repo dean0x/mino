@@ -1,10 +1,11 @@
 //! Layer manifest parsing
 //!
 //! Each layer has a `layer.toml` manifest describing its metadata,
-//! environment variables, and cache paths.
+//! environment variables, cache paths, and optional user-level install
+//! instructions for bootstrap-based tool installation.
 
 use crate::error::{MinoError, MinoResult};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Parsed layer manifest from layer.toml
@@ -20,6 +21,14 @@ pub struct LayerManifest {
     /// Cache configuration
     #[serde(default)]
     pub cache: LayerCache,
+
+    /// System packages requiring root (dnf install)
+    #[serde(default)]
+    pub root_install: RootInstall,
+
+    /// User-level tool installs (run via bootstrap, not compose)
+    #[serde(default)]
+    pub user_install: UserInstall,
 }
 
 /// Layer metadata section
@@ -67,6 +76,85 @@ pub struct LayerCache {
     pub paths: Vec<String>,
 }
 
+/// System packages requiring root installation (via dnf)
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RootInstall {
+    /// Package names to install via `dnf install`
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
+/// Valid runtime manager names for user-level installs
+const VALID_RUNTIMES: &[&str] = &["nvm", "rustup", "uv"];
+
+/// User-level tool installation instructions.
+///
+/// These are serialized as JSON and passed to the bootstrap script
+/// via the `MINO_LAYER_MANIFEST` env var. The bootstrap script
+/// reads the manifest and installs tools into the persistent home volume.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct UserInstall {
+    /// Runtime manager: "nvm", "rustup", "uv"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+
+    /// Runtime version to install (e.g., "22", "stable")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_version: Option<String>,
+
+    /// npm global packages to install (for nvm runtime)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub npm_globals: Vec<String>,
+
+    /// Cargo tools to install via binstall (for rustup runtime)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cargo_tools: Vec<String>,
+
+    /// uv tools to install (for uv runtime)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uv_tools: Vec<String>,
+}
+
+impl UserInstall {
+    /// Returns true if there are no user-level install instructions.
+    pub fn is_empty(&self) -> bool {
+        self.runtime.is_none()
+            && self.npm_globals.is_empty()
+            && self.cargo_tools.is_empty()
+            && self.uv_tools.is_empty()
+    }
+
+    /// Validate runtime value against known runtimes.
+    pub fn validate(&self) -> MinoResult<()> {
+        if let Some(ref rt) = self.runtime {
+            if !VALID_RUNTIMES.contains(&rt.as_str()) {
+                return Err(MinoError::ConfigInvalid {
+                    path: "layer.toml".into(),
+                    reason: format!(
+                        "unknown runtime '{}', valid options: {:?}",
+                        rt, VALID_RUNTIMES
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Entry in the serialized layer manifest JSON array.
+///
+/// Wraps `UserInstall` with the layer name so the bootstrap script
+/// can write per-layer step markers.
+#[derive(Debug, Serialize)]
+pub struct LayerManifestEntry {
+    /// Layer name (for per-step markers in bootstrap)
+    pub name: String,
+
+    /// User-level install instructions
+    #[serde(flatten)]
+    pub install: UserInstall,
+}
+
 impl LayerManifest {
     /// Parse a manifest from a TOML file on disk
     pub async fn from_file(path: &Path) -> MinoResult<Self> {
@@ -104,6 +192,40 @@ impl LayerManifest {
             Some(self.env.path_prepend.dirs.join(":"))
         }
     }
+
+    /// Returns true if this layer has user-level install instructions.
+    pub fn has_user_install(&self) -> bool {
+        !self.user_install.is_empty()
+    }
+
+    /// Returns true if this layer requires root-level system packages.
+    pub fn has_root_install(&self) -> bool {
+        !self.root_install.packages.is_empty()
+    }
+}
+
+/// Build a JSON manifest string from layers that have user_install sections.
+///
+/// Returns `None` if no layers have user_install content.
+/// The JSON is an array of `LayerManifestEntry` objects for the bootstrap script.
+pub fn build_layer_manifest(
+    layers: &[crate::layer::resolve::ResolvedLayer],
+) -> MinoResult<Option<String>> {
+    let entries: Vec<LayerManifestEntry> = layers
+        .iter()
+        .filter(|l| l.manifest.has_user_install())
+        .map(|l| LayerManifestEntry {
+            name: l.manifest.layer.name.clone(),
+            install: l.manifest.user_install.clone(),
+        })
+        .collect();
+
+    if entries.is_empty() {
+        return Ok(None);
+    }
+
+    let json = serde_json::to_string(&entries)?;
+    Ok(Some(json))
 }
 
 #[cfg(test)]
@@ -201,5 +323,142 @@ version = "1"
         assert!(manifest.env_vars().is_empty());
         assert!(manifest.path_prepend_str().is_none());
         assert!(manifest.cache.paths.is_empty());
+        assert!(!manifest.has_user_install());
+        assert!(!manifest.has_root_install());
+    }
+
+    #[test]
+    fn parse_user_install_nvm() {
+        let toml = r#"
+[layer]
+name = "typescript"
+description = "TypeScript"
+version = "2"
+
+[user_install]
+runtime = "nvm"
+runtime_version = "22"
+npm_globals = ["pnpm", "tsx", "typescript"]
+"#;
+        let manifest = LayerManifest::parse(toml).unwrap();
+        assert!(manifest.has_user_install());
+        assert_eq!(manifest.user_install.runtime.as_deref(), Some("nvm"));
+        assert_eq!(manifest.user_install.runtime_version.as_deref(), Some("22"));
+        assert_eq!(
+            manifest.user_install.npm_globals,
+            vec!["pnpm", "tsx", "typescript"]
+        );
+        assert!(manifest.user_install.cargo_tools.is_empty());
+    }
+
+    #[test]
+    fn parse_user_install_rustup() {
+        let toml = r#"
+[layer]
+name = "rust"
+description = "Rust"
+version = "2"
+
+[user_install]
+runtime = "rustup"
+runtime_version = "stable"
+cargo_tools = ["bacon", "sccache"]
+"#;
+        let manifest = LayerManifest::parse(toml).unwrap();
+        assert!(manifest.has_user_install());
+        assert_eq!(manifest.user_install.runtime.as_deref(), Some("rustup"));
+        assert_eq!(manifest.user_install.cargo_tools, vec!["bacon", "sccache"]);
+    }
+
+    #[test]
+    fn parse_user_install_uv() {
+        let toml = r#"
+[layer]
+name = "python"
+description = "Python"
+version = "2"
+
+[root_install]
+packages = ["python3", "python3-devel"]
+
+[user_install]
+runtime = "uv"
+uv_tools = ["ruff", "pytest"]
+"#;
+        let manifest = LayerManifest::parse(toml).unwrap();
+        assert!(manifest.has_user_install());
+        assert!(manifest.has_root_install());
+        assert_eq!(
+            manifest.root_install.packages,
+            vec!["python3", "python3-devel"]
+        );
+        assert_eq!(manifest.user_install.runtime.as_deref(), Some("uv"));
+        assert_eq!(manifest.user_install.uv_tools, vec!["ruff", "pytest"]);
+    }
+
+    #[test]
+    fn user_install_validate_valid_runtimes() {
+        for rt in &["nvm", "rustup", "uv"] {
+            let install = UserInstall {
+                runtime: Some(rt.to_string()),
+                ..Default::default()
+            };
+            assert!(install.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn user_install_validate_invalid_runtime() {
+        let install = UserInstall {
+            runtime: Some("conda".to_string()),
+            ..Default::default()
+        };
+        let err = install.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown runtime 'conda'"));
+    }
+
+    #[test]
+    fn user_install_validate_none_runtime() {
+        let install = UserInstall::default();
+        assert!(install.validate().is_ok());
+    }
+
+    #[test]
+    fn user_install_is_empty() {
+        assert!(UserInstall::default().is_empty());
+
+        let with_runtime = UserInstall {
+            runtime: Some("nvm".to_string()),
+            ..Default::default()
+        };
+        assert!(!with_runtime.is_empty());
+
+        let with_globals = UserInstall {
+            npm_globals: vec!["pnpm".to_string()],
+            ..Default::default()
+        };
+        assert!(!with_globals.is_empty());
+    }
+
+    #[test]
+    fn layer_manifest_entry_serializes_flat() {
+        let entry = LayerManifestEntry {
+            name: "typescript".to_string(),
+            install: UserInstall {
+                runtime: Some("nvm".to_string()),
+                runtime_version: Some("22".to_string()),
+                npm_globals: vec!["pnpm".to_string()],
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["name"], "typescript");
+        assert_eq!(parsed["runtime"], "nvm");
+        assert_eq!(parsed["runtime_version"], "22");
+        assert_eq!(parsed["npm_globals"][0], "pnpm");
+        // Empty fields should be omitted
+        assert!(parsed.get("cargo_tools").is_none());
+        assert!(parsed.get("uv_tools").is_none());
     }
 }

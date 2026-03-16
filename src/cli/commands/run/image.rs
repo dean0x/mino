@@ -3,7 +3,9 @@
 use crate::cli::args::RunArgs;
 use crate::config::Config;
 use crate::error::MinoResult;
-use crate::layer::{compose_image, resolve_layers};
+use crate::layer::{
+    build_layer_manifest, compose_image, merge_layer_env, needs_compose_build, resolve_layers,
+};
 use crate::orchestration::ContainerRuntime;
 use crate::ui::{BuildProgress, TaskSpinner, UiContext};
 use std::collections::HashMap;
@@ -157,26 +159,59 @@ pub(super) async fn resolve_image(
             resolved.append(&mut layers);
         }
 
-        spinner.clear();
+        if needs_compose_build(&resolved) {
+            // At least one layer has root-level install script or root_install packages
+            spinner.clear();
 
-        let label = names.join(", ");
-        let progress = BuildProgress::new(ctx, &label);
-        let result = compose_image(
-            runtime,
-            LAYER_BASE_IMAGE,
-            &resolved,
-            Some(&|line: String| progress.on_line(line)),
-        )
-        .await;
-        progress.finish();
-        let result = result?;
+            let label = names.join(", ");
+            let progress = BuildProgress::new(ctx, &label);
+            let result = compose_image(
+                runtime,
+                LAYER_BASE_IMAGE,
+                &resolved,
+                Some(&|line: String| progress.on_line(line)),
+            )
+            .await;
+            progress.finish();
+            let result = result?;
 
-        let action = if result.was_cached { "cached" } else { "built" };
-        debug!("Using {} composed image: {}", action, result.image_tag);
+            let action = if result.was_cached { "cached" } else { "built" };
+            debug!("Using {} composed image: {}", action, result.image_tag);
 
-        ImageResolution {
-            image: result.image_tag,
-            layer_env: result.env,
+            // Build layer manifest for bootstrap (user-install layers)
+            let mut layer_env = result.env;
+            if let Some(manifest_json) = build_layer_manifest(&resolved)? {
+                layer_env.insert("MINO_LAYER_MANIFEST".to_string(), manifest_json);
+            }
+
+            // Merge runtime env vars for layers that skip compose
+            let runtime_env = merge_layer_env(&resolved, false);
+            // MINO_PATH_PREPEND from user-install layers needs to be passed
+            if let Some(path_prepend) = runtime_env.get("MINO_PATH_PREPEND") {
+                layer_env
+                    .entry("MINO_PATH_PREPEND".to_string())
+                    .or_insert_with(|| path_prepend.clone());
+            }
+
+            ImageResolution {
+                image: result.image_tag,
+                layer_env,
+            }
+        } else {
+            // All layers are pure user-install — skip compose entirely
+            spinner.message("Layers will install on first run via bootstrap...");
+            debug!("All layers are user-install only, skipping compose");
+
+            let mut layer_env = merge_layer_env(&resolved, false);
+
+            if let Some(manifest_json) = build_layer_manifest(&resolved)? {
+                layer_env.insert("MINO_LAYER_MANIFEST".to_string(), manifest_json);
+            }
+
+            ImageResolution {
+                image: LAYER_BASE_IMAGE.to_string(),
+                layer_env,
+            }
         }
     } else {
         resolve_final_image(&raw_image, base_only)
