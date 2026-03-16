@@ -58,6 +58,10 @@ pub struct Session {
 
     /// Cloud providers enabled
     pub cloud_providers: Vec<String>,
+
+    /// Home volume name (if mounted)
+    #[serde(default)]
+    pub home_volume: Option<String>,
 }
 
 impl Session {
@@ -79,6 +83,7 @@ impl Session {
             created_at: now,
             updated_at: now,
             cloud_providers: vec![],
+            home_volume: None,
         }
     }
 

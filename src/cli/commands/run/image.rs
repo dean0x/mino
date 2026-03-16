@@ -16,7 +16,7 @@ use super::ImageResolution;
 const IMAGE_REGISTRY: &str = "ghcr.io/dean0x";
 
 /// Default base image for layer composition (requires developer user, zsh, etc.)
-pub(super) const LAYER_BASE_IMAGE: &str = "ghcr.io/dean0x/mino-base:latest";
+pub(crate) const LAYER_BASE_IMAGE: &str = "ghcr.io/dean0x/mino-base:latest";
 
 /// Parse a comma-separated layer string into a list of layer names.
 ///

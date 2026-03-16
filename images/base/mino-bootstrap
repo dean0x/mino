@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Bootstrap developer home directory from /etc/skel/.
+# Runs once per home volume (idempotent via marker file).
+# Errors are non-fatal — container starts even if bootstrap fails.
+MARKER="$HOME/.mino-bootstrapped"
+IMAGE_VERSION_FILE="/etc/mino-base-version"
+IMAGE_VERSION=$(cat "$IMAGE_VERSION_FILE" 2>/dev/null || echo "unknown")
+
+# Skip if already bootstrapped with current version
+if [ -f "$MARKER" ]; then
+    BOOTSTRAPPED_VERSION=$(head -1 "$MARKER" 2>/dev/null || echo "")
+    if [ "$BOOTSTRAPPED_VERSION" != "$IMAGE_VERSION" ]; then
+        echo "Home bootstrapped with $BOOTSTRAPPED_VERSION, current image is $IMAGE_VERSION." >&2
+        echo "Run 'mino cache clear --home' to reset, or ignore this message." >&2
+    fi
+    exit 0
+fi
+
+[ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Bootstrapping home directory..." >&2
+for item in .oh-my-zsh .nvm .local .zshrc .zsh_history; do
+    if [ ! -e "$HOME/$item" ] && [ -e "/etc/skel/$item" ]; then
+        cp -a "/etc/skel/$item" "$HOME/$item" 2>/dev/null || true
+    fi
+done
+
+# Setup user-level npm prefix
+mkdir -p "$HOME/.npm-global" 2>/dev/null || true
+npm config set prefix "$HOME/.npm-global" 2>/dev/null || true
+
+echo "$IMAGE_VERSION" > "$MARKER" 2>/dev/null || true
+[ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Bootstrap complete." >&2

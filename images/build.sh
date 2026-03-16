@@ -242,6 +242,22 @@ test_base() {
     check_path_exists "mino-base" "/home/developer/.oh-my-zsh/custom/plugins/zsh-autosuggestions" "zsh-autosuggestions"
     check_path_exists "mino-base" "/home/developer/.oh-my-zsh/custom/plugins/zsh-history-substring-search" "zsh-history-substring-search"
     check_path_exists "mino-base" "/home/developer/.nvm/nvm.sh" "nvm"
+    check_path_exists "mino-base" "/home/developer/.mino-bootstrapped" "bootstrap marker"
+
+    echo ""
+    log_info "Skeleton (/etc/skel):"
+    check_path_exists "mino-base" "/etc/skel/.oh-my-zsh" "skel: Oh My Zsh"
+    check_path_exists "mino-base" "/etc/skel/.nvm/nvm.sh" "skel: nvm"
+    check_path_exists "mino-base" "/etc/skel/.local/bin/claude" "skel: Claude Code"
+    check_path_exists "mino-base" "/etc/skel/.zshrc" "skel: .zshrc"
+    check_path_exists "mino-base" "/etc/skel/.zsh_history" "skel: .zsh_history"
+
+    echo ""
+    log_info "Entrypoint:"
+    check_path_exists "mino-base" "/usr/local/bin/mino-entrypoint" "mino-entrypoint"
+    check_path_exists "mino-base" "/usr/local/bin/mino-bootstrap" "mino-bootstrap"
+    check_path_exists "mino-base" "/etc/mino-base-version" "version file"
+    check_path_exists "mino-base" "/etc/zsh/zshrc.d/mino.zsh" "system shell config"
 
     echo ""
     log_info "Healthcheck:"

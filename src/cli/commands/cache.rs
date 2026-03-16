@@ -5,8 +5,10 @@ use crate::cache::{
     CacheState, CacheVolume,
 };
 use crate::cli::args::{CacheAction, CacheArgs, OutputFormat};
+use crate::cli::commands::run::image::LAYER_BASE_IMAGE;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
+use crate::home::HomeVolume;
 use crate::orchestration::{create_runtime, ContainerRuntime};
 use crate::ui::{self, UiContext};
 use chrono::Utc;
@@ -27,8 +29,9 @@ pub async fn execute(args: CacheArgs, config: &Config) -> MinoResult<()> {
             all,
             volumes,
             images,
+            home,
             yes,
-        } => clear_artifacts(&*runtime, all || volumes, all || images, yes).await,
+        } => clear_artifacts(&*runtime, all || volumes, all || images, all || home, yes).await,
     }
 }
 
@@ -39,18 +42,23 @@ async fn list_caches(
     config: &Config,
 ) -> MinoResult<()> {
     let volumes = runtime.volume_list("mino-cache-").await?;
+    let home_volumes = runtime.volume_list("mino-home-").await?;
 
-    if volumes.is_empty() {
+    if volumes.is_empty() && home_volumes.is_empty() {
         match format {
-            OutputFormat::Json => println!("{{\"caches\":[]}}"),
+            OutputFormat::Json => println!("{{\"caches\":[],\"home_volumes\":[]}}"),
             OutputFormat::Plain => {}
-            OutputFormat::Table => println!("No cache volumes found."),
+            OutputFormat::Table => println!("No cache or home volumes found."),
         }
         return Ok(());
     }
 
     // Get disk usage for all cache volumes
-    let sizes = runtime.volume_disk_usage("mino-cache-").await?;
+    let sizes = if !volumes.is_empty() {
+        runtime.volume_disk_usage("mino-cache-").await?
+    } else {
+        std::collections::HashMap::new()
+    };
 
     // Parse into CacheVolume structs with sizes, resolving state via sidecar
     let mut caches: Vec<(CacheVolume, u64)> = Vec::new();
@@ -62,14 +70,30 @@ async fn list_caches(
         }
     }
 
+    // Parse home volumes
+    let home_vols: Vec<HomeVolume> = home_volumes
+        .iter()
+        .filter_map(|v| HomeVolume::from_labels(&v.name, &v.labels))
+        .collect();
+
     // Calculate total size
     let total_size: u64 = caches.iter().map(|(_, s)| s).sum();
     let limit_bytes = gb_to_bytes(config.cache.max_total_gb);
 
     match format {
-        OutputFormat::Table => print_cache_table(&caches, total_size, limit_bytes),
-        OutputFormat::Json => print_cache_json(&caches, total_size, limit_bytes)?,
-        OutputFormat::Plain => print_cache_plain(&caches),
+        OutputFormat::Table => {
+            print_cache_table(&caches, total_size, limit_bytes);
+            if !home_vols.is_empty() {
+                print_home_table(&home_vols);
+            }
+        }
+        OutputFormat::Json => print_cache_json(&caches, &home_vols, total_size, limit_bytes)?,
+        OutputFormat::Plain => {
+            print_cache_plain(&caches);
+            for hv in &home_vols {
+                println!("{}", hv.name);
+            }
+        }
     }
 
     Ok(())
@@ -137,8 +161,26 @@ fn print_cache_table(caches: &[(CacheVolume, u64)], total_size: u64, limit_bytes
     println!("{} cache(s)", caches.len());
 }
 
+fn print_home_table(home_vols: &[HomeVolume]) {
+    let ctx = UiContext::detect();
+
+    ui::intro(&ctx, "Home Volumes");
+
+    println!("{:<40} {:<40} {:<16}", "VOLUME", "PROJECT", "CREATED");
+    println!("{}", "-".repeat(96));
+
+    for hv in home_vols {
+        let created = hv.created_at.format("%Y-%m-%d %H:%M").to_string();
+        println!("{:<40} {:<40} {:<16}", hv.name, hv.project_path, created);
+    }
+
+    println!();
+    println!("{} home volume(s)", home_vols.len());
+}
+
 fn print_cache_json(
     caches: &[(CacheVolume, u64)],
+    home_vols: &[HomeVolume],
     total_size: u64,
     limit_bytes: u64,
 ) -> MinoResult<()> {
@@ -153,8 +195,16 @@ fn print_cache_json(
     }
 
     #[derive(serde::Serialize)]
+    struct HomeJson {
+        name: String,
+        project_path: String,
+        created_at: String,
+    }
+
+    #[derive(serde::Serialize)]
     struct Output {
         caches: Vec<CacheJson>,
+        home_volumes: Vec<HomeJson>,
         total_size_bytes: u64,
         limit_bytes: u64,
         usage_percent: f64,
@@ -172,8 +222,18 @@ fn print_cache_json(
         })
         .collect();
 
+    let json_home: Vec<HomeJson> = home_vols
+        .iter()
+        .map(|hv| HomeJson {
+            name: hv.name.clone(),
+            project_path: hv.project_path.clone(),
+            created_at: hv.created_at.to_rfc3339(),
+        })
+        .collect();
+
     let output = Output {
         caches: json_caches,
+        home_volumes: json_home,
         total_size_bytes: total_size,
         limit_bytes,
         usage_percent: CacheSizeStatus::percentage(total_size, limit_bytes),
@@ -388,9 +448,39 @@ async fn gc_caches(
         );
     }
 
+    // Check home volumes for deleted projects
+    let home_volumes = runtime.volume_list("mino-home-").await?;
+    let mut home_to_remove: Vec<HomeVolume> = Vec::new();
+
+    for v in &home_volumes {
+        if let Some(hv) = HomeVolume::from_labels(&v.name, &v.labels) {
+            let project_path = std::path::Path::new(&hv.project_path);
+            if !project_path.exists() {
+                home_to_remove.push(hv);
+            }
+        }
+    }
+
+    if !home_to_remove.is_empty() {
+        ui::section(
+            &ctx,
+            &format!(
+                "Found {} orphaned home volume(s) (project deleted)",
+                home_to_remove.len()
+            ),
+        );
+        for hv in &home_to_remove {
+            ui::step_warn(&ctx, &format!("{} ({})", hv.name, hv.project_path));
+        }
+    }
+
     if dry_run {
         println!();
         ui::note(&ctx, "Dry run", "No caches removed.");
+        return Ok(());
+    }
+
+    if to_remove.is_empty() && home_to_remove.is_empty() {
         return Ok(());
     }
 
@@ -402,25 +492,39 @@ async fn gc_caches(
     for (cache, _) in to_remove {
         debug!("Removing cache: {}", cache.name);
         runtime.volume_remove(&cache.name).await?;
-        // Clean up sidecar file alongside volume
         CacheSidecar::delete(&cache.name).await.ok();
         removed += 1;
     }
 
-    spinner.stop(&format!(
-        "Removed {} cache(s), freed {}",
-        removed,
-        format_bytes(bytes_to_free)
-    ));
+    let mut home_removed = 0;
+    for hv in home_to_remove {
+        debug!("Removing orphaned home volume: {}", hv.name);
+        runtime.volume_remove(&hv.name).await?;
+        home_removed += 1;
+    }
+
+    let mut summary_parts = Vec::new();
+    if removed > 0 {
+        summary_parts.push(format!(
+            "{} cache(s), freed {}",
+            removed,
+            format_bytes(bytes_to_free)
+        ));
+    }
+    if home_removed > 0 {
+        summary_parts.push(format!("{} orphaned home volume(s)", home_removed));
+    }
+    spinner.stop(&format!("Removed {}", summary_parts.join(" + ")));
 
     Ok(())
 }
 
-/// Clear cache artifacts (volumes, images, or both)
+/// Clear cache artifacts (volumes, images, home volumes, or all)
 async fn clear_artifacts(
     runtime: &dyn ContainerRuntime,
     clear_volumes: bool,
     clear_images: bool,
+    clear_home: bool,
     skip_confirm: bool,
 ) -> MinoResult<()> {
     let ctx = UiContext::detect();
@@ -448,7 +552,13 @@ async fn clear_artifacts(
         vec![]
     };
 
-    if volumes.is_empty() && images.is_empty() {
+    let home_volumes = if clear_home {
+        runtime.volume_list("mino-home-").await?
+    } else {
+        vec![]
+    };
+
+    if volumes.is_empty() && images.is_empty() && home_volumes.is_empty() && !clear_images {
         ui::intro(&ctx, "Cache Clear");
         ui::step_info(&ctx, "Nothing to clear.");
         return Ok(());
@@ -477,13 +587,29 @@ async fn clear_artifacts(
         }
     }
 
-    if !images.is_empty() {
-        ui::step_warn(
-            &ctx,
-            &format!("This will remove {} composed image(s)", images.len()),
-        );
+    if !images.is_empty() || clear_images {
+        let count = images.len() + if clear_images { 1 } else { 0 };
+        ui::step_warn(&ctx, &format!("This will remove up to {} image(s)", count));
         for img in &images {
             ui::remark(&ctx, img);
+        }
+        if clear_images {
+            ui::remark(&ctx, LAYER_BASE_IMAGE);
+        }
+    }
+
+    if !home_volumes.is_empty() {
+        ui::step_warn(
+            &ctx,
+            &format!("This will remove {} home volume(s)", home_volumes.len()),
+        );
+        for vol in &home_volumes {
+            let project = vol
+                .labels
+                .get("io.mino.home.project")
+                .cloned()
+                .unwrap_or_default();
+            ui::remark(&ctx, &format!("{} ({})", vol.name, project));
         }
     }
 
@@ -499,7 +625,7 @@ async fn clear_artifacts(
     let mut spinner = ui::TaskSpinner::new(&ctx);
     spinner.start("Clearing...");
 
-    // Remove volumes and their sidecar files
+    // Remove cache volumes and their sidecar files
     let vol_count = volumes.len();
     for vol in volumes {
         runtime.volume_remove(&vol.name).await?;
@@ -508,26 +634,46 @@ async fn clear_artifacts(
 
     // Remove images (prune containers first so rmi doesn't fail)
     let img_count = images.len();
-    if !images.is_empty() {
+    if !images.is_empty() || clear_images {
         runtime.container_prune().await?;
         for img in &images {
             runtime.image_remove(img).await?;
         }
+        // Also remove base image so it's re-pulled fresh on next run
+        if clear_images {
+            let _ = runtime.image_remove(LAYER_BASE_IMAGE).await;
+        }
+    }
+
+    // Remove home volumes
+    let home_count = home_volumes.len();
+    for vol in home_volumes {
+        runtime.volume_remove(&vol.name).await?;
     }
 
     // Summary
     let mut parts = Vec::new();
     if vol_count > 0 {
         parts.push(format!(
-            "{} volume(s) ({})",
+            "{} cache volume(s) ({})",
             vol_count,
             format_bytes(total_volume_size)
         ));
     }
-    if img_count > 0 {
-        parts.push(format!("{} image(s)", img_count));
+    if img_count > 0 || clear_images {
+        parts.push(format!(
+            "{} image(s)",
+            img_count + if clear_images { 1 } else { 0 }
+        ));
     }
-    spinner.stop(&format!("Cleared {}", parts.join(" + ")));
+    if home_count > 0 {
+        parts.push(format!("{} home volume(s)", home_count));
+    }
+    if parts.is_empty() {
+        spinner.stop("Nothing to clear");
+    } else {
+        spinner.stop(&format!("Cleared {}", parts.join(" + ")));
+    }
 
     Ok(())
 }
@@ -579,7 +725,8 @@ mod tests {
         list_caches(&mock, OutputFormat::Plain, &config)
             .await
             .unwrap();
-        mock.assert_called("volume_list", 1);
+        // Called twice: once for mino-cache-, once for mino-home-
+        mock.assert_called("volume_list", 2);
     }
 
     #[tokio::test]
@@ -597,7 +744,9 @@ mod tests {
             .on("volume_list", Ok(MockResponse::VolumeInfoVec(volumes)))
             .on("volume_disk_usage", Ok(MockResponse::DiskUsageMap(sizes)));
 
-        clear_artifacts(&mock, true, false, true).await.unwrap();
+        clear_artifacts(&mock, true, false, false, true)
+            .await
+            .unwrap();
 
         mock.assert_called("volume_remove", 2);
         mock.assert_called_with("volume_remove", &["mino-cache-npm-abc123"]);
@@ -605,7 +754,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_images_removes_all() {
+    async fn clear_images_removes_composed_and_base() {
         let images = vec![
             "mino-composed-rust:latest".to_string(),
             "mino-composed-python:latest".to_string(),
@@ -614,12 +763,62 @@ mod tests {
         let mock =
             MockRuntime::new().on("image_list_prefixed", Ok(MockResponse::StringVec(images)));
 
-        clear_artifacts(&mock, false, true, true).await.unwrap();
+        clear_artifacts(&mock, false, true, false, true)
+            .await
+            .unwrap();
+
+        mock.assert_called("container_prune", 1);
+        // 2 composed + 1 base image
+        mock.assert_called("image_remove", 3);
+        mock.assert_called_with("image_remove", &["mino-composed-rust:latest"]);
+        mock.assert_called_with("image_remove", &["mino-composed-python:latest"]);
+        mock.assert_called_with("image_remove", &[LAYER_BASE_IMAGE]);
+    }
+
+    #[tokio::test]
+    async fn clear_home_removes_home_volumes() {
+        let home_vol = VolumeInfo {
+            name: "mino-home-abc123def456".to_string(),
+            labels: HashMap::from([
+                ("io.mino.home".to_string(), "true".to_string()),
+                (
+                    "io.mino.home.project".to_string(),
+                    "/home/user/project".to_string(),
+                ),
+            ]),
+            mountpoint: None,
+            created_at: Some("2026-01-01T00:00:00Z".to_string()),
+            size_bytes: None,
+        };
+
+        let mock = MockRuntime::new().on(
+            "volume_list",
+            Ok(MockResponse::VolumeInfoVec(vec![home_vol])),
+        );
+
+        clear_artifacts(&mock, false, false, true, true)
+            .await
+            .unwrap();
+
+        mock.assert_called("volume_remove", 1);
+        mock.assert_called_with("volume_remove", &["mino-home-abc123def456"]);
+    }
+
+    #[tokio::test]
+    async fn clear_images_also_removes_base() {
+        let images = vec!["mino-composed-abc:latest".to_string()];
+
+        let mock =
+            MockRuntime::new().on("image_list_prefixed", Ok(MockResponse::StringVec(images)));
+
+        clear_artifacts(&mock, false, true, false, true)
+            .await
+            .unwrap();
 
         mock.assert_called("container_prune", 1);
         mock.assert_called("image_remove", 2);
-        mock.assert_called_with("image_remove", &["mino-composed-rust:latest"]);
-        mock.assert_called_with("image_remove", &["mino-composed-python:latest"]);
+        mock.assert_called_with("image_remove", &["mino-composed-abc:latest"]);
+        mock.assert_called_with("image_remove", &[LAYER_BASE_IMAGE]);
     }
 
     #[tokio::test]

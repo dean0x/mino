@@ -26,6 +26,9 @@ pub struct Config {
 
     /// Cache settings
     pub cache: CacheConfig,
+
+    /// Home volume settings
+    pub home: HomeConfig,
 }
 
 /// General application settings
@@ -245,6 +248,20 @@ impl Default for SessionConfig {
     }
 }
 
+/// Home volume configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HomeConfig {
+    /// Enable persistent per-project home volumes (default: true)
+    pub enabled: bool,
+}
+
+impl Default for HomeConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// Cache configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -317,6 +334,22 @@ mod tests {
     fn config_update_check_defaults_true() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.general.update_check);
+    }
+
+    #[test]
+    fn config_home_enabled_defaults_true() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.home.enabled);
+    }
+
+    #[test]
+    fn config_deserializes_home_disabled() {
+        let toml = r#"
+            [home]
+            enabled = false
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.home.enabled);
     }
 
     #[test]

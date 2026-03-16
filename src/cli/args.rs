@@ -177,6 +177,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_cache: bool,
 
+    /// Disable persistent home volume for this session
+    #[arg(long)]
+    pub no_home: bool,
+
     /// Force fresh cache (ignore existing caches)
     #[arg(long, conflicts_with = "no_cache")]
     pub cache_fresh: bool,
@@ -321,7 +325,7 @@ pub enum CacheAction {
     },
 
     /// Clear caches
-    #[command(group(clap::ArgGroup::new("target").required(true).args(["volumes", "images", "all"])))]
+    #[command(group(clap::ArgGroup::new("target").required(true).args(["volumes", "images", "home", "all"])))]
     Clear {
         /// Clear cache volumes
         #[arg(long)]
@@ -331,8 +335,12 @@ pub enum CacheAction {
         #[arg(long)]
         images: bool,
 
-        /// Clear all artifacts (volumes + images)
-        #[arg(long, conflicts_with_all = ["volumes", "images"])]
+        /// Clear home volumes
+        #[arg(long)]
+        home: bool,
+
+        /// Clear all artifacts (volumes + images + home)
+        #[arg(long, conflicts_with_all = ["volumes", "images", "home"])]
         all: bool,
 
         /// Skip confirmation prompt
@@ -638,6 +646,47 @@ mod tests {
                 assert_eq!(args.command, vec!["ls", "-la"]);
             }
             _ => panic!("expected Exec command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_no_home() {
+        let cli = Cli::parse_from(["mino", "run", "--no-home", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => assert!(args.no_home),
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_no_home_default_false() {
+        let cli = Cli::parse_from(["mino", "run", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => assert!(!args.no_home),
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_cache_clear_home() {
+        let cli = Cli::parse_from(["mino", "cache", "clear", "--home"]);
+        match cli.command {
+            Commands::Cache(args) => match args.action {
+                CacheAction::Clear {
+                    home,
+                    volumes,
+                    images,
+                    all,
+                    ..
+                } => {
+                    assert!(home);
+                    assert!(!volumes);
+                    assert!(!images);
+                    assert!(!all);
+                }
+                _ => panic!("expected Clear action"),
+            },
+            _ => panic!("expected Cache command"),
         }
     }
 
