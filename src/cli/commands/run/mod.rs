@@ -73,16 +73,27 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
         if stale.is_some() || update.is_some() {
             spinner.clear();
+
             if let Some(info) = stale {
-                ui::step_warn_hint(
+                let confirmed = ui::confirm(
                     &ctx,
                     &format!(
-                        "Mino updated ({} \u{2192} {}). Cached layer images may be outdated",
+                        "Mino upgraded ({} \u{2192} {}). Clear cached layer images to rebuild with the new version?",
                         info.old, info.new
                     ),
-                    "Run `mino cache clear --images` to rebuild",
-                );
+                    true,
+                )
+                .await
+                .unwrap_or(false);
+
+                if confirmed {
+                    if let Err(e) = crate::version::clear_composed_images(&*runtime).await {
+                        warn!("Failed to clear composed images: {}", e);
+                    }
+                    ui::step_ok(&ctx, "Cached layer images cleared. They'll rebuild on this run.");
+                }
             }
+
             if let Some(info) = update {
                 let method = crate::version::detect_install_method();
                 let hint = crate::version::update_hint(&method);
@@ -237,6 +248,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         manager: &manager,
         audit: &audit,
         spinner: &mut spinner,
+        config,
     };
 
     if args.detach {
@@ -256,6 +268,7 @@ struct RunContext<'a> {
     manager: &'a SessionManager,
     audit: &'a AuditLog,
     spinner: &'a mut TaskSpinner,
+    config: &'a Config,
 }
 
 impl RunContext<'_> {
@@ -406,6 +419,19 @@ async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) 
             "{} Session exited with code {}",
             style("!").yellow(),
             exit_code
+        );
+    }
+
+    // Show update notification on exit (uses cached check, no new HTTP request)
+    if let Some(update) = crate::version::check_for_update(ctx.config).await {
+        let method = crate::version::detect_install_method();
+        let hint = crate::version::update_hint(&method);
+        println!(
+            "\n  {} Mino v{} available (current: v{}). {}",
+            style("ℹ").cyan(),
+            update.latest,
+            update.current,
+            hint
         );
     }
 
@@ -775,6 +801,7 @@ mod tests {
         _cleanup: SessionCleanup,
         container_config: ContainerConfig,
         command: Vec<String>,
+        config: Config,
         audit: AuditLog,
         spinner: TaskSpinner,
     }
@@ -802,6 +829,7 @@ mod tests {
             let command = vec!["bash".to_string()];
             let mut config = Config::default();
             config.general.audit_log = false;
+            config.general.update_check = false;
             let audit = AuditLog::new(&config);
             let ctx = UiContext::detect();
             let spinner = TaskSpinner::new(&ctx);
@@ -814,6 +842,7 @@ mod tests {
                 _cleanup: cleanup,
                 container_config,
                 command,
+                config,
                 audit,
                 spinner,
             }
@@ -828,6 +857,7 @@ mod tests {
                 manager: &self.manager,
                 audit: &self.audit,
                 spinner: &mut self.spinner,
+                config: &self.config,
             }
         }
     }

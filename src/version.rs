@@ -1,12 +1,14 @@
 //! Version awareness for mino run
 //!
-//! Two lightweight checks:
-//! 1. Stale image warning — after a version upgrade, cached composed images may need rebuilding
+//! Three concerns:
+//! 1. Stale image detection — after a version change, cached composed images may need rebuilding
 //! 2. Update check — periodic (24h) check for newer stable releases on GitHub
+//! 3. Image clearing — remove composed images so layers rebuild with the new version
 //!
-//! Both are silent-on-failure and never block the primary workflow.
+//! Checks are silent-on-failure and never block the primary workflow.
 
 use crate::config::{schema::Config, ConfigManager};
+use crate::error::MinoResult;
 use crate::orchestration::ContainerRuntime;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -152,6 +154,20 @@ async fn save_state_to(path: &Path, state: &VersionState) {
     }
 }
 
+/// Clear all composed images. Prunes stopped containers first to avoid
+/// "image in use" errors. Returns Ok(count) with number of images removed.
+pub async fn clear_composed_images(runtime: &dyn ContainerRuntime) -> MinoResult<usize> {
+    let images = runtime.image_list_prefixed("mino-composed-").await?;
+    if images.is_empty() {
+        return Ok(0);
+    }
+    runtime.container_prune().await?;
+    for img in &images {
+        runtime.image_remove(img).await?;
+    }
+    Ok(images.len())
+}
+
 // --- Public async functions ---
 
 /// Check if cached composed images may be stale after a version upgrade.
@@ -171,19 +187,20 @@ async fn check_stale_images_inner(
     let state = load_state_from(path).await;
     let current = env!("CARGO_PKG_VERSION");
 
-    let result = should_warn_stale_images(&state, current);
+    let info = should_warn_stale_images(&state, current);
 
     // Only query composed images if version actually changed
-    let result = match result {
-        Some(info) => match runtime.image_list_prefixed("mino-composed-").await {
+    let result = if let Some(info) = info {
+        match runtime.image_list_prefixed("mino-composed-").await {
             Ok(images) if !images.is_empty() => Some(info),
             Ok(_) => None,
             Err(e) => {
                 warn!("Failed to list composed images: {}", e);
                 None
             }
-        },
-        None => None,
+        }
+    } else {
+        None
     };
 
     // Always write current version to bootstrap baseline
@@ -264,10 +281,10 @@ fn fetch_latest_release() -> Result<String, String> {
     use std::time::Duration;
     use ureq::Agent;
 
-    let config = Agent::config_builder()
+    let agent_config = Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(3)))
         .build();
-    let agent: Agent = config.new_agent();
+    let agent: Agent = agent_config.new_agent();
 
     let body: String = agent
         .get(GITHUB_RELEASES_URL)
@@ -676,5 +693,87 @@ mod tests {
         let config = Config::default();
         let result = check_for_update_inner(&config, &path).await;
         assert!(result.is_none());
+    }
+
+    // --- clear_composed_images tests ---
+
+    #[tokio::test]
+    async fn clear_composed_images_prunes_and_removes() {
+        let mock = MockRuntime::new().on(
+            "image_list_prefixed",
+            Ok(MockResponse::StringVec(vec![
+                "mino-composed-abc123".to_string(),
+                "mino-composed-def456".to_string(),
+            ])),
+        );
+
+        let count = clear_composed_images(&mock).await.unwrap();
+        assert_eq!(count, 2);
+
+        mock.assert_called("image_list_prefixed", 1);
+        mock.assert_called_with("image_list_prefixed", &["mino-composed-"]);
+        mock.assert_called("container_prune", 1);
+        mock.assert_called("image_remove", 2);
+        mock.assert_called_with("image_remove", &["mino-composed-abc123"]);
+        mock.assert_called_with("image_remove", &["mino-composed-def456"]);
+    }
+
+    #[tokio::test]
+    async fn clear_composed_images_empty_returns_zero() {
+        let mock = MockRuntime::new();
+
+        let count = clear_composed_images(&mock).await.unwrap();
+        assert_eq!(count, 0);
+
+        mock.assert_called("image_list_prefixed", 1);
+        mock.assert_called("container_prune", 0);
+        mock.assert_called("image_remove", 0);
+    }
+
+    #[tokio::test]
+    async fn clear_composed_images_propagates_list_error() {
+        let mock = MockRuntime::new().on_err(
+            "image_list_prefixed",
+            crate::error::MinoError::Internal("list failed".to_string()),
+        );
+
+        let result = clear_composed_images(&mock).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn clear_composed_images_propagates_prune_error() {
+        let mock = MockRuntime::new()
+            .on(
+                "image_list_prefixed",
+                Ok(MockResponse::StringVec(vec![
+                    "mino-composed-abc123".to_string(),
+                ])),
+            )
+            .on_err(
+                "container_prune",
+                crate::error::MinoError::Internal("prune failed".to_string()),
+            );
+
+        let result = clear_composed_images(&mock).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn clear_composed_images_propagates_remove_error() {
+        let mock = MockRuntime::new()
+            .on(
+                "image_list_prefixed",
+                Ok(MockResponse::StringVec(vec![
+                    "mino-composed-abc123".to_string(),
+                ])),
+            )
+            .on_err(
+                "image_remove",
+                crate::error::MinoError::Internal("remove failed".to_string()),
+            );
+
+        let result = clear_composed_images(&mock).await;
+        assert!(result.is_err());
     }
 }
