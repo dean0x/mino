@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn native_podman_runtime_default() {
-        let runtime = NativePodmanRuntime::default();
+        let runtime = NativePodmanRuntime;
         assert_eq!(runtime.runtime_name(), "Native Podman");
     }
 }
