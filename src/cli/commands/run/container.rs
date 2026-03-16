@@ -22,17 +22,25 @@ pub(super) struct ContainerBuildParams<'a> {
     pub cache_mounts: &'a [CacheMount],
     pub cache_env: HashMap<String, String>,
     pub network_mode: &'a NetworkMode,
+    pub home_mount: Option<String>,
 }
 
 /// Build the container configuration from resolved parameters.
 pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResult<ContainerConfig> {
     let image = params.resolution.image.clone();
 
-    let mut volumes = vec![format!(
+    let mut volumes = Vec::new();
+
+    // Home volume mount (before other mounts for correct overlay order)
+    if let Some(ref home) = params.home_mount {
+        volumes.push(home.clone());
+    }
+
+    volumes.push(format!(
         "{}:{}",
         params.project_dir.display(),
         params.config.container.workdir
-    )];
+    ));
 
     volumes.extend(params.cache_mounts.iter().map(|m| m.volume_arg()));
 
@@ -76,12 +84,12 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
         auto_remove: params.args.detach,
         read_only,
         tmpfs: if read_only {
-            vec![
-                "/tmp".to_string(),
-                "/run".to_string(),
-                "/root".to_string(),
-                "/home/developer".to_string(),
-            ]
+            let mut mounts = vec!["/tmp".to_string(), "/run".to_string(), "/root".to_string()];
+            // Only add /home/developer tmpfs if no home volume is mounted
+            if params.home_mount.is_none() {
+                mounts.push("/home/developer".to_string());
+            }
+            mounts
         } else {
             vec![]
         },
@@ -112,6 +120,7 @@ mod tests {
             detach: false,
             read_only: false,
             no_cache: false,
+            no_home: false,
             cache_fresh: false,
             network: None,
             network_allow: vec![],
@@ -128,6 +137,14 @@ mod tests {
     }
 
     fn build_with(args: &RunArgs, config: &Config) -> crate::orchestration::ContainerConfig {
+        build_with_home(args, config, None)
+    }
+
+    fn build_with_home(
+        args: &RunArgs,
+        config: &Config,
+        home_mount: Option<String>,
+    ) -> crate::orchestration::ContainerConfig {
         let resolution = test_resolution();
         let project_dir = PathBuf::from("/tmp/project");
         let network_mode = NetworkMode::Bridge;
@@ -140,6 +157,7 @@ mod tests {
             cache_mounts: &[],
             cache_env: HashMap::new(),
             network_mode: &network_mode,
+            home_mount,
         };
         build_container_config(&params).unwrap()
     }
@@ -160,10 +178,11 @@ mod tests {
         let config = Config::default();
         let result = build_with(&args, &config);
         assert!(result.read_only);
-        assert_eq!(
-            result.tmpfs,
-            vec!["/tmp", "/run", "/root", "/home/developer"]
-        );
+        // Without home_mount, /home/developer gets tmpfs
+        assert!(result.tmpfs.contains(&"/tmp".to_string()));
+        assert!(result.tmpfs.contains(&"/run".to_string()));
+        assert!(result.tmpfs.contains(&"/root".to_string()));
+        assert!(result.tmpfs.contains(&"/home/developer".to_string()));
     }
 
     #[test]
@@ -173,10 +192,10 @@ mod tests {
         config.container.read_only = true;
         let result = build_with(&args, &config);
         assert!(result.read_only);
-        assert_eq!(
-            result.tmpfs,
-            vec!["/tmp", "/run", "/root", "/home/developer"]
-        );
+        assert!(result.tmpfs.contains(&"/tmp".to_string()));
+        assert!(result.tmpfs.contains(&"/run".to_string()));
+        assert!(result.tmpfs.contains(&"/root".to_string()));
+        assert!(result.tmpfs.contains(&"/home/developer".to_string()));
     }
 
     #[test]
@@ -188,5 +207,46 @@ mod tests {
         let result = build_with(&args, &config);
         assert!(result.read_only);
         assert!(!result.tmpfs.is_empty());
+    }
+
+    #[test]
+    fn home_mount_appears_in_volumes() {
+        let args = test_run_args();
+        let config = Config::default();
+        let result = build_with_home(
+            &args,
+            &config,
+            Some("mino-home-abc123:/home/developer".to_string()),
+        );
+        assert!(result
+            .volumes
+            .contains(&"mino-home-abc123:/home/developer".to_string()));
+    }
+
+    #[test]
+    fn read_only_with_home_excludes_developer_tmpfs() {
+        let mut args = test_run_args();
+        args.read_only = true;
+        let config = Config::default();
+        let result = build_with_home(
+            &args,
+            &config,
+            Some("mino-home-abc123:/home/developer".to_string()),
+        );
+        assert!(result.read_only);
+        assert!(result.tmpfs.contains(&"/tmp".to_string()));
+        assert!(result.tmpfs.contains(&"/run".to_string()));
+        assert!(result.tmpfs.contains(&"/root".to_string()));
+        assert!(!result.tmpfs.contains(&"/home/developer".to_string()));
+    }
+
+    #[test]
+    fn read_only_without_home_includes_developer_tmpfs() {
+        let mut args = test_run_args();
+        args.read_only = true;
+        let config = Config::default();
+        let result = build_with_home(&args, &config, None);
+        assert!(result.read_only);
+        assert!(result.tmpfs.contains(&"/home/developer".to_string()));
     }
 }

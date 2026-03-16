@@ -338,7 +338,7 @@ mod tests {
         let aws = table["credentials"].as_table().unwrap()["aws"]
             .as_table()
             .unwrap();
-        assert_eq!(aws["enabled"].as_bool().unwrap(), true);
+        assert!(aws["enabled"].as_bool().unwrap());
         assert_eq!(aws["region"].as_str().unwrap(), "us-west-2");
     }
 

@@ -3,7 +3,8 @@
 mod cache;
 mod container;
 mod credentials;
-mod image;
+mod home;
+pub(crate) mod image;
 mod prompts;
 
 use self::cache::{check_cache_size_warning, finalize_caches, setup_caches};
@@ -140,6 +141,10 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         check_cache_size_warning(&*runtime, config).await;
     }
 
+    spinner.message("Setting up home volume...");
+    let home_mount =
+        home::setup_home_volume(&*runtime, &args, config, &project_dir, &resolution.image).await?;
+
     spinner.message("Gathering credentials...");
     let (credentials, active_providers, cred_failures) = gather_credentials(&args, config).await?;
     if !cred_failures.is_empty() {
@@ -172,7 +177,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     let audit = AuditLog::new(config);
 
-    let container_config = build_container_config(&ContainerBuildParams {
+    let mut container_config = build_container_config(&ContainerBuildParams {
         args: &args,
         config,
         project_dir: &project_dir,
@@ -181,7 +186,15 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         cache_mounts: &cache_mounts,
         cache_env,
         network_mode: &network_mode,
+        home_mount: home_mount.clone(),
     })?;
+
+    // Suppress bootstrap output for detached mode or non-shell commands
+    if args.detach || !args.command.is_empty() {
+        container_config
+            .env
+            .insert("MINO_QUIET_BOOTSTRAP".to_string(), "1".to_string());
+    }
 
     // Layers compose on mino-base which has Oh My Zsh configured
     let command = if args.command.is_empty() {
@@ -200,12 +213,15 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         command
     };
 
-    let session = Session::new(
+    let mut session = Session::new(
         session_name.clone(),
         project_dir.clone(),
         command.clone(),
         SessionStatus::Starting,
     );
+    session.home_volume = home_mount
+        .as_ref()
+        .map(|m| m.split(':').next().unwrap_or_default().to_string());
     manager.create(&session).await?;
 
     audit
@@ -217,6 +233,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
                 "image": &container_config.image,
                 "command": &command,
                 "network": format!("{:?}", network_mode),
+                "home_volume": session.home_volume,
             }),
         )
         .await;
@@ -504,6 +521,7 @@ mod tests {
             detach: false,
             read_only: false,
             no_cache: false,
+            no_home: false,
             cache_fresh: false,
             network: None,
             network_allow: vec![],

@@ -224,6 +224,7 @@ fn generate_dockerfile(
 
     lines.push(String::new());
     lines.push("WORKDIR /workspace".to_string());
+    // NOTE: ENTRYPOINT inherited from base image (mino-entrypoint → bootstrap)
     lines.push("CMD [\"/bin/zsh\"]".to_string());
 
     lines.join("\n")

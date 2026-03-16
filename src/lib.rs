@@ -10,6 +10,7 @@ pub mod config;
 #[path = "creds/mod.rs"]
 pub mod credentials;
 pub mod error;
+pub mod home;
 pub mod layer;
 pub mod network;
 pub mod orchestration;
