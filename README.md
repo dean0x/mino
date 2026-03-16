@@ -1,11 +1,12 @@
 # Mino
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.82%2B-orange.svg)](https://www.rust-lang.org)
-[![Crates.io](https://img.shields.io/crates/v/mino.svg)](https://crates.io/crates/mino)
-[![npm](https://img.shields.io/npm/v/@dean0x/mino)](https://www.npmjs.com/package/@dean0x/mino)
-[![GitHub Release](https://img.shields.io/github/v/release/dean0x/mino)](https://github.com/dean0x/mino/releases)
-[![CI](https://github.com/dean0x/mino/actions/workflows/ci.yml/badge.svg)](https://github.com/dean0x/mino/actions/workflows/ci.yml)
+[![Website](https://img.shields.io/badge/Website-dean0x.github.io%2Fx%2Fmino-blue?style=for-the-badge)](https://dean0x.github.io/x/mino/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.82%2B-orange?style=for-the-badge)](https://www.rust-lang.org)
+[![Crates.io](https://img.shields.io/crates/v/mino?style=for-the-badge)](https://crates.io/crates/mino)
+[![npm](https://img.shields.io/npm/v/@dean0x/mino?style=for-the-badge)](https://www.npmjs.com/package/@dean0x/mino)
+[![GitHub Release](https://img.shields.io/github/v/release/dean0x/mino?style=for-the-badge)](https://github.com/dean0x/mino/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/dean0x/mino/ci.yml?style=for-the-badge&label=CI)](https://github.com/dean0x/mino/actions/workflows/ci.yml)
 
 Secure sandbox wrapper for AI coding agents using rootless Podman containers.
 
