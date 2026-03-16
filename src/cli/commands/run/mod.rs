@@ -90,7 +90,10 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
                     if let Err(e) = crate::version::clear_composed_images(&*runtime).await {
                         warn!("Failed to clear composed images: {}", e);
                     }
-                    ui::step_ok(&ctx, "Cached layer images cleared. They'll rebuild on this run.");
+                    ui::step_ok(
+                        &ctx,
+                        "Cached layer images cleared. They'll rebuild on this run.",
+                    );
                 }
             }
 

@@ -747,7 +747,7 @@ mod tests {
             .on(
                 "image_list_prefixed",
                 Ok(MockResponse::StringVec(vec![
-                    "mino-composed-abc123".to_string(),
+                    "mino-composed-abc123".to_string()
                 ])),
             )
             .on_err(
@@ -765,7 +765,7 @@ mod tests {
             .on(
                 "image_list_prefixed",
                 Ok(MockResponse::StringVec(vec![
-                    "mino-composed-abc123".to_string(),
+                    "mino-composed-abc123".to_string()
                 ])),
             )
             .on_err(
