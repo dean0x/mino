@@ -196,7 +196,7 @@ test_base() {
 
     echo ""
     log_info "AI tools:"
-    check_tool "mino-base" "claude"
+    check_tool "mino-base" "claude" "bash -c 'source ~/.nvm/nvm.sh && claude --version'"
 
     echo ""
     log_info "CLI tools (/opt/mino-tools/):"
@@ -240,7 +240,7 @@ test_base() {
     log_info "Skeleton (/etc/skel):"
     check_path_exists "mino-base" "/etc/skel/.oh-my-zsh" "skel: Oh My Zsh"
     check_path_exists "mino-base" "/etc/skel/.nvm/nvm.sh" "skel: nvm"
-    check_path_exists "mino-base" "/etc/skel/.local/bin/claude" "skel: Claude Code"
+    check_tool "mino-base" "claude (via nvm)" "bash -c 'source /etc/skel/.nvm/nvm.sh && claude --version'"
     check_path_exists "mino-base" "/etc/skel/.zshrc" "skel: .zshrc"
     check_path_exists "mino-base" "/etc/skel/.zsh_history" "skel: .zsh_history"
 
