@@ -44,69 +44,140 @@ ARG TOKEI_VERSION=v12.1.2
 ARG EZA_VERSION=v0.20.22
 ARG SD_VERSION=v1.0.0
 
-# Download all CLI tools into /opt/mino-tools/ in a single layer
+# SHA256 checksums for CLI tool downloads (per architecture)
+# Format: TOOL_SHA256_ARCH — update these when bumping tool versions
+ARG RG_SHA256_X86_64=4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e
+ARG FD_SHA256_X86_64=d9bfa25ec28624545c222992e1b00673b7c9ca5eb15393c40369f10b28f9c932
+ARG FD_SHA256_AARCH64=4e8e596646d047d904f2c5ca74b39dccc69978b6e1fb101094e534b0b59c1bb0
+ARG BAT_SHA256_X86_64=d39a21e3da57fe6a3e07184b3c1dc245f8dba379af569d3668b6dcdfe75e3052
+ARG FZF_SHA256_X86_64=a3c087a5f40e8bb4d9bfb26faffa094643df111a469646bef53154a54af9ff92
+ARG FZF_SHA256_AARCH64=e0b3fd1bb769997907d373b0511401801cd643ce939d26ad42e9fe2836bed625
+ARG DELTA_SHA256_X86_64=b7ea845004762358a00ef9127dd9fd723e333c7e4b9cb1da220c3909372310ee
+ARG ZOXIDE_SHA256_X86_64=eaa18f8aca1f02e1a132a9eac21b630918f96fa1cc7486ab87e7053dad37b004
+ARG ZOXIDE_SHA256_AARCH64=7da16a093b2ac16d577dc53d1f74a8199fc824c963fa3aaf77a6d9f294a895d5
+ARG GH_SHA256_X86_64=762569efe785082b7d1feb06995efece1a9cecce16da8503ac6fdbcbea04085b
+ARG GH_SHA256_AARCH64=8bcec9f3ee5c7c3700359a75da774c71221064a0ba017537795aa32ac8bbb481
+ARG NVIM_SHA256_X86_64=be189915a2a0da3615576e2db06a7c714aef0ae926b4da6107e589a3cc623e5c
+ARG YQ_SHA256_X86_64=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7
+ARG YQ_SHA256_AARCH64=0e7e1524f68d91b3ff9b089872d185940ab0fa020a5a9052046ef10547023156
+ARG TOKEI_SHA256_X86_64=c8c5c4ab9e1ff47e745de70f4af3214078657399fa7a0da0b5f209d780e49978
+ARG TOKEI_SHA256_AARCH64=ef514fd12cfc3ee2d1725e5ecb866ee1123163004879ec285b22f3323389ebe2
+ARG EZA_SHA256_X86_64=60340f26af56cccba5e34ee04ee2917aea27e44ac960a3716e01d75f07f74ef7
+ARG EZA_SHA256_AARCH64=617b76b587213058ae15cfd3d5ebac63c8981315aed36f1e7ae0d858ee522e11
+ARG SD_SHA256_X86_64=297202d8cc09cb65c9d7afdfc3f23146371d0c7d7d3448cecab11685d47c709a
+ARG SD_SHA256_AARCH64=9e99f8e9dd70c7015b8c20e49270bdd99e9caf966a41a11982f4d785f6a58c9e
+
+# Download all CLI tools into /opt/mino-tools/ in a single layer.
+# Each tool is downloaded to a temp file, SHA256-verified, then extracted.
 RUN set -e && mkdir -p /opt/mino-tools && ARCH=$(uname -m) && \
     # --- ripgrep ---
-    curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
-    tar -xz --strip-components=1 -C /opt/mino-tools "ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl/rg" && \
+    curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" \
+        -o /tmp/rg.tar.gz && \
+    echo "${RG_SHA256_X86_64}  /tmp/rg.tar.gz" | sha256sum -c - && \
+    tar -xz --strip-components=1 -C /opt/mino-tools -f /tmp/rg.tar.gz "ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl/rg" && \
+    rm /tmp/rg.tar.gz && \
     # --- fd ---
-    curl -fsSL "https://github.com/sharkdp/fd/releases/download/${FD_VERSION}/fd-${FD_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
-    tar -xz --strip-components=1 -C /opt/mino-tools "fd-${FD_VERSION}-${ARCH}-unknown-linux-musl/fd" && \
+    curl -fsSL "https://github.com/sharkdp/fd/releases/download/${FD_VERSION}/fd-${FD_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" \
+        -o /tmp/fd.tar.gz && \
+    case "$ARCH" in \
+        x86_64)  echo "${FD_SHA256_X86_64}  /tmp/fd.tar.gz" ;; \
+        aarch64) echo "${FD_SHA256_AARCH64}  /tmp/fd.tar.gz" ;; \
+    esac | sha256sum -c - && \
+    tar -xz --strip-components=1 -C /opt/mino-tools -f /tmp/fd.tar.gz "fd-${FD_VERSION}-${ARCH}-unknown-linux-musl/fd" && \
+    rm /tmp/fd.tar.gz && \
     # --- bat ---
-    curl -fsSL "https://github.com/sharkdp/bat/releases/download/${BAT_VERSION}/bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
-    tar -xz --strip-components=1 -C /opt/mino-tools "bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl/bat" && \
+    curl -fsSL "https://github.com/sharkdp/bat/releases/download/${BAT_VERSION}/bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" \
+        -o /tmp/bat.tar.gz && \
+    echo "${BAT_SHA256_X86_64}  /tmp/bat.tar.gz" | sha256sum -c - && \
+    tar -xz --strip-components=1 -C /opt/mino-tools -f /tmp/bat.tar.gz "bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl/bat" && \
+    rm /tmp/bat.tar.gz && \
     # --- fzf ---
     case "$ARCH" in \
-        x86_64) FZF_ARCH="amd64" ;; \
-        aarch64) FZF_ARCH="arm64" ;; \
+        x86_64)  FZF_ARCH="amd64"; FZF_SHA256="${FZF_SHA256_X86_64}" ;; \
+        aarch64) FZF_ARCH="arm64"; FZF_SHA256="${FZF_SHA256_AARCH64}" ;; \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
-    curl -fsSL "https://github.com/junegunn/fzf/releases/download/${FZF_VERSION}/fzf-${FZF_VERSION#v}-linux_${FZF_ARCH}.tar.gz" | \
-    tar -xz -C /opt/mino-tools fzf && \
+    curl -fsSL "https://github.com/junegunn/fzf/releases/download/${FZF_VERSION}/fzf-${FZF_VERSION#v}-linux_${FZF_ARCH}.tar.gz" \
+        -o /tmp/fzf.tar.gz && \
+    echo "${FZF_SHA256}  /tmp/fzf.tar.gz" | sha256sum -c - && \
+    tar -xz -C /opt/mino-tools -f /tmp/fzf.tar.gz fzf && \
+    rm /tmp/fzf.tar.gz && \
     # --- delta (git diff) ---
-    curl -fsSL "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
-    tar -xz --strip-components=1 -C /opt/mino-tools "delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl/delta" && \
+    curl -fsSL "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" \
+        -o /tmp/delta.tar.gz && \
+    echo "${DELTA_SHA256_X86_64}  /tmp/delta.tar.gz" | sha256sum -c - && \
+    tar -xz --strip-components=1 -C /opt/mino-tools -f /tmp/delta.tar.gz "delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl/delta" && \
+    rm /tmp/delta.tar.gz && \
     # --- zoxide (smart cd) ---
-    curl -fsSL "https://github.com/ajeetdsouza/zoxide/releases/download/${ZOXIDE_VERSION}/zoxide-${ZOXIDE_VERSION#v}-${ARCH}-unknown-linux-musl.tar.gz" | \
-    tar -xz -C /opt/mino-tools zoxide && \
+    curl -fsSL "https://github.com/ajeetdsouza/zoxide/releases/download/${ZOXIDE_VERSION}/zoxide-${ZOXIDE_VERSION#v}-${ARCH}-unknown-linux-musl.tar.gz" \
+        -o /tmp/zoxide.tar.gz && \
+    case "$ARCH" in \
+        x86_64)  echo "${ZOXIDE_SHA256_X86_64}  /tmp/zoxide.tar.gz" ;; \
+        aarch64) echo "${ZOXIDE_SHA256_AARCH64}  /tmp/zoxide.tar.gz" ;; \
+    esac | sha256sum -c - && \
+    tar -xz -C /opt/mino-tools -f /tmp/zoxide.tar.gz zoxide && \
+    rm /tmp/zoxide.tar.gz && \
     # --- GitHub CLI ---
     case "$ARCH" in \
-        x86_64) GH_ARCH="amd64" ;; \
-        aarch64) GH_ARCH="arm64" ;; \
+        x86_64)  GH_ARCH="amd64"; GH_SHA256="${GH_SHA256_X86_64}" ;; \
+        aarch64) GH_ARCH="arm64"; GH_SHA256="${GH_SHA256_AARCH64}" ;; \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
-    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" | \
-    tar -xz --strip-components=2 -C /opt/mino-tools "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" && \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" \
+        -o /tmp/gh.tar.gz && \
+    echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - && \
+    tar -xz --strip-components=2 -C /opt/mino-tools -f /tmp/gh.tar.gz "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" && \
+    rm /tmp/gh.tar.gz && \
     # --- neovim ---
     case "$ARCH" in \
-        x86_64) NVIM_ARCH="x86_64" ;; \
-        aarch64) NVIM_ARCH="aarch64" ;; \
+        x86_64)  NVIM_ARCH="x86_64"; NVIM_SHA256="${NVIM_SHA256_X86_64}" ;; \
+        aarch64) NVIM_ARCH="aarch64"; NVIM_SHA256="${NVIM_SHA256_X86_64}" ;; \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
-    curl -fsSL "https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-${NVIM_ARCH}.tar.gz" | \
-    tar -xz --strip-components=2 -C /opt/mino-tools "nvim-linux-${NVIM_ARCH}/bin/nvim" && \
+    curl -fsSL "https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-${NVIM_ARCH}.tar.gz" \
+        -o /tmp/nvim.tar.gz && \
+    echo "${NVIM_SHA256}  /tmp/nvim.tar.gz" | sha256sum -c - && \
+    tar -xz --strip-components=2 -C /opt/mino-tools -f /tmp/nvim.tar.gz "nvim-linux-${NVIM_ARCH}/bin/nvim" && \
+    rm /tmp/nvim.tar.gz && \
     # --- yq (YAML processor) ---
     case "$ARCH" in \
-        x86_64) YQ_ARCH="amd64" ;; \
-        aarch64) YQ_ARCH="arm64" ;; \
+        x86_64)  YQ_ARCH="amd64"; YQ_SHA256="${YQ_SHA256_X86_64}" ;; \
+        aarch64) YQ_ARCH="arm64"; YQ_SHA256="${YQ_SHA256_AARCH64}" ;; \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
     curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${YQ_ARCH}" \
-        -o /opt/mino-tools/yq && \
+        -o /tmp/yq && \
+    echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c - && \
+    mv /tmp/yq /opt/mino-tools/yq && \
     # --- tokei (code statistics) ---
-    curl -fsSL "https://github.com/XAMPPRocky/tokei/releases/download/${TOKEI_VERSION}/tokei-${ARCH}-unknown-linux-gnu.tar.gz" | \
-    tar -xz -C /opt/mino-tools tokei && \
+    curl -fsSL "https://github.com/XAMPPRocky/tokei/releases/download/${TOKEI_VERSION}/tokei-${ARCH}-unknown-linux-gnu.tar.gz" \
+        -o /tmp/tokei.tar.gz && \
+    case "$ARCH" in \
+        x86_64)  echo "${TOKEI_SHA256_X86_64}  /tmp/tokei.tar.gz" ;; \
+        aarch64) echo "${TOKEI_SHA256_AARCH64}  /tmp/tokei.tar.gz" ;; \
+    esac | sha256sum -c - && \
+    tar -xz -C /opt/mino-tools -f /tmp/tokei.tar.gz tokei && \
+    rm /tmp/tokei.tar.gz && \
     # --- eza (modern ls/tree replacement) ---
-    curl -fsSL "https://github.com/eza-community/eza/releases/download/${EZA_VERSION}/eza_${ARCH}-unknown-linux-gnu.tar.gz" | \
-    tar -xz -C /opt/mino-tools ./eza && \
+    curl -fsSL "https://github.com/eza-community/eza/releases/download/${EZA_VERSION}/eza_${ARCH}-unknown-linux-gnu.tar.gz" \
+        -o /tmp/eza.tar.gz && \
+    case "$ARCH" in \
+        x86_64)  echo "${EZA_SHA256_X86_64}  /tmp/eza.tar.gz" ;; \
+        aarch64) echo "${EZA_SHA256_AARCH64}  /tmp/eza.tar.gz" ;; \
+    esac | sha256sum -c - && \
+    tar -xz -C /opt/mino-tools -f /tmp/eza.tar.gz ./eza && \
+    rm /tmp/eza.tar.gz && \
     # --- sd (modern sed replacement) ---
     case "$ARCH" in \
-        x86_64) SD_TARGET="x86_64-unknown-linux-gnu" ;; \
-        aarch64) SD_TARGET="aarch64-unknown-linux-musl" ;; \
+        x86_64)  SD_TARGET="x86_64-unknown-linux-gnu"; SD_SHA256="${SD_SHA256_X86_64}" ;; \
+        aarch64) SD_TARGET="aarch64-unknown-linux-musl"; SD_SHA256="${SD_SHA256_AARCH64}" ;; \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
-    curl -fsSL "https://github.com/chmln/sd/releases/download/${SD_VERSION}/sd-${SD_VERSION}-${SD_TARGET}.tar.gz" | \
-    tar -xz --strip-components=1 -C /opt/mino-tools "sd-${SD_VERSION}-${SD_TARGET}/sd" && \
+    curl -fsSL "https://github.com/chmln/sd/releases/download/${SD_VERSION}/sd-${SD_VERSION}-${SD_TARGET}.tar.gz" \
+        -o /tmp/sd.tar.gz && \
+    echo "${SD_SHA256}  /tmp/sd.tar.gz" | sha256sum -c - && \
+    tar -xz --strip-components=1 -C /opt/mino-tools -f /tmp/sd.tar.gz "sd-${SD_VERSION}-${SD_TARGET}/sd" && \
+    rm /tmp/sd.tar.gz && \
     # --- set permissions on all tools ---
     chmod +x /opt/mino-tools/*
 
