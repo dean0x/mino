@@ -25,6 +25,70 @@ pub struct ComposedImageResult {
     pub was_cached: bool,
 }
 
+/// Check if any layers require a Dockerfile build step.
+///
+/// Returns `false` when all layers are pure user-install (handled by bootstrap).
+/// Returns `true` when at least one layer has a root-level install script
+/// or `root_install.packages`.
+pub fn needs_compose_build(layers: &[ResolvedLayer]) -> bool {
+    layers
+        .iter()
+        .any(|l| l.install_script.has_content() || l.manifest.has_root_install())
+}
+
+/// Collect deduplicated PATH prepend directories from all layers.
+///
+/// Returns `None` when no layers define `path_prepend` dirs.
+/// Used directly when only the path prepend value is needed (e.g., compose
+/// path in image.rs) without recomputing the full env merge.
+pub(crate) fn compute_path_prepend(layers: &[ResolvedLayer]) -> Option<String> {
+    let mut path_dirs: Vec<&str> = Vec::new();
+
+    for layer in layers {
+        for dir in &layer.manifest.env.path_prepend.dirs {
+            if !path_dirs.contains(&dir.as_str()) {
+                path_dirs.push(dir);
+            }
+        }
+    }
+
+    if path_dirs.is_empty() {
+        None
+    } else {
+        Some(path_dirs.join(":"))
+    }
+}
+
+/// Merge environment variables from all layers (public for use when compose is skipped).
+///
+/// Last layer in the list wins for conflicting keys.
+/// PATH prepends are accumulated from all layers.
+///
+/// When `for_dockerfile` is true, PATH uses `${PATH}` expansion (Dockerfile ENV).
+/// When false, PATH dirs are returned via `MINO_PATH_PREPEND` env var
+/// (for shell-level expansion in mino.zsh).
+pub(crate) fn merge_layer_env(
+    layers: &[ResolvedLayer],
+    for_dockerfile: bool,
+) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+
+    for layer in layers {
+        env.extend(layer.manifest.env_vars());
+    }
+
+    if let Some(joined) = compute_path_prepend(layers) {
+        if for_dockerfile {
+            let path_value = format!("{}:${{PATH}}", joined);
+            env.insert("PATH".to_string(), path_value);
+        } else {
+            env.insert("MINO_PATH_PREPEND".to_string(), joined);
+        }
+    }
+
+    env
+}
+
 /// Compose a container image from multiple layers.
 ///
 /// Generates a Dockerfile that installs each layer in order, builds
@@ -44,7 +108,7 @@ pub async fn compose_image(
     debug!("Composed image tag: {}", image_tag);
 
     // Merge environment variables for the Dockerfile (baked into image)
-    let build_env = merge_env(layers);
+    let build_env = merge_layer_env(layers, true);
 
     // Check if image already exists
     if runtime.image_exists(&image_tag).await.unwrap_or(false) {
@@ -103,42 +167,23 @@ async fn compute_image_tag(base_image: &str, layers: &[ResolvedLayer]) -> MinoRe
 
         // Include manifest version in hash for cache invalidation
         hasher.update(layer.manifest.layer.version.as_bytes());
+
+        // Include root_install packages so adding/removing packages
+        // invalidates the cached image even without a version bump
+        for pkg in &layer.manifest.root_install.packages {
+            hasher.update(pkg.as_bytes());
+        }
+
+        // Include user_install fields so bootstrap-managed tool changes
+        // also invalidate the cache
+        let user_install_json = serde_json::to_string(&layer.manifest.user_install)?;
+        hasher.update(user_install_json.as_bytes());
     }
 
     let hash = hex::encode(hasher.finalize());
     let short_hash = &hash[..12];
 
     Ok(format!("mino-composed-{}", short_hash))
-}
-
-/// Merge environment variables from all layers.
-/// Last layer in the list wins for conflicting keys.
-/// PATH prepends are accumulated from all layers.
-fn merge_env(layers: &[ResolvedLayer]) -> HashMap<String, String> {
-    let mut env = HashMap::new();
-    let mut path_dirs: Vec<String> = Vec::new();
-
-    for layer in layers {
-        // Add flat env vars
-        env.extend(layer.manifest.env_vars());
-
-        // Collect PATH prepend dirs
-        if let Some(prepend) = layer.manifest.path_prepend_str() {
-            for dir in prepend.split(':') {
-                if !path_dirs.contains(&dir.to_string()) {
-                    path_dirs.push(dir.to_string());
-                }
-            }
-        }
-    }
-
-    // Build composed PATH value (will be prepended to existing PATH)
-    if !path_dirs.is_empty() {
-        let path_value = format!("{}:${{PATH}}", path_dirs.join(":"));
-        env.insert("PATH".to_string(), path_value);
-    }
-
-    env
 }
 
 /// Prepare a build directory with Dockerfile and install scripts.
@@ -163,8 +208,11 @@ async fn prepare_build_dir(
         .await
         .map_err(|e| MinoError::io("creating build directory", e))?;
 
-    // Write install scripts
+    // Write install scripts (skip layers with no compose-time script)
     for layer in layers {
+        if !layer.install_script.has_content() {
+            continue;
+        }
         let script_name = format!("install-{}.sh", layer.manifest.layer.name);
         let script_content = layer.install_script.content().await?;
         let script_path = build_dir.join(&script_name);
@@ -196,8 +244,11 @@ fn generate_dockerfile(
     lines.push(format!("FROM {}", base_image));
     lines.push(String::new());
 
-    // Install each layer (order follows user's specified order)
+    // Install each layer that has a compose-time script (skip user-install-only layers)
     for layer in layers {
+        if !layer.install_script.has_content() {
+            continue;
+        }
         let name = &layer.manifest.layer.name;
         let script_name = format!("install-{}.sh", name);
 
@@ -206,6 +257,23 @@ fn generate_dockerfile(
         lines.push(format!("COPY {} /tmp/{}", script_name, script_name));
         lines.push(format!(
             "RUN chmod +x /tmp/{script_name} && /tmp/{script_name} && rm /tmp/{script_name}"
+        ));
+        lines.push(String::new());
+    }
+
+    // Auto-generate dnf install step for layers with root_install.packages
+    let root_packages: Vec<String> = layers
+        .iter()
+        .filter(|l| l.manifest.has_root_install())
+        .flat_map(|l| l.manifest.root_install.packages.clone())
+        .collect();
+
+    if !root_packages.is_empty() {
+        lines.push("# Root-level packages from layer manifests".to_string());
+        lines.push("USER root".to_string());
+        lines.push(format!(
+            "RUN dnf install -y --setopt=install_weak_deps=False {} && dnf clean all",
+            root_packages.join(" ")
         ));
         lines.push(String::new());
     }
@@ -271,17 +339,24 @@ mod tests {
 [layer]
 name = "rust"
 description = "Rust"
-version = "1"
+version = "2"
 
 [env]
-CARGO_HOME = "/cache/cargo"
-RUSTUP_HOME = "/opt/rustup"
+CARGO_HOME = "/home/developer/.cargo"
+RUSTUP_HOME = "/home/developer/.rustup"
+RUSTC_WRAPPER = "sccache"
+SCCACHE_DIR = "/cache/sccache"
 
 [env.path_prepend]
-dirs = ["/opt/cargo/bin"]
+dirs = ["/home/developer/.cargo/bin"]
 
 [cache]
-paths = ["/cache/cargo"]
+paths = ["/cache/sccache"]
+
+[user_install]
+runtime = "rustup"
+runtime_version = "stable"
+cargo_tools = ["bacon", "sccache"]
 "#,
             "#!/bin/bash\necho rust",
         )
@@ -293,17 +368,23 @@ paths = ["/cache/cargo"]
 [layer]
 name = "typescript"
 description = "TypeScript"
-version = "1"
+version = "2"
 
 [env]
 PNPM_HOME = "/cache/pnpm"
 npm_config_cache = "/cache/npm"
+NODE_ENV = "development"
 
 [env.path_prepend]
-dirs = ["/cache/pnpm"]
+dirs = ["/cache/pnpm", "/home/developer/.npm-global/bin"]
 
 [cache]
-paths = ["/cache/pnpm"]
+paths = ["/cache/pnpm", "/cache/npm"]
+
+[user_install]
+runtime = "nvm"
+runtime_version = "22"
+npm_globals = ["pnpm", "tsx"]
 "#,
             "#!/bin/bash\necho ts",
         )
@@ -337,7 +418,7 @@ ONLY_B = "b_val"
             "",
         );
 
-        let env = merge_env(&[layer_a, layer_b]);
+        let env = merge_layer_env(&[layer_a, layer_b], true);
         assert_eq!(env.get("SHARED").unwrap(), "from_b");
         assert_eq!(env.get("ONLY_A").unwrap(), "a_val");
         assert_eq!(env.get("ONLY_B").unwrap(), "b_val");
@@ -346,18 +427,19 @@ ONLY_B = "b_val"
     #[test]
     fn merge_env_accumulates_path() {
         let layers = vec![rust_layer(), ts_layer()];
-        let env = merge_env(&layers);
+        let env = merge_layer_env(&layers, true);
 
         let path = env.get("PATH").unwrap();
-        assert!(path.contains("/opt/cargo/bin"));
+        assert!(path.contains("/home/developer/.cargo/bin"));
         assert!(path.contains("/cache/pnpm"));
+        assert!(path.contains("/home/developer/.npm-global/bin"));
         assert!(path.contains("${PATH}"));
     }
 
     #[test]
     fn generate_dockerfile_structure() {
         let layers = vec![rust_layer(), ts_layer()];
-        let env = merge_env(&layers);
+        let env = merge_layer_env(&layers, true);
         let dockerfile = generate_dockerfile("ghcr.io/dean0x/mino-base:latest", &layers, &env);
 
         assert!(dockerfile.contains("FROM ghcr.io/dean0x/mino-base:latest"));
@@ -366,7 +448,7 @@ ONLY_B = "b_val"
         assert!(dockerfile.contains("# Layer: typescript"));
         assert!(dockerfile.contains("COPY install-typescript.sh /tmp/install-typescript.sh"));
         assert!(dockerfile.contains("USER developer"));
-        assert!(dockerfile.contains("ENV CARGO_HOME=/cache/cargo"));
+        assert!(dockerfile.contains("ENV CARGO_HOME=/home/developer/.cargo"));
         assert!(dockerfile.contains("ENV PNPM_HOME=/cache/pnpm"));
         assert!(dockerfile.contains("WORKDIR /workspace"));
 
@@ -436,5 +518,167 @@ ONLY_B = "b_val"
             dockerfile_quote("path\\with\\backslashes"),
             "\"path\\\\with\\\\backslashes\""
         );
+    }
+
+    #[test]
+    fn needs_compose_build_with_install_scripts() {
+        let layers = vec![rust_layer(), ts_layer()];
+        assert!(needs_compose_build(&layers));
+    }
+
+    #[test]
+    fn needs_compose_build_pure_user_install() {
+        let layer = ResolvedLayer {
+            manifest: LayerManifest::parse(
+                r#"
+[layer]
+name = "user-only"
+description = "User only"
+version = "1"
+
+[user_install]
+runtime = "nvm"
+npm_globals = ["pnpm"]
+"#,
+            )
+            .unwrap(),
+            install_script: LayerScript::None,
+            source: LayerSource::BuiltIn,
+        };
+        assert!(!needs_compose_build(&[layer]));
+    }
+
+    #[test]
+    fn needs_compose_build_with_root_install() {
+        let layer = ResolvedLayer {
+            manifest: LayerManifest::parse(
+                r#"
+[layer]
+name = "with-root"
+description = "Has root packages"
+version = "1"
+
+[root_install]
+packages = ["python3"]
+
+[user_install]
+runtime = "uv"
+"#,
+            )
+            .unwrap(),
+            install_script: LayerScript::None,
+            source: LayerSource::BuiltIn,
+        };
+        assert!(needs_compose_build(&[layer]));
+    }
+
+    #[test]
+    fn compute_path_prepend_collects_from_multiple_layers() {
+        let layers = vec![rust_layer(), ts_layer()];
+        let prepend = compute_path_prepend(&layers).unwrap();
+        assert!(prepend.contains("/home/developer/.cargo/bin"));
+        assert!(prepend.contains("/cache/pnpm"));
+        assert!(prepend.contains("/home/developer/.npm-global/bin"));
+    }
+
+    #[test]
+    fn compute_path_prepend_deduplicates() {
+        // Two identical layers should not produce duplicate dirs
+        let layers = vec![rust_layer(), rust_layer()];
+        let prepend = compute_path_prepend(&layers).unwrap();
+        let count = prepend.matches("/home/developer/.cargo/bin").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn compute_path_prepend_none_when_no_dirs() {
+        let layer = make_layer(
+            r#"
+[layer]
+name = "no-path"
+description = "No path"
+version = "1"
+[env]
+FOO = "bar"
+"#,
+            "",
+        );
+        assert!(compute_path_prepend(&[layer]).is_none());
+    }
+
+    #[test]
+    fn merge_layer_env_runtime_mode_uses_mino_path_prepend() {
+        let layers = vec![rust_layer()];
+        let env = merge_layer_env(&layers, false);
+        assert!(!env.contains_key("PATH"));
+        assert!(env
+            .get("MINO_PATH_PREPEND")
+            .unwrap()
+            .contains("/home/developer/.cargo/bin"));
+    }
+
+    #[test]
+    fn merge_layer_env_dockerfile_mode_uses_path() {
+        let layers = vec![rust_layer()];
+        let env = merge_layer_env(&layers, true);
+        assert!(env.get("PATH").unwrap().contains("${PATH}"));
+        assert!(!env.contains_key("MINO_PATH_PREPEND"));
+    }
+
+    #[test]
+    fn generate_dockerfile_skips_none_scripts() {
+        let user_only = ResolvedLayer {
+            manifest: LayerManifest::parse(
+                r#"
+[layer]
+name = "user-only"
+description = "User only"
+version = "1"
+
+[user_install]
+runtime = "nvm"
+"#,
+            )
+            .unwrap(),
+            install_script: LayerScript::None,
+            source: LayerSource::BuiltIn,
+        };
+        let layers = vec![rust_layer(), user_only];
+        let env = merge_layer_env(&layers, true);
+        let dockerfile = generate_dockerfile("base:latest", &layers, &env);
+
+        // rust layer should be in Dockerfile
+        assert!(dockerfile.contains("# Layer: rust"));
+        // user-only layer should NOT have a COPY/RUN
+        assert!(!dockerfile.contains("# Layer: user-only"));
+    }
+
+    #[test]
+    fn generate_dockerfile_auto_root_install() {
+        let layers = [ResolvedLayer {
+            manifest: LayerManifest::parse(
+                r#"
+[layer]
+name = "python"
+description = "Python"
+version = "2"
+
+[root_install]
+packages = ["python3", "python3-devel"]
+
+[user_install]
+runtime = "uv"
+"#,
+            )
+            .unwrap(),
+            install_script: LayerScript::None,
+            source: LayerSource::BuiltIn,
+        }];
+        let env = merge_layer_env(&layers, true);
+        let dockerfile = generate_dockerfile("base:latest", &layers, &env);
+
+        assert!(dockerfile
+            .contains("dnf install -y --setopt=install_weak_deps=False python3 python3-devel"));
+        assert!(dockerfile.contains("dnf clean all"));
     }
 }

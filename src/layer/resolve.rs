@@ -38,6 +38,9 @@ pub enum LayerScript {
 
     /// Embedded content (built-in layer)
     Embedded(&'static str),
+
+    /// No install script (pure user-install layer handled by bootstrap)
+    None,
 }
 
 impl LayerScript {
@@ -48,7 +51,13 @@ impl LayerScript {
                 MinoError::io(format!("reading install script {}", path.display()), e)
             }),
             Self::Embedded(content) => Ok((*content).to_string()),
+            Self::None => Ok(String::new()),
         }
+    }
+
+    /// Returns true if this script has meaningful content to run in compose.
+    pub fn has_content(&self) -> bool {
+        !matches!(self, Self::None)
     }
 }
 
@@ -168,18 +177,24 @@ async fn try_resolve_from_dir(
         return Ok(None);
     }
 
-    // Manifest exists but script is missing — that's an error, not a miss
-    if !script_path.exists() {
+    let manifest = LayerManifest::from_file(&manifest_path).await?;
+    manifest.user_install.validate()?;
+    manifest.root_install.validate()?;
+
+    // install.sh is optional if the layer has [user_install]
+    let install_script = if script_path.exists() {
+        LayerScript::Path(script_path)
+    } else if !manifest.user_install.is_empty() {
+        LayerScript::None
+    } else {
         return Err(MinoError::LayerScriptMissing(
             script_path.display().to_string(),
         ));
-    }
-
-    let manifest = LayerManifest::from_file(&manifest_path).await?;
+    };
 
     Ok(Some(ResolvedLayer {
         manifest,
-        install_script: LayerScript::Path(script_path),
+        install_script,
         source,
     }))
 }
@@ -194,10 +209,23 @@ fn resolve_builtin(name: &str) -> MinoResult<Option<ResolvedLayer>> {
     };
 
     let manifest = LayerManifest::parse(manifest_str)?;
+    manifest.user_install.validate()?;
+    manifest.root_install.validate()?;
+
+    // Use LayerScript::None for layers where install.sh is a placeholder
+    let install_script = if install_str.trim().is_empty()
+        || install_str
+            .lines()
+            .all(|l| l.trim().is_empty() || l.starts_with('#'))
+    {
+        LayerScript::None
+    } else {
+        LayerScript::Embedded(install_str)
+    };
 
     Ok(Some(ResolvedLayer {
         manifest,
-        install_script: LayerScript::Embedded(install_str),
+        install_script,
         source: LayerSource::BuiltIn,
     }))
 }
@@ -294,7 +322,9 @@ mod tests {
         let layer = resolve_builtin("rust").unwrap().unwrap();
         assert_eq!(layer.manifest.layer.name, "rust");
         assert!(matches!(layer.source, LayerSource::BuiltIn));
-        assert!(matches!(layer.install_script, LayerScript::Embedded(_)));
+        // Rust layer is now pure user-install (placeholder install.sh → None)
+        assert!(matches!(layer.install_script, LayerScript::None));
+        assert!(layer.manifest.has_user_install());
     }
 
     #[test]
@@ -353,27 +383,6 @@ MY_VAR = "/custom/path"
     }
 
     #[tokio::test]
-    async fn resolve_missing_script_errors() {
-        let temp = TempDir::new().unwrap();
-        let layer_dir = temp.path().join(".mino").join("layers").join("broken");
-        std::fs::create_dir_all(&layer_dir).unwrap();
-
-        let manifest = r#"
-[layer]
-name = "broken"
-description = "Broken layer"
-version = "1"
-"#;
-        std::fs::write(layer_dir.join("layer.toml"), manifest).unwrap();
-        // No install.sh!
-
-        let result = resolve_layers(&["broken".to_string()], temp.path()).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("install script missing"));
-    }
-
-    #[tokio::test]
     async fn project_local_overrides_builtin() {
         let temp = TempDir::new().unwrap();
         let layer_dir = temp.path().join(".mino").join("layers").join("rust");
@@ -398,10 +407,37 @@ version = "99"
 
     #[tokio::test]
     async fn embedded_script_content() {
-        let layer = resolve_builtin("rust").unwrap().unwrap();
+        // Python layer still has a real install script (root packages)
+        let layer = resolve_builtin("python").unwrap().unwrap();
         let content = layer.install_script.content().await.unwrap();
-        assert!(content.contains("rustup"));
-        assert!(content.contains("cargo-binstall"));
+        assert!(content.contains("python3"));
+        assert!(content.contains("dnf"));
+    }
+
+    #[test]
+    fn resolve_builtin_rust_user_install() {
+        let layer = resolve_builtin("rust").unwrap().unwrap();
+        assert_eq!(
+            layer.manifest.user_install.runtime.as_deref(),
+            Some("rustup")
+        );
+        assert!(layer
+            .manifest
+            .user_install
+            .cargo_tools
+            .contains(&"sccache".to_string()));
+    }
+
+    #[test]
+    fn resolve_builtin_typescript_user_install() {
+        let layer = resolve_builtin("typescript").unwrap().unwrap();
+        assert!(matches!(layer.install_script, LayerScript::None));
+        assert_eq!(layer.manifest.user_install.runtime.as_deref(), Some("nvm"));
+        assert!(layer
+            .manifest
+            .user_install
+            .npm_globals
+            .contains(&"pnpm".to_string()));
     }
 
     #[test]
@@ -488,8 +524,77 @@ version = "99"
     async fn embedded_python_script_content() {
         let layer = resolve_builtin("python").unwrap().unwrap();
         let content = layer.install_script.content().await.unwrap();
-        assert!(content.contains("uv"));
-        assert!(content.contains("ruff"));
+        // Python install.sh now only handles system packages
+        assert!(content.contains("python3"));
+        assert!(content.contains("dnf"));
+        // uv and ruff moved to [user_install]
+        assert!(layer.manifest.has_user_install());
+        assert_eq!(layer.manifest.user_install.runtime.as_deref(), Some("uv"));
+        assert!(layer
+            .manifest
+            .user_install
+            .uv_tools
+            .contains(&"ruff".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_user_install_only_layer_no_script() {
+        let temp = TempDir::new().unwrap();
+        let layer_dir = temp.path().join(".mino").join("layers").join("mytools");
+        std::fs::create_dir_all(&layer_dir).unwrap();
+
+        let manifest = r#"
+[layer]
+name = "mytools"
+description = "User install only"
+version = "1"
+
+[user_install]
+runtime = "nvm"
+runtime_version = "22"
+npm_globals = ["pnpm"]
+"#;
+        std::fs::write(layer_dir.join("layer.toml"), manifest).unwrap();
+        // No install.sh — should succeed because user_install is present
+
+        let layers = resolve_layers(&["mytools".to_string()], temp.path())
+            .await
+            .unwrap();
+
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].manifest.layer.name, "mytools");
+        assert!(matches!(layers[0].install_script, LayerScript::None));
+        assert!(layers[0].manifest.has_user_install());
+    }
+
+    #[tokio::test]
+    async fn resolve_missing_script_still_errors_without_user_install() {
+        // Original test: layer with NO user_install AND no install.sh is still an error
+        let temp = TempDir::new().unwrap();
+        let layer_dir = temp.path().join(".mino").join("layers").join("broken");
+        std::fs::create_dir_all(&layer_dir).unwrap();
+
+        let manifest = r#"
+[layer]
+name = "broken"
+description = "Broken layer"
+version = "1"
+"#;
+        std::fs::write(layer_dir.join("layer.toml"), manifest).unwrap();
+        // No install.sh and no user_install
+
+        let result = resolve_layers(&["broken".to_string()], temp.path()).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("install script missing"));
+    }
+
+    #[test]
+    fn layer_script_none_has_no_content() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let content = rt.block_on(LayerScript::None.content()).unwrap();
+        assert!(content.is_empty());
+        assert!(!LayerScript::None.has_content());
     }
 
     #[tokio::test]

@@ -1,18 +1,23 @@
 [layer]
 name = "python"
 description = "Python 3 + uv + ruff + pytest"
-version = "1"
+version = "2"
+
+[root_install]
+packages = ["python3", "python3-devel"]
+
+[user_install]
+runtime = "uv"
+uv_tools = ["ruff", "pytest"]
 
 [env]
 UV_CACHE_DIR = "/cache/uv"
 UV_PYTHON_INSTALL_DIR = "/cache/uv/python"
-UV_TOOL_DIR = "/opt/uv-tools"
-UV_TOOL_BIN_DIR = "/opt/uv-tools/bin"
 PYTHONDONTWRITEBYTECODE = "1"
 PYTHONUNBUFFERED = "1"
 
 [env.path_prepend]
-dirs = ["/opt/uv-tools/bin"]
+dirs = ["/home/developer/.local/bin"]
 
 [cache]
 paths = ["/cache/uv"]

@@ -1,16 +1,21 @@
 [layer]
 name = "rust"
 description = "Rust stable toolchain + cargo tools"
-version = "1"
+version = "2"
+
+[user_install]
+runtime = "rustup"
+runtime_version = "stable"
+cargo_tools = ["bacon", "cargo-edit", "cargo-outdated", "cargo-nextest", "sccache"]
 
 [env]
-CARGO_HOME = "/cache/cargo"
-RUSTUP_HOME = "/opt/rustup"
+CARGO_HOME = "/home/developer/.cargo"
+RUSTUP_HOME = "/home/developer/.rustup"
 RUSTC_WRAPPER = "sccache"
 SCCACHE_DIR = "/cache/sccache"
 
 [env.path_prepend]
-dirs = ["/opt/cargo/bin"]
+dirs = ["/home/developer/.cargo/bin"]
 
 [cache]
-paths = ["/cache/cargo", "/cache/sccache"]
+paths = ["/cache/sccache"]

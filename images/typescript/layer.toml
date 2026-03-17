@@ -1,7 +1,12 @@
 [layer]
 name = "typescript"
 description = "Node.js + pnpm + TypeScript toolchain"
-version = "1"
+version = "2"
+
+[user_install]
+runtime = "nvm"
+runtime_version = "22"
+npm_globals = ["pnpm", "tsx", "typescript", "npm-check-updates", "@biomejs/biome", "turbo", "vite"]
 
 [env]
 PNPM_HOME = "/cache/pnpm"
@@ -9,7 +14,7 @@ npm_config_cache = "/cache/npm"
 NODE_ENV = "development"
 
 [env.path_prepend]
-dirs = ["/cache/pnpm"]
+dirs = ["/cache/pnpm", "/home/developer/.npm-global/bin"]
 
 [cache]
 paths = ["/cache/pnpm", "/cache/npm"]

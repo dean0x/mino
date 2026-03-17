@@ -23,7 +23,7 @@ Mino uses a single pre-built base image (`mino-base`) combined with a layer comp
 └───────────────┘ └───────────────┘ └───────────────┘
 ```
 
-Language toolchains are **not** pre-built GHCR images. Instead, they are composed at runtime using `install.sh` scripts on top of `mino-base`. This enables multi-toolchain composition (`--layers typescript,rust`) and eliminates CI flakes from language image builds.
+Language toolchains are **not** pre-built GHCR images. Instead, they are installed at container startup via the bootstrap system. Each layer defines a `[user_install]` section in its `layer.toml`, and the `mino-bootstrap` script handles runtime/tool installation (nvm, rustup, uv) on first run. Layers that also need root-level packages (e.g., `python3-devel`) use a `[root_install]` section, which triggers a Dockerfile compose step. This enables multi-toolchain composition (`--layers typescript,rust`) and eliminates CI flakes from language image builds.
 
 ## Quick Start
 
@@ -72,32 +72,34 @@ All layers inherit these tools.
 
 ### TypeScript Layer
 
-Installed via `images/typescript/install.sh`, configured via `images/typescript/layer.toml`.
+Installed via bootstrap (`[user_install]` with nvm runtime), configured via `images/typescript/layer.toml`.
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| Node.js | 22 LTS | JavaScript runtime (from base) |
-| pnpm | 9.x | Fast, disk-efficient package manager |
+| Node.js | 22 LTS | JavaScript runtime (via nvm) |
+| pnpm | latest | Fast, disk-efficient package manager |
 | tsx | latest | Run TypeScript directly |
-| typescript (tsc) | 5.x | TypeScript compiler |
+| typescript (tsc) | latest | TypeScript compiler |
 | npm-check-updates | latest | Upgrade dependencies |
 | biome | latest | Fast Rust-based linter/formatter (eslint+prettier replacement) |
 | turbo | latest | Monorepo build orchestrator |
 | vite | latest | Build tool and dev server |
 
-**Cache environment:**
+**Environment:**
 ```
 PNPM_HOME=/cache/pnpm
 npm_config_cache=/cache/npm
+NODE_ENV=development
+PATH prepend: /cache/pnpm, /home/developer/.npm-global/bin
 ```
 
 ### Rust Layer
 
-Installed via `images/rust/install.sh`, configured via `images/rust/layer.toml`.
+Installed via bootstrap (`[user_install]` with rustup runtime), configured via `images/rust/layer.toml`.
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| rustc | stable | Rust compiler |
+| rustc | stable | Rust compiler (via rustup) |
 | cargo | stable | Rust package manager |
 | rustfmt | stable | Code formatter |
 | clippy | stable | Linter |
@@ -107,64 +109,110 @@ Installed via `images/rust/install.sh`, configured via `images/rust/layer.toml`.
 | cargo-nextest | latest | Structured test runner with per-test timing |
 | sccache | latest | Shared compilation cache across sessions |
 
-**Cache environment:**
+**Environment:**
 ```
-CARGO_HOME=/cache/cargo
-RUSTUP_HOME=/opt/rustup
+CARGO_HOME=/home/developer/.cargo
+RUSTUP_HOME=/home/developer/.rustup
 RUSTC_WRAPPER=sccache
 SCCACHE_DIR=/cache/sccache
+PATH prepend: /home/developer/.cargo/bin
 ```
 
 ### Python Layer
 
-Installed via `images/python/install.sh`, configured via `images/python/layer.toml`.
+System packages installed via `[root_install]` (Dockerfile compose step), tools installed via bootstrap (`[user_install]` with uv runtime). Configured via `images/python/layer.toml`.
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| python3 | 3.13 | System Python (Fedora 43) |
-| python3-devel | 3.13 | Development headers for C extensions |
-| uv | latest | Universal Python package/project manager (replaces pip, virtualenv, pyenv) |
-| ruff | latest | Extremely fast linter + formatter (replaces flake8, black, isort) |
-| pytest | latest | Universal test framework |
+| python3 | 3.13 | System Python (Fedora 43, via `[root_install]`) |
+| python3-devel | 3.13 | Development headers for C extensions (via `[root_install]`) |
+| uv | latest | Universal Python package/project manager (via bootstrap) |
+| ruff | latest | Extremely fast linter + formatter (via `uv tool install`) |
+| pytest | latest | Universal test framework (via `uv tool install`) |
 
-**Cache environment:**
+**Environment:**
 ```
 UV_CACHE_DIR=/cache/uv
 UV_PYTHON_INSTALL_DIR=/cache/uv/python
-UV_TOOL_DIR=/opt/uv-tools
-UV_TOOL_BIN_DIR=/opt/uv-tools/bin
+PYTHONDONTWRITEBYTECODE=1
+PYTHONUNBUFFERED=1
+PATH prepend: /home/developer/.local/bin
 ```
 
 ## Layer System
 
-Each language layer consists of two files:
+Each language layer is defined by a `layer.toml` file and an optional `install.sh` script. Both are compiled into the `mino` binary via `include_str!`.
 
-- **`layer.toml`** — Metadata (name, description, env vars, cache paths)
-- **`install.sh`** — Idempotent install script (runs as root, ends with `--version` verification)
+### layer.toml sections
 
-Both are compiled into the `mino` binary via `include_str!`. At runtime, `--image typescript` or `--layers typescript` triggers composition: a Dockerfile is generated from `mino-base` + `install.sh`, built, and cached as `mino-composed-{hash}`.
+- **`[layer]`** -- Metadata: `name`, `description`, `version`
+- **`[user_install]`** -- Bootstrap-based installation (runs as the developer user at container startup):
+  - `runtime` -- Runtime installer: `nvm`, `rustup`, or `uv`
+  - `runtime_version` -- Version to install (e.g., `"22"`, `"stable"`)
+  - `npm_globals` -- List of npm packages to install globally (for nvm runtime)
+  - `cargo_tools` -- List of cargo tools to install via `cargo-binstall` (for rustup runtime)
+  - `uv_tools` -- List of Python tools to install via `uv tool install` (for uv runtime)
+- **`[root_install]`** -- Dockerfile compose step (runs as root during image build):
+  - `packages` -- List of system packages to install via `dnf`
+- **`[env]`** -- Environment variables injected into the container
+- **`[env.path_prepend]`** -- Directories to prepend to `PATH` via `MINO_PATH_PREPEND`
+- **`[cache]`** -- Paths for persistent cache volume mounts
+
+### How layers are installed
+
+Layers using only `[user_install]` (e.g., TypeScript, Rust) do **not** require a Dockerfile compose step. The bootstrap script installs everything at container startup via `MINO_LAYER_MANIFEST`. This means no image build is needed -- the base image is used directly.
+
+Layers that include `[root_install]` (e.g., Python) trigger a Dockerfile compose step to install system packages, then bootstrap handles the `[user_install]` portion at startup.
+
+### install.sh
+
+Optional. Only needed when `[root_install]` requires custom logic beyond `dnf install`. For layers that use only `[user_install]`, the install.sh is a placeholder comment:
+
+```bash
+#!/usr/bin/env bash
+# User-level install via bootstrap — see [user_install] in layer.toml
+```
+
+When present and non-trivial, install.sh runs as root during the Dockerfile compose step, must be idempotent, and should end with `--version` verification.
 
 ### Adding a new language layer
 
 1. Create `images/{language}/layer.toml`:
    ```toml
+   [layer]
    name = "{language}"
    description = "Mino {language} development layer"
+   version = "2"
+
+   [user_install]
+   runtime = "nvm"        # or "rustup" or "uv"
+   runtime_version = "22" # version for the runtime installer
+   npm_globals = ["tool1", "tool2"]  # for nvm runtime
+   # cargo_tools = [...]  # for rustup runtime
+   # uv_tools = [...]     # for uv runtime
 
    [env]
    {LANG}_CACHE = "/cache/{lang}"
+
+   [env.path_prepend]
+   dirs = ["/home/developer/.local/bin"]
 
    [cache]
    paths = ["/cache/{lang}"]
    ```
 
-2. Create `images/{language}/install.sh`:
+2. Create `images/{language}/install.sh` (placeholder if `[user_install]` handles everything):
+   ```bash
+   #!/usr/bin/env bash
+   # User-level install via bootstrap — see [user_install] in layer.toml
+   ```
+
+   Or, if root packages are needed via `[root_install]`:
    ```bash
    #!/usr/bin/env bash
    set -euo pipefail
-   # Install toolchain (runs as root, must be idempotent)
-   # ...
-   # Verify installations
+   dnf install -y --setopt=install_weak_deps=False {packages} \
+       && dnf clean all && rm -rf /var/cache/dnf
    {tool} --version
    ```
 
