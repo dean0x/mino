@@ -336,10 +336,7 @@ npm_globals = ["pnpm", "tsx"]
             manifest.user_install.runtime_version.as_deref(),
             Some("stable")
         );
-        assert_eq!(
-            manifest.user_install.cargo_tools,
-            vec!["bacon", "sccache"]
-        );
+        assert_eq!(manifest.user_install.cargo_tools, vec!["bacon", "sccache"]);
     }
 
     #[test]
@@ -359,10 +356,7 @@ npm_globals = ["pnpm", "tsx"]
 
         assert!(manifest.has_user_install());
         assert_eq!(manifest.user_install.runtime.as_deref(), Some("nvm"));
-        assert_eq!(
-            manifest.user_install.runtime_version.as_deref(),
-            Some("22")
-        );
+        assert_eq!(manifest.user_install.runtime_version.as_deref(), Some("22"));
         assert_eq!(manifest.user_install.npm_globals, vec!["pnpm", "tsx"]);
     }
 
@@ -664,10 +658,9 @@ npm_globals = ["pnpm"]
 "#,
         );
 
-        let json_str =
-            build_layer_manifest(&[layer_no_install, layer_rust, layer_ts])
-                .unwrap()
-                .unwrap();
+        let json_str = build_layer_manifest(&[layer_no_install, layer_rust, layer_ts])
+            .unwrap()
+            .unwrap();
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
 
         // Only the two layers with user_install should be included
