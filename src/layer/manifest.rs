@@ -263,6 +263,7 @@ pub fn build_layer_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layer::resolve::{LayerScript, LayerSource, ResolvedLayer};
 
     const RUST_MANIFEST: &str = r#"
 [layer]
@@ -575,13 +576,11 @@ uv_tools = ["ruff", "pytest"]
 
     // --- build_layer_manifest tests ---
 
-    fn make_resolved_layer(
-        manifest_toml: &str,
-    ) -> crate::layer::resolve::ResolvedLayer {
-        crate::layer::resolve::ResolvedLayer {
+    fn make_resolved_layer(manifest_toml: &str) -> ResolvedLayer {
+        ResolvedLayer {
             manifest: LayerManifest::parse(manifest_toml).unwrap(),
-            install_script: crate::layer::resolve::LayerScript::None,
-            source: crate::layer::resolve::LayerSource::BuiltIn,
+            install_script: LayerScript::None,
+            source: LayerSource::BuiltIn,
         }
     }
 

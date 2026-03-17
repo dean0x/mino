@@ -162,9 +162,8 @@ async fn compute_image_tag(base_image: &str, layers: &[ResolvedLayer]) -> MinoRe
 
         // Include user_install fields so bootstrap-managed tool changes
         // also invalidate the cache
-        if let Ok(user_install_json) = serde_json::to_string(&layer.manifest.user_install) {
-            hasher.update(user_install_json.as_bytes());
-        }
+        let user_install_json = serde_json::to_string(&layer.manifest.user_install)?;
+        hasher.update(user_install_json.as_bytes());
     }
 
     let hash = hex::encode(hasher.finalize());
@@ -608,7 +607,7 @@ runtime = "nvm"
 
     #[test]
     fn generate_dockerfile_auto_root_install() {
-        let layer = ResolvedLayer {
+        let layers = [ResolvedLayer {
             manifest: LayerManifest::parse(
                 r#"
 [layer]
@@ -626,29 +625,9 @@ runtime = "uv"
             .unwrap(),
             install_script: LayerScript::None,
             source: LayerSource::BuiltIn,
-        };
-        let env = merge_layer_env(&[layer], true);
-        // Need to pass a slice reference, re-create layer
-        let layer2 = ResolvedLayer {
-            manifest: LayerManifest::parse(
-                r#"
-[layer]
-name = "python"
-description = "Python"
-version = "2"
-
-[root_install]
-packages = ["python3", "python3-devel"]
-
-[user_install]
-runtime = "uv"
-"#,
-            )
-            .unwrap(),
-            install_script: LayerScript::None,
-            source: LayerSource::BuiltIn,
-        };
-        let dockerfile = generate_dockerfile("base:latest", &[layer2], &env);
+        }];
+        let env = merge_layer_env(&layers, true);
+        let dockerfile = generate_dockerfile("base:latest", &layers, &env);
 
         assert!(dockerfile
             .contains("dnf install -y --setopt=install_weak_deps=False python3 python3-devel"));
