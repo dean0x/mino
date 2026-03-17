@@ -178,29 +178,23 @@ async fn try_resolve_from_dir(
     }
 
     let manifest = LayerManifest::from_file(&manifest_path).await?;
-
-    // install.sh is optional if the layer has [user_install]
-    if !script_path.exists() {
-        if manifest.user_install.is_empty() {
-            return Err(MinoError::LayerScriptMissing(
-                script_path.display().to_string(),
-            ));
-        }
-        manifest.user_install.validate()?;
-        manifest.root_install.validate()?;
-        return Ok(Some(ResolvedLayer {
-            manifest,
-            install_script: LayerScript::None,
-            source,
-        }));
-    }
-
     manifest.user_install.validate()?;
     manifest.root_install.validate()?;
 
+    // install.sh is optional if the layer has [user_install]
+    let install_script = if script_path.exists() {
+        LayerScript::Path(script_path)
+    } else if !manifest.user_install.is_empty() {
+        LayerScript::None
+    } else {
+        return Err(MinoError::LayerScriptMissing(
+            script_path.display().to_string(),
+        ));
+    };
+
     Ok(Some(ResolvedLayer {
         manifest,
-        install_script: LayerScript::Path(script_path),
+        install_script,
         source,
     }))
 }

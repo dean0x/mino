@@ -42,14 +42,12 @@ pub fn needs_compose_build(layers: &[ResolvedLayer]) -> bool {
 /// Used directly when only the path prepend value is needed (e.g., compose
 /// path in image.rs) without recomputing the full env merge.
 pub(crate) fn compute_path_prepend(layers: &[ResolvedLayer]) -> Option<String> {
-    let mut path_dirs: Vec<String> = Vec::new();
+    let mut path_dirs: Vec<&str> = Vec::new();
 
     for layer in layers {
-        if let Some(prepend) = layer.manifest.path_prepend_str() {
-            for dir in prepend.split(':') {
-                if !path_dirs.contains(&dir.to_string()) {
-                    path_dirs.push(dir.to_string());
-                }
+        for dir in &layer.manifest.env.path_prepend.dirs {
+            if !path_dirs.contains(&dir.as_str()) {
+                path_dirs.push(dir);
             }
         }
     }
@@ -612,7 +610,7 @@ FOO = "bar"
     fn merge_layer_env_runtime_mode_uses_mino_path_prepend() {
         let layers = vec![rust_layer()];
         let env = merge_layer_env(&layers, false);
-        assert!(env.get("PATH").is_none());
+        assert!(!env.contains_key("PATH"));
         assert!(env
             .get("MINO_PATH_PREPEND")
             .unwrap()
@@ -624,7 +622,7 @@ FOO = "bar"
         let layers = vec![rust_layer()];
         let env = merge_layer_env(&layers, true);
         assert!(env.get("PATH").unwrap().contains("${PATH}"));
-        assert!(env.get("MINO_PATH_PREPEND").is_none());
+        assert!(!env.contains_key("MINO_PATH_PREPEND"));
     }
 
     #[test]

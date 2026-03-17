@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::error::MinoResult;
 use crate::layer::{
     build_layer_manifest, compose_image, compute_path_prepend, merge_layer_env,
-    needs_compose_build, resolve_layers,
+    needs_compose_build, resolve_layers, ResolvedLayer,
 };
 use crate::orchestration::ContainerRuntime;
 use crate::ui::{BuildProgress, TaskSpinner, UiContext};
@@ -113,6 +113,25 @@ pub(super) fn resolve_final_image(raw_image: &str, base_only: bool) -> ImageReso
     }
 }
 
+/// Inject bootstrap env vars (MINO_LAYER_MANIFEST, MINO_PATH_PREPEND) into the layer env.
+///
+/// Both the compose-build and skip-compose paths need these for the bootstrap
+/// script to discover user-install layers and prepend PATH directories.
+fn inject_bootstrap_env(
+    layer_env: &mut HashMap<String, String>,
+    resolved: &[ResolvedLayer],
+) -> MinoResult<()> {
+    if let Some(manifest_json) = build_layer_manifest(resolved)? {
+        layer_env.insert("MINO_LAYER_MANIFEST".to_string(), manifest_json);
+    }
+    if let Some(path_prepend) = compute_path_prepend(resolved) {
+        layer_env
+            .entry("MINO_PATH_PREPEND".to_string())
+            .or_insert(path_prepend);
+    }
+    Ok(())
+}
+
 /// Resolve the image to use, handling layers, aliases, and interactive prompts.
 ///
 /// Returns `(ImageResolution, using_layers)`.
@@ -179,18 +198,8 @@ pub(super) async fn resolve_image(
             let action = if result.was_cached { "cached" } else { "built" };
             debug!("Using {} composed image: {}", action, result.image_tag);
 
-            // Build layer manifest for bootstrap (user-install layers)
             let mut layer_env = result.env;
-            if let Some(manifest_json) = build_layer_manifest(&resolved)? {
-                layer_env.insert("MINO_LAYER_MANIFEST".to_string(), manifest_json);
-            }
-
-            // Pass MINO_PATH_PREPEND for user-install layers (shell-level PATH expansion)
-            if let Some(path_prepend) = compute_path_prepend(&resolved) {
-                layer_env
-                    .entry("MINO_PATH_PREPEND".to_string())
-                    .or_insert_with(|| path_prepend);
-            }
+            inject_bootstrap_env(&mut layer_env, &resolved)?;
 
             ImageResolution {
                 image: result.image_tag,
@@ -202,10 +211,7 @@ pub(super) async fn resolve_image(
             debug!("All layers are user-install only, skipping compose");
 
             let mut layer_env = merge_layer_env(&resolved, false);
-
-            if let Some(manifest_json) = build_layer_manifest(&resolved)? {
-                layer_env.insert("MINO_LAYER_MANIFEST".to_string(), manifest_json);
-            }
+            inject_bootstrap_env(&mut layer_env, &resolved)?;
 
             ImageResolution {
                 image: LAYER_BASE_IMAGE.to_string(),

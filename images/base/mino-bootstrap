@@ -34,22 +34,21 @@ else
     INSTALL_REDIRECT="/dev/stderr"
 fi
 
-# Skip if already bootstrapped with current version
+# Log to stderr unless quiet mode is enabled
+log() { [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "$@" >&2; }
+
+# Skip if already bootstrapped — always refresh symlinks before exiting
 if [ -f "$MARKER" ]; then
     BOOTSTRAPPED_VERSION=$(head -1 "$MARKER" 2>/dev/null || echo "")
-    if [ "$BOOTSTRAPPED_VERSION" = "$IMAGE_VERSION" ]; then
-        # Version matches — still refresh CLI tool symlinks (fast, idempotent)
-        refresh_tool_symlinks
-        exit 0
+    if [ "$BOOTSTRAPPED_VERSION" != "$IMAGE_VERSION" ]; then
+        echo "Home bootstrapped with $BOOTSTRAPPED_VERSION, current image is $IMAGE_VERSION." >&2
+        echo "Run 'mino cache clear --home' to reset, or ignore this message." >&2
     fi
-    echo "Home bootstrapped with $BOOTSTRAPPED_VERSION, current image is $IMAGE_VERSION." >&2
-    echo "Run 'mino cache clear --home' to reset, or ignore this message." >&2
-    # Still refresh tool symlinks on version mismatch
     refresh_tool_symlinks
     exit 0
 fi
 
-[ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Bootstrapping home directory..." >&2
+log "Bootstrapping home directory..."
 
 # --- Step: skeleton (copy dotfiles from /etc/skel/) ---
 if [ ! -f "$STEP_DIR/skeleton" ]; then
@@ -84,7 +83,7 @@ if [ -n "$MINO_LAYER_MANIFEST" ]; then
             continue
         fi
 
-        [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Installing layer: $name..." >&2
+        log "Installing layer: $name..."
 
         layer_ok=true
         case "$runtime" in
@@ -98,13 +97,13 @@ if [ -n "$MINO_LAYER_MANIFEST" ]; then
                     nvm alias default "$version" > "$INSTALL_REDIRECT" 2>&1 || true
                     # Install npm globals
                     echo "$layer" | jq -r '.npm_globals[]? // empty' | while read -r pkg; do
-                        [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "  npm install -g $pkg" >&2
+                        log "  npm install -g $pkg"
                         npm install -g "$pkg" > "$INSTALL_REDIRECT" 2>&1 || true
                     done
                 fi
                 ;;
             rustup)
-                [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Layer '$name' requires network access for first-run install..." >&2
+                log "Layer '$name' requires network access for first-run install..."
                 version=$(echo "$layer" | jq -r '.runtime_version // "stable"')
                 if ! command -v rustup >/dev/null 2>&1; then
                     if ! curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
@@ -123,13 +122,13 @@ if [ -n "$MINO_LAYER_MANIFEST" ]; then
                             bash > "$INSTALL_REDIRECT" 2>&1 || true
                     fi
                     echo "$layer" | jq -r '.cargo_tools[]? // empty' | while read -r tool; do
-                        [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "  cargo binstall $tool" >&2
+                        log "  cargo binstall $tool"
                         cargo binstall -y "$tool" > "$INSTALL_REDIRECT" 2>&1 || true
                     done
                 fi
                 ;;
             uv)
-                [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Layer '$name' requires network access for first-run install..." >&2
+                log "Layer '$name' requires network access for first-run install..."
                 if ! command -v uv >/dev/null 2>&1; then
                     if ! curl -LsSf --proto '=https' --tlsv1.2 https://astral.sh/uv/install.sh | sh > "$INSTALL_REDIRECT" 2>&1; then
                         echo "Failed to install uv for layer '$name'" >&2
@@ -140,7 +139,7 @@ if [ -n "$MINO_LAYER_MANIFEST" ]; then
                     # Ensure uv is in PATH after install
                     export PATH="$HOME/.local/bin:$PATH"
                     echo "$layer" | jq -r '.uv_tools[]? // empty' | while read -r tool; do
-                        [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "  uv tool install $tool" >&2
+                        log "  uv tool install $tool"
                         uv tool install "$tool" > "$INSTALL_REDIRECT" 2>&1 || true
                     done
                 fi
@@ -161,4 +160,4 @@ fi
 
 # Top-level marker
 echo "$IMAGE_VERSION" > "$MARKER" 2>/dev/null || true
-[ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "Bootstrap complete." >&2
+log "Bootstrap complete."

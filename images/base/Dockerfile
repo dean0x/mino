@@ -47,17 +47,25 @@ ARG SD_VERSION=v1.0.0
 # SHA256 checksums for CLI tool downloads (per architecture)
 # Format: TOOL_SHA256_ARCH — update these when bumping tool versions
 ARG RG_SHA256_X86_64=4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e
+# TODO: populate aarch64 checksum when multi-arch builds are enabled
+ARG RG_SHA256_AARCH64=PLACEHOLDER_NEEDS_REAL_CHECKSUM
 ARG FD_SHA256_X86_64=d9bfa25ec28624545c222992e1b00673b7c9ca5eb15393c40369f10b28f9c932
 ARG FD_SHA256_AARCH64=4e8e596646d047d904f2c5ca74b39dccc69978b6e1fb101094e534b0b59c1bb0
 ARG BAT_SHA256_X86_64=d39a21e3da57fe6a3e07184b3c1dc245f8dba379af569d3668b6dcdfe75e3052
+# TODO: populate aarch64 checksum when multi-arch builds are enabled
+ARG BAT_SHA256_AARCH64=PLACEHOLDER_NEEDS_REAL_CHECKSUM
 ARG FZF_SHA256_X86_64=a3c087a5f40e8bb4d9bfb26faffa094643df111a469646bef53154a54af9ff92
 ARG FZF_SHA256_AARCH64=e0b3fd1bb769997907d373b0511401801cd643ce939d26ad42e9fe2836bed625
 ARG DELTA_SHA256_X86_64=b7ea845004762358a00ef9127dd9fd723e333c7e4b9cb1da220c3909372310ee
+# TODO: populate aarch64 checksum when multi-arch builds are enabled
+ARG DELTA_SHA256_AARCH64=PLACEHOLDER_NEEDS_REAL_CHECKSUM
 ARG ZOXIDE_SHA256_X86_64=eaa18f8aca1f02e1a132a9eac21b630918f96fa1cc7486ab87e7053dad37b004
 ARG ZOXIDE_SHA256_AARCH64=7da16a093b2ac16d577dc53d1f74a8199fc824c963fa3aaf77a6d9f294a895d5
 ARG GH_SHA256_X86_64=762569efe785082b7d1feb06995efece1a9cecce16da8503ac6fdbcbea04085b
 ARG GH_SHA256_AARCH64=8bcec9f3ee5c7c3700359a75da774c71221064a0ba017537795aa32ac8bbb481
 ARG NVIM_SHA256_X86_64=be189915a2a0da3615576e2db06a7c714aef0ae926b4da6107e589a3cc623e5c
+# TODO: populate aarch64 checksum when multi-arch builds are enabled
+ARG NVIM_SHA256_AARCH64=PLACEHOLDER_NEEDS_REAL_CHECKSUM
 ARG YQ_SHA256_X86_64=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7
 ARG YQ_SHA256_AARCH64=0e7e1524f68d91b3ff9b089872d185940ab0fa020a5a9052046ef10547023156
 ARG TOKEI_SHA256_X86_64=c8c5c4ab9e1ff47e745de70f4af3214078657399fa7a0da0b5f209d780e49978
@@ -73,7 +81,10 @@ RUN set -e && mkdir -p /opt/mino-tools && ARCH=$(uname -m) && \
     # --- ripgrep ---
     curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" \
         -o /tmp/rg.tar.gz && \
-    echo "${RG_SHA256_X86_64}  /tmp/rg.tar.gz" | sha256sum -c - && \
+    case "$ARCH" in \
+        x86_64)  echo "${RG_SHA256_X86_64}  /tmp/rg.tar.gz" ;; \
+        aarch64) echo "${RG_SHA256_AARCH64}  /tmp/rg.tar.gz" ;; \
+    esac | sha256sum -c - && \
     tar -xz --strip-components=1 -C /opt/mino-tools -f /tmp/rg.tar.gz "ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl/rg" && \
     rm /tmp/rg.tar.gz && \
     # --- fd ---
@@ -88,7 +99,10 @@ RUN set -e && mkdir -p /opt/mino-tools && ARCH=$(uname -m) && \
     # --- bat ---
     curl -fsSL "https://github.com/sharkdp/bat/releases/download/${BAT_VERSION}/bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" \
         -o /tmp/bat.tar.gz && \
-    echo "${BAT_SHA256_X86_64}  /tmp/bat.tar.gz" | sha256sum -c - && \
+    case "$ARCH" in \
+        x86_64)  echo "${BAT_SHA256_X86_64}  /tmp/bat.tar.gz" ;; \
+        aarch64) echo "${BAT_SHA256_AARCH64}  /tmp/bat.tar.gz" ;; \
+    esac | sha256sum -c - && \
     tar -xz --strip-components=1 -C /opt/mino-tools -f /tmp/bat.tar.gz "bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl/bat" && \
     rm /tmp/bat.tar.gz && \
     # --- fzf ---
@@ -105,7 +119,10 @@ RUN set -e && mkdir -p /opt/mino-tools && ARCH=$(uname -m) && \
     # --- delta (git diff) ---
     curl -fsSL "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" \
         -o /tmp/delta.tar.gz && \
-    echo "${DELTA_SHA256_X86_64}  /tmp/delta.tar.gz" | sha256sum -c - && \
+    case "$ARCH" in \
+        x86_64)  echo "${DELTA_SHA256_X86_64}  /tmp/delta.tar.gz" ;; \
+        aarch64) echo "${DELTA_SHA256_AARCH64}  /tmp/delta.tar.gz" ;; \
+    esac | sha256sum -c - && \
     tar -xz --strip-components=1 -C /opt/mino-tools -f /tmp/delta.tar.gz "delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl/delta" && \
     rm /tmp/delta.tar.gz && \
     # --- zoxide (smart cd) ---
@@ -131,7 +148,7 @@ RUN set -e && mkdir -p /opt/mino-tools && ARCH=$(uname -m) && \
     # --- neovim ---
     case "$ARCH" in \
         x86_64)  NVIM_ARCH="x86_64"; NVIM_SHA256="${NVIM_SHA256_X86_64}" ;; \
-        aarch64) NVIM_ARCH="aarch64"; NVIM_SHA256="${NVIM_SHA256_X86_64}" ;; \
+        aarch64) NVIM_ARCH="aarch64"; NVIM_SHA256="${NVIM_SHA256_AARCH64}" ;; \
         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
     curl -fsSL "https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-${NVIM_ARCH}.tar.gz" \
