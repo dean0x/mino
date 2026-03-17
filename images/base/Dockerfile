@@ -30,33 +30,32 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
-# Create /opt/mino-tools/ for pre-built CLI tool binaries
-RUN mkdir -p /opt/mino-tools
-
-# ripgrep
+# CLI tool versions (ARGs declared before the single consolidated RUN)
 ARG RG_VERSION=14.1.1
-RUN ARCH=$(uname -m) && \
+ARG FD_VERSION=v10.2.0
+ARG BAT_VERSION=v0.24.0
+ARG FZF_VERSION=v0.57.0
+ARG DELTA_VERSION=0.18.2
+ARG ZOXIDE_VERSION=v0.9.6
+ARG GH_VERSION=2.65.0
+ARG NVIM_VERSION=v0.10.3
+ARG YQ_VERSION=v4.44.3
+ARG TOKEI_VERSION=v12.1.2
+ARG EZA_VERSION=v0.20.22
+ARG SD_VERSION=v1.0.0
+
+# Download all CLI tools into /opt/mino-tools/ in a single layer
+RUN set -e && mkdir -p /opt/mino-tools && ARCH=$(uname -m) && \
+    # --- ripgrep ---
     curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
     tar -xz --strip-components=1 -C /opt/mino-tools "ripgrep-${RG_VERSION}-${ARCH}-unknown-linux-musl/rg" && \
-    chmod +x /opt/mino-tools/rg
-
-# fd
-ARG FD_VERSION=v10.2.0
-RUN ARCH=$(uname -m) && \
+    # --- fd ---
     curl -fsSL "https://github.com/sharkdp/fd/releases/download/${FD_VERSION}/fd-${FD_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
     tar -xz --strip-components=1 -C /opt/mino-tools "fd-${FD_VERSION}-${ARCH}-unknown-linux-musl/fd" && \
-    chmod +x /opt/mino-tools/fd
-
-# bat
-ARG BAT_VERSION=v0.24.0
-RUN ARCH=$(uname -m) && \
+    # --- bat ---
     curl -fsSL "https://github.com/sharkdp/bat/releases/download/${BAT_VERSION}/bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
     tar -xz --strip-components=1 -C /opt/mino-tools "bat-${BAT_VERSION}-${ARCH}-unknown-linux-musl/bat" && \
-    chmod +x /opt/mino-tools/bat
-
-# fzf
-ARG FZF_VERSION=v0.57.0
-RUN ARCH=$(uname -m) && \
+    # --- fzf ---
     case "$ARCH" in \
         x86_64) FZF_ARCH="amd64" ;; \
         aarch64) FZF_ARCH="arm64" ;; \
@@ -64,25 +63,13 @@ RUN ARCH=$(uname -m) && \
     esac && \
     curl -fsSL "https://github.com/junegunn/fzf/releases/download/${FZF_VERSION}/fzf-${FZF_VERSION#v}-linux_${FZF_ARCH}.tar.gz" | \
     tar -xz -C /opt/mino-tools fzf && \
-    chmod +x /opt/mino-tools/fzf
-
-# delta (git diff)
-ARG DELTA_VERSION=0.18.2
-RUN ARCH=$(uname -m) && \
+    # --- delta (git diff) ---
     curl -fsSL "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl.tar.gz" | \
     tar -xz --strip-components=1 -C /opt/mino-tools "delta-${DELTA_VERSION}-${ARCH}-unknown-linux-musl/delta" && \
-    chmod +x /opt/mino-tools/delta
-
-# zoxide (smart cd)
-ARG ZOXIDE_VERSION=v0.9.6
-RUN ARCH=$(uname -m) && \
+    # --- zoxide (smart cd) ---
     curl -fsSL "https://github.com/ajeetdsouza/zoxide/releases/download/${ZOXIDE_VERSION}/zoxide-${ZOXIDE_VERSION#v}-${ARCH}-unknown-linux-musl.tar.gz" | \
     tar -xz -C /opt/mino-tools zoxide && \
-    chmod +x /opt/mino-tools/zoxide
-
-# GitHub CLI
-ARG GH_VERSION=2.65.0
-RUN ARCH=$(uname -m) && \
+    # --- GitHub CLI ---
     case "$ARCH" in \
         x86_64) GH_ARCH="amd64" ;; \
         aarch64) GH_ARCH="arm64" ;; \
@@ -90,11 +77,7 @@ RUN ARCH=$(uname -m) && \
     esac && \
     curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" | \
     tar -xz --strip-components=2 -C /opt/mino-tools "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" && \
-    chmod +x /opt/mino-tools/gh
-
-# neovim
-ARG NVIM_VERSION=v0.10.3
-RUN ARCH=$(uname -m) && \
+    # --- neovim ---
     case "$ARCH" in \
         x86_64) NVIM_ARCH="x86_64" ;; \
         aarch64) NVIM_ARCH="aarch64" ;; \
@@ -102,11 +85,7 @@ RUN ARCH=$(uname -m) && \
     esac && \
     curl -fsSL "https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-${NVIM_ARCH}.tar.gz" | \
     tar -xz --strip-components=2 -C /opt/mino-tools "nvim-linux-${NVIM_ARCH}/bin/nvim" && \
-    chmod +x /opt/mino-tools/nvim
-
-# yq (YAML processor)
-ARG YQ_VERSION=v4.44.3
-RUN ARCH=$(uname -m) && \
+    # --- yq (YAML processor) ---
     case "$ARCH" in \
         x86_64) YQ_ARCH="amd64" ;; \
         aarch64) YQ_ARCH="arm64" ;; \
@@ -114,25 +93,13 @@ RUN ARCH=$(uname -m) && \
     esac && \
     curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${YQ_ARCH}" \
         -o /opt/mino-tools/yq && \
-    chmod +x /opt/mino-tools/yq
-
-# tokei (code statistics)
-ARG TOKEI_VERSION=v12.1.2
-RUN ARCH=$(uname -m) && \
+    # --- tokei (code statistics) ---
     curl -fsSL "https://github.com/XAMPPRocky/tokei/releases/download/${TOKEI_VERSION}/tokei-${ARCH}-unknown-linux-gnu.tar.gz" | \
     tar -xz -C /opt/mino-tools tokei && \
-    chmod +x /opt/mino-tools/tokei
-
-# eza (modern ls/tree replacement)
-ARG EZA_VERSION=v0.20.22
-RUN ARCH=$(uname -m) && \
+    # --- eza (modern ls/tree replacement) ---
     curl -fsSL "https://github.com/eza-community/eza/releases/download/${EZA_VERSION}/eza_${ARCH}-unknown-linux-gnu.tar.gz" | \
     tar -xz -C /opt/mino-tools ./eza && \
-    chmod +x /opt/mino-tools/eza
-
-# sd (modern sed replacement)
-ARG SD_VERSION=v1.0.0
-RUN ARCH=$(uname -m) && \
+    # --- sd (modern sed replacement) ---
     case "$ARCH" in \
         x86_64) SD_TARGET="x86_64-unknown-linux-gnu" ;; \
         aarch64) SD_TARGET="aarch64-unknown-linux-musl" ;; \
@@ -140,7 +107,8 @@ RUN ARCH=$(uname -m) && \
     esac && \
     curl -fsSL "https://github.com/chmln/sd/releases/download/${SD_VERSION}/sd-${SD_VERSION}-${SD_TARGET}.tar.gz" | \
     tar -xz --strip-components=1 -C /opt/mino-tools "sd-${SD_VERSION}-${SD_TARGET}/sd" && \
-    chmod +x /opt/mino-tools/sd
+    # --- set permissions on all tools ---
+    chmod +x /opt/mino-tools/*
 
 # Create non-root user with pinned UID for volume stability
 RUN useradd -m -s /bin/zsh -u 1000 developer \
