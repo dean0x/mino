@@ -187,6 +187,7 @@ async fn try_resolve_from_dir(
             ));
         }
         manifest.user_install.validate()?;
+        manifest.root_install.validate()?;
         return Ok(Some(ResolvedLayer {
             manifest,
             install_script: LayerScript::None,
@@ -195,6 +196,7 @@ async fn try_resolve_from_dir(
     }
 
     manifest.user_install.validate()?;
+    manifest.root_install.validate()?;
 
     Ok(Some(ResolvedLayer {
         manifest,
@@ -214,6 +216,7 @@ fn resolve_builtin(name: &str) -> MinoResult<Option<ResolvedLayer>> {
 
     let manifest = LayerManifest::parse(manifest_str)?;
     manifest.user_install.validate()?;
+    manifest.root_install.validate()?;
 
     // Use LayerScript::None for layers where install.sh is a placeholder
     let install_script = if install_str.trim().is_empty()
