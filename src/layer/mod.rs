@@ -9,7 +9,7 @@ pub mod manifest;
 pub mod resolve;
 
 pub use compose::{compose_image, ComposedImageResult};
-pub(crate) use compose::{merge_layer_env, needs_compose_build};
+pub(crate) use compose::{compute_path_prepend, merge_layer_env, needs_compose_build};
 pub(crate) use manifest::build_layer_manifest;
 pub use manifest::LayerManifest;
 pub use resolve::{

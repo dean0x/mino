@@ -4,7 +4,8 @@ use crate::cli::args::RunArgs;
 use crate::config::Config;
 use crate::error::MinoResult;
 use crate::layer::{
-    build_layer_manifest, compose_image, merge_layer_env, needs_compose_build, resolve_layers,
+    build_layer_manifest, compose_image, compute_path_prepend, merge_layer_env,
+    needs_compose_build, resolve_layers,
 };
 use crate::orchestration::ContainerRuntime;
 use crate::ui::{BuildProgress, TaskSpinner, UiContext};
@@ -184,13 +185,11 @@ pub(super) async fn resolve_image(
                 layer_env.insert("MINO_LAYER_MANIFEST".to_string(), manifest_json);
             }
 
-            // Merge runtime env vars for layers that skip compose
-            let runtime_env = merge_layer_env(&resolved, false);
-            // MINO_PATH_PREPEND from user-install layers needs to be passed
-            if let Some(path_prepend) = runtime_env.get("MINO_PATH_PREPEND") {
+            // Pass MINO_PATH_PREPEND for user-install layers (shell-level PATH expansion)
+            if let Some(path_prepend) = compute_path_prepend(&resolved) {
                 layer_env
                     .entry("MINO_PATH_PREPEND".to_string())
-                    .or_insert_with(|| path_prepend.clone());
+                    .or_insert_with(|| path_prepend);
             }
 
             ImageResolution {

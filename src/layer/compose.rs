@@ -36,6 +36,31 @@ pub fn needs_compose_build(layers: &[ResolvedLayer]) -> bool {
         .any(|l| l.install_script.has_content() || l.manifest.has_root_install())
 }
 
+/// Collect deduplicated PATH prepend directories from all layers.
+///
+/// Returns `None` when no layers define `path_prepend` dirs.
+/// Used directly when only the path prepend value is needed (e.g., compose
+/// path in image.rs) without recomputing the full env merge.
+pub(crate) fn compute_path_prepend(layers: &[ResolvedLayer]) -> Option<String> {
+    let mut path_dirs: Vec<String> = Vec::new();
+
+    for layer in layers {
+        if let Some(prepend) = layer.manifest.path_prepend_str() {
+            for dir in prepend.split(':') {
+                if !path_dirs.contains(&dir.to_string()) {
+                    path_dirs.push(dir.to_string());
+                }
+            }
+        }
+    }
+
+    if path_dirs.is_empty() {
+        None
+    } else {
+        Some(path_dirs.join(":"))
+    }
+}
+
 /// Merge environment variables from all layers (public for use when compose is skipped).
 ///
 /// Last layer in the list wins for conflicting keys.
@@ -49,26 +74,17 @@ pub(crate) fn merge_layer_env(
     for_dockerfile: bool,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
-    let mut path_dirs: Vec<String> = Vec::new();
 
     for layer in layers {
         env.extend(layer.manifest.env_vars());
-
-        if let Some(prepend) = layer.manifest.path_prepend_str() {
-            for dir in prepend.split(':') {
-                if !path_dirs.contains(&dir.to_string()) {
-                    path_dirs.push(dir.to_string());
-                }
-            }
-        }
     }
 
-    if !path_dirs.is_empty() {
+    if let Some(joined) = compute_path_prepend(layers) {
         if for_dockerfile {
-            let path_value = format!("{}:${{PATH}}", path_dirs.join(":"));
+            let path_value = format!("{}:${{PATH}}", joined);
             env.insert("PATH".to_string(), path_value);
         } else {
-            env.insert("MINO_PATH_PREPEND".to_string(), path_dirs.join(":"));
+            env.insert("MINO_PATH_PREPEND".to_string(), joined);
         }
     }
 
@@ -556,6 +572,40 @@ runtime = "uv"
             source: LayerSource::BuiltIn,
         };
         assert!(needs_compose_build(&[layer]));
+    }
+
+    #[test]
+    fn compute_path_prepend_collects_from_multiple_layers() {
+        let layers = vec![rust_layer(), ts_layer()];
+        let prepend = compute_path_prepend(&layers).unwrap();
+        assert!(prepend.contains("/home/developer/.cargo/bin"));
+        assert!(prepend.contains("/cache/pnpm"));
+        assert!(prepend.contains("/home/developer/.npm-global/bin"));
+    }
+
+    #[test]
+    fn compute_path_prepend_deduplicates() {
+        // Two identical layers should not produce duplicate dirs
+        let layers = vec![rust_layer(), rust_layer()];
+        let prepend = compute_path_prepend(&layers).unwrap();
+        let count = prepend.matches("/home/developer/.cargo/bin").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn compute_path_prepend_none_when_no_dirs() {
+        let layer = make_layer(
+            r#"
+[layer]
+name = "no-path"
+description = "No path"
+version = "1"
+[env]
+FOO = "bar"
+"#,
+            "",
+        );
+        assert!(compute_path_prepend(&[layer]).is_none());
     }
 
     #[test]
