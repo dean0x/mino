@@ -262,8 +262,8 @@ RUN chmod +x /usr/local/bin/mino-bootstrap /usr/local/bin/mino-entrypoint
 ARG MINO_BASE_VERSION=dev
 RUN echo "$MINO_BASE_VERSION" > /etc/mino-base-version
 
-# Healthcheck script (uses nvm node via PATH — sourced in bootstrap)
-RUN printf '#!/bin/bash\nset -e\ncommand -v claude >/dev/null 2>&1\ncommand -v git >/dev/null 2>&1\n# Check node via nvm or PATH\nif [ -d "$HOME/.nvm" ]; then\n  export NVM_DIR="$HOME/.nvm"\n  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"\nfi\ncommand -v node >/dev/null 2>&1\ntest -d /workspace\ntest -d /cache\ntest "$(whoami)" = "developer"\necho "ok"\n' \
+# Healthcheck script (sources nvm first — claude and node both live there)
+RUN printf '#!/bin/bash\nset -e\nif [ -d "$HOME/.nvm" ]; then\n  export NVM_DIR="$HOME/.nvm"\n  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"\nfi\ncommand -v claude >/dev/null 2>&1\ncommand -v node >/dev/null 2>&1\ncommand -v git >/dev/null 2>&1\ntest -d /workspace\ntest -d /cache\ntest "$(whoami)" = "developer"\necho "ok"\n' \
     > /usr/local/bin/mino-healthcheck \
     && chmod +x /usr/local/bin/mino-healthcheck
 
@@ -304,14 +304,13 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 ZSHRC
 
-# Claude Code CLI (user-level install, updatable)
-RUN curl -fsSL https://cli.anthropic.com/install.sh | sh
+# Claude Code CLI (user-level install via nvm node, updatable by developer)
+RUN bash -c 'source ~/.nvm/nvm.sh && npm install -g @anthropic-ai/claude-code'
 
 # Copy developer home to /etc/skel/ for bootstrap on new home volumes
 USER root
 RUN cp -a /home/developer/.oh-my-zsh /etc/skel/.oh-my-zsh \
     && cp -a /home/developer/.nvm /etc/skel/.nvm \
-    && cp -a /home/developer/.local /etc/skel/.local \
     && cp /home/developer/.zshrc /etc/skel/.zshrc \
     && touch /etc/skel/.zsh_history
 
@@ -336,9 +335,8 @@ RUN /opt/mino-tools/rg --version \
     && /opt/mino-tools/sd --version
 
 # Verify user-level installs
-RUN claude --version \
-    && git --version \
-    && bash -c 'source ~/.nvm/nvm.sh && node --version && npm --version'
+RUN bash -c 'source ~/.nvm/nvm.sh && claude --version && node --version && npm --version' \
+    && git --version
 
 HEALTHCHECK CMD mino-healthcheck
 

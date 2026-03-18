@@ -1,3 +1,16 @@
 #!/usr/bin/env bash
 /usr/local/bin/mino-bootstrap || true
+
+# Source nvm so node/claude/npm are on PATH for all commands (not just zsh)
+export NVM_DIR="${HOME}/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+# Source cargo env if rustup was installed by bootstrap
+[ -s "$HOME/.cargo/env" ] && \. "$HOME/.cargo/env"
+
+# Apply layer-injected PATH prepend (set by mino for user-install layers)
+if [ -n "$MINO_PATH_PREPEND" ]; then
+    export PATH="$MINO_PATH_PREPEND:$PATH"
+fi
+
 exec "$@"
