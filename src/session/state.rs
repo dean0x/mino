@@ -112,9 +112,17 @@ impl Session {
     /// Create session file atomically — fails if file already exists.
     /// Uses O_CREAT | O_EXCL for kernel-level atomic create-or-fail,
     /// eliminating the TOCTOU race in load-then-save.
+    ///
+    /// All file I/O runs in a single `spawn_blocking` call so that open, write,
+    /// and close complete synchronously before `.await` resolves — preventing a
+    /// race where a subsequent read sees an empty file because the async drop of
+    /// `tokio::fs::File` defers `close()` to a background task.
     pub async fn create_file(&self) -> MinoResult<()> {
         validate_session_name(&self.name)?;
         let path = self.file_path();
+
+        let content = serde_json::to_string_pretty(self)?;
+        let session_name = self.name.clone();
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -122,27 +130,30 @@ impl Session {
                 .map_err(|e| MinoError::io("creating sessions directory", e))?;
         }
 
-        let content = serde_json::to_string_pretty(self)?;
-
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .await
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AlreadyExists {
-                    MinoError::SessionExists(self.name.clone())
-                } else {
-                    MinoError::io(format!("creating session file {}", path.display()), e)
-                }
-            })?;
-
-        use tokio::io::AsyncWriteExt;
-        file.write_all(content.as_bytes())
-            .await
-            .map_err(|e| MinoError::io(format!("writing session file {}", path.display()), e))?;
-
-        Ok(())
+        match tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        MinoError::SessionExists(session_name)
+                    } else {
+                        MinoError::io(format!("creating session file {}", path.display()), e)
+                    }
+                })?;
+            file.write_all(content.as_bytes())
+                .map_err(|e| MinoError::io(format!("writing session file {}", path.display()), e))
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => Err(MinoError::Internal(format!(
+                "session create task failed: {}",
+                e
+            ))),
+        }
     }
 
     /// Save session to file (overwrites existing). Use for status updates.
