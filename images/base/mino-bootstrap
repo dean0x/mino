@@ -31,7 +31,7 @@ mkdir -p "$STEP_DIR" 2>/dev/null || true
 if [ -n "$MINO_QUIET_BOOTSTRAP" ]; then
     INSTALL_REDIRECT="/dev/null"
 else
-    INSTALL_REDIRECT="/dev/stderr"
+    INSTALL_REDIRECT="/tmp/mino-bootstrap.log"
 fi
 
 # Log to stderr unless quiet mode is enabled

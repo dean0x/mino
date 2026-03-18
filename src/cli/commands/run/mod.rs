@@ -260,6 +260,17 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         spinner.message("Starting container...");
     }
 
+    let is_shell_mode = args.command.is_empty();
+    let shell_command = if is_shell_mode {
+        if using_layers {
+            vec!["/bin/zsh".to_string()]
+        } else {
+            vec![config.session.shell.clone()]
+        }
+    } else {
+        vec![]
+    };
+
     let mut run_ctx = RunContext {
         runtime: &runtime,
         container_config: &container_config,
@@ -269,6 +280,9 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
         audit: &audit,
         spinner: &mut spinner,
         config,
+        is_shell_mode,
+        shell_command,
+        network_mode: &network_mode,
     };
 
     if args.detach {
@@ -289,6 +303,12 @@ struct RunContext<'a> {
     audit: &'a AuditLog,
     spinner: &'a mut TaskSpinner,
     config: &'a Config,
+    /// True when the user launched a bare shell (no explicit command)
+    is_shell_mode: bool,
+    /// The bare shell command for exec phase (e.g. ["/bin/zsh"])
+    shell_command: Vec<String>,
+    /// Resolved network mode (needed by two-phase startup for iptables wrapping)
+    network_mode: &'a NetworkMode,
 }
 
 impl RunContext<'_> {
@@ -391,38 +411,25 @@ async fn run_detached(ctx: &mut RunContext<'_>, cache_session: CacheSession) -> 
 }
 
 /// Run container in interactive mode with synchronous cache finalization.
+///
+/// Routes to either `run_interactive_shell` (two-phase: sleep + exec) for bare
+/// shell mode, or the existing `start_attached` flow for explicit commands.
 async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) -> MinoResult<()> {
-    let container_id = match ctx.runtime.create(ctx.container_config, ctx.command).await {
-        Ok(id) => id,
-        Err(e) => return ctx.record_failure(e).await,
+    let exit_code = if ctx.is_shell_mode {
+        run_interactive_shell(ctx, &cache_session).await?
+    } else {
+        run_interactive_command(ctx).await?
     };
-
-    ctx.record_start(&container_id).await?;
-
-    ctx.spinner.clear();
-
-    debug!("Starting container attached: {}", &container_id[..12]);
-
-    let exit_code = ctx.runtime.start_attached(&container_id).await?;
 
     // Finalize caches on clean exit
     if exit_code == 0 && !cache_session.volumes_to_finalize.is_empty() {
         finalize_caches(&cache_session).await;
     }
 
-    // Clean up session
+    // Clean up session state
     ctx.manager
         .update_status(ctx.session_name, SessionStatus::Stopped)
         .await?;
-
-    // Remove stopped container to prevent credential persistence in `podman inspect`
-    if let Err(e) = ctx.runtime.remove(&container_id).await {
-        warn!(
-            "Failed to remove container {}: {}",
-            &container_id[..12.min(container_id.len())],
-            e
-        );
-    }
 
     ctx.audit
         .log(
@@ -442,7 +449,8 @@ async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) 
         );
     }
 
-    // Show update notification on exit (uses cached check, no new HTTP request)
+    // Show update notification on exit (reads cached state from disk, picks up
+    // any background refresh that completed during this session)
     if let Some(update) = crate::version::check_for_update(ctx.config).await {
         let method = crate::version::detect_install_method();
         let hint = crate::version::update_hint(&method);
@@ -456,6 +464,121 @@ async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) 
     }
 
     Ok(())
+}
+
+/// Existing flow for explicit commands: create + start_attached.
+///
+/// Non-interactive commands like `mino run -- cargo build` need the entrypoint's
+/// env setup (nvm, cargo sourcing), so they use `start_attached` which runs the
+/// full entrypoint.
+async fn run_interactive_command(ctx: &mut RunContext<'_>) -> MinoResult<i32> {
+    let container_id = match ctx.runtime.create(ctx.container_config, ctx.command).await {
+        Ok(id) => id,
+        Err(e) => return ctx.record_failure(e).await,
+    };
+
+    ctx.record_start(&container_id).await?;
+    ctx.spinner.clear();
+
+    debug!("Starting container attached: {}", &container_id[..12]);
+    let exit_code = ctx.runtime.start_attached(&container_id).await?;
+
+    // Remove container (start_attached returns after it exits)
+    if let Err(e) = ctx.runtime.remove(&container_id).await {
+        warn!(
+            "Failed to remove container {}: {}",
+            &container_id[..12.min(container_id.len())],
+            e
+        );
+    }
+
+    Ok(exit_code)
+}
+
+/// Two-phase shell startup: create with sleep infinity, bootstrap via spinner,
+/// then exec into interactive shell.
+///
+/// This avoids dumping hundreds of lines of npm/rustup output into the terminal.
+/// Instead, bootstrap output goes to a log file inside the container, and we
+/// show a spinner while monitoring `podman logs -f` for the "Bootstrap complete."
+/// marker.
+async fn run_interactive_shell(
+    ctx: &mut RunContext<'_>,
+    _cache_session: &CacheSession,
+) -> MinoResult<i32> {
+    // Phase 1: Create container with sleep infinity
+    let sleep_command = vec!["sleep".to_string(), "infinity".to_string()];
+    let phase1_command = if let NetworkMode::Allow(ref rules) = ctx.network_mode {
+        generate_iptables_wrapper(rules, &sleep_command)
+    } else {
+        sleep_command
+    };
+
+    let container_id = match ctx
+        .runtime
+        .create(ctx.container_config, &phase1_command)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => return ctx.record_failure(e).await,
+    };
+
+    ctx.record_start(&container_id).await?;
+
+    // Start container detached
+    if let Err(e) = ctx.runtime.start_detached(&container_id).await {
+        // Clean up on failure
+        let _ = ctx.runtime.remove(&container_id).await;
+        return ctx.record_failure(e).await;
+    }
+
+    // Monitor bootstrap via logs
+    ctx.spinner.message("Setting up environment...");
+    let bootstrap_timeout = std::time::Duration::from_secs(300);
+    let found = ctx
+        .runtime
+        .logs_follow_until(
+            &container_id,
+            "Bootstrap complete.",
+            bootstrap_timeout,
+            &|line: String| {
+                debug!("bootstrap: {}", line);
+            },
+        )
+        .await?;
+
+    if !found {
+        warn!("Bootstrap marker not found within timeout, proceeding anyway");
+    }
+
+    ctx.spinner.clear();
+
+    // Phase 2: Exec interactive shell
+    debug!(
+        "Exec into container {}: {:?}",
+        &container_id[..12],
+        ctx.shell_command
+    );
+    let exit_code = ctx
+        .runtime
+        .exec_in_container(&container_id, &ctx.shell_command, true)
+        .await?;
+
+    // Stop the sleep infinity process
+    if let Err(e) = ctx.runtime.stop(&container_id).await {
+        debug!("Stop after exec: {}", e);
+    }
+
+    // Remove container
+    if let Err(e) = ctx.runtime.remove(&container_id).await {
+        warn!(
+            "Failed to remove container {}: {}",
+            &container_id[..12.min(container_id.len())],
+            e
+        );
+    }
+
+    Ok(exit_code)
 }
 
 async fn validate_environment() -> MinoResult<()> {
@@ -825,10 +948,17 @@ mod tests {
         config: Config,
         audit: AuditLog,
         spinner: TaskSpinner,
+        is_shell_mode: bool,
+        shell_command: Vec<String>,
+        network_mode: NetworkMode,
     }
 
     impl SmokeTestFixture {
         async fn new(prefix: &str) -> Self {
+            Self::with_shell_mode(prefix, false).await
+        }
+
+        async fn with_shell_mode(prefix: &str, shell_mode: bool) -> Self {
             let session_name = format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..8]);
             let cleanup = SessionCleanup {
                 name: session_name.clone(),
@@ -866,6 +996,9 @@ mod tests {
                 config,
                 audit,
                 spinner,
+                is_shell_mode: shell_mode,
+                shell_command: vec!["/bin/zsh".to_string()],
+                network_mode: NetworkMode::Bridge,
             }
         }
 
@@ -879,14 +1012,19 @@ mod tests {
                 audit: &self.audit,
                 spinner: &mut self.spinner,
                 config: &self.config,
+                is_shell_mode: self.is_shell_mode,
+                shell_command: self.shell_command.clone(),
+                network_mode: &self.network_mode,
             }
         }
     }
 
     #[tokio::test]
     #[serial]
-    async fn smoke_run_interactive() {
+    async fn smoke_run_interactive_command() {
         let mut f = SmokeTestFixture::new("test-smoke-int").await;
+        // is_shell_mode=false (default) → uses start_attached flow
+        assert!(!f.is_shell_mode);
 
         run_interactive(&mut f.run_ctx(), CacheSession::default())
             .await
@@ -895,6 +1033,30 @@ mod tests {
         f.mock.assert_called("create", 1);
         f.mock.assert_called("start_attached", 1);
         f.mock.assert_called("remove", 1);
+
+        let updated = f.manager.get(&f.session_name).await.unwrap().unwrap();
+        assert_eq!(updated.status, SessionStatus::Stopped);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn smoke_run_interactive_shell() {
+        let mut f = SmokeTestFixture::with_shell_mode("test-smoke-shell", true).await;
+
+        run_interactive(&mut f.run_ctx(), CacheSession::default())
+            .await
+            .unwrap();
+
+        // Two-phase: create (with sleep), start_detached, logs_follow_until, exec_in_container, stop, remove
+        f.mock.assert_called("create", 1);
+        f.mock.assert_called("start_detached", 1);
+        f.mock.assert_called("logs_follow_until", 1);
+        f.mock.assert_called("exec_in_container", 1);
+        f.mock.assert_called("stop", 1);
+        f.mock.assert_called("remove", 1);
+
+        // Should not use start_attached (that's the old flow)
+        f.mock.assert_called("start_attached", 0);
 
         let updated = f.manager.get(&f.session_name).await.unwrap().unwrap();
         assert_eq!(updated.status, SessionStatus::Stopped);

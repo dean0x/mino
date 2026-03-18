@@ -607,6 +607,36 @@ impl ContainerRuntime for OrbStackRuntime {
             }
         }
     }
+
+    async fn start_detached(&self, container_id: &str) -> MinoResult<()> {
+        debug!("Starting container detached: {}", container_id);
+        let output = self
+            .orbstack
+            .exec(&["podman", "start", container_id])
+            .await?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(MinoError::ContainerStart(stderr.to_string()))
+        }
+    }
+
+    async fn logs_follow_until(
+        &self,
+        container_id: &str,
+        marker: &str,
+        timeout: std::time::Duration,
+        on_line: &(dyn Fn(String) + Send + Sync),
+    ) -> MinoResult<bool> {
+        debug!("Following logs for {} until '{}'", container_id, marker);
+
+        let mut child = self
+            .orbstack
+            .spawn_piped(&["podman", "logs", "-f", container_id])?;
+
+        Ok(super::follow_until_marker(&mut child, marker, timeout, on_line).await)
+    }
 }
 
 #[cfg(test)]

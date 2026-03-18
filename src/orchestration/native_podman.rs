@@ -540,6 +540,36 @@ impl ContainerRuntime for NativePodmanRuntime {
             }
         }
     }
+
+    async fn start_detached(&self, container_id: &str) -> MinoResult<()> {
+        debug!("Starting container detached: {}", container_id);
+        let output = self.exec(&["start", container_id]).await?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(MinoError::ContainerStart(stderr.to_string()))
+        }
+    }
+
+    async fn logs_follow_until(
+        &self,
+        container_id: &str,
+        marker: &str,
+        timeout: std::time::Duration,
+        on_line: &(dyn Fn(String) + Send + Sync),
+    ) -> MinoResult<bool> {
+        debug!("Following logs for {} until '{}'", container_id, marker);
+
+        let mut child = Command::new("podman")
+            .args(["logs", "-f", container_id])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| MinoError::command_failed("podman logs -f", e))?;
+
+        Ok(super::follow_until_marker(&mut child, marker, timeout, on_line).await)
+    }
 }
 
 #[cfg(test)]

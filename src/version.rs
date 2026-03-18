@@ -227,49 +227,29 @@ async fn check_for_update_inner(config: &Config, path: &Path) -> Option<UpdateIn
         return None;
     }
 
-    let mut state = load_state_from(path).await;
+    let state = load_state_from(path).await;
     let current = env!("CARGO_PKG_VERSION");
 
-    if !should_check_update(&state) {
-        // Use cached result
-        let latest = state.latest_available.as_deref()?;
-        if is_newer_version(latest, current) {
-            return Some(UpdateInfo {
-                latest: latest.to_string(),
-                current: current.to_string(),
-            });
-        }
-        return None;
+    // Background refresh if cache is stale (fire-and-forget)
+    if should_check_update(&state) {
+        let path = path.to_path_buf();
+        tokio::spawn(async move {
+            if let Ok(Ok(body)) = tokio::task::spawn_blocking(fetch_latest_release).await {
+                if let Some(latest) = parse_github_release(&body) {
+                    let mut state = load_state_from(&path).await;
+                    state.last_update_check = Some(Utc::now());
+                    state.latest_available = Some(latest);
+                    save_state_to(&path, &state).await;
+                }
+            }
+        });
     }
 
-    // Perform HTTP check
-    let body = match tokio::task::spawn_blocking(fetch_latest_release).await {
-        Ok(Ok(body)) => body,
-        Ok(Err(e)) => {
-            warn!("Update check failed: {}", e);
-            return None;
-        }
-        Err(e) => {
-            warn!("Update check task failed: {}", e);
-            return None;
-        }
-    };
-
-    let latest = match parse_github_release(&body) {
-        Some(v) => v,
-        None => {
-            warn!("Failed to parse GitHub release response");
-            return None;
-        }
-    };
-
-    state.last_update_check = Some(Utc::now());
-    state.latest_available = Some(latest.clone());
-    save_state_to(path, &state).await;
-
-    if is_newer_version(&latest, current) {
+    // Always use cached result (instant, zero latency)
+    let latest = state.latest_available.as_deref()?;
+    if is_newer_version(latest, current) {
         Some(UpdateInfo {
-            latest,
+            latest: latest.to_string(),
             current: current.to_string(),
         })
     } else {
@@ -693,6 +673,41 @@ mod tests {
         let config = Config::default();
         let result = check_for_update_inner(&config, &path).await;
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_check_first_call_no_cache_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+
+        // No state file at all — first run
+        let config = Config::default();
+        let result = check_for_update_inner(&config, &path).await;
+        // Returns None because there's no cached latest_available yet
+        // (background task would populate it for next session)
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_check_stale_cache_returns_cached_result() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+
+        // Stale cache (>24h) but has a cached newer version
+        let state = VersionState {
+            installed_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            last_update_check: Some(Utc::now() - chrono::Duration::hours(25)),
+            latest_available: Some("99.0.0".to_string()),
+        };
+        save_state_to(&path, &state).await;
+
+        let config = Config::default();
+        let result = check_for_update_inner(&config, &path).await;
+        // Returns cached result immediately even though cache is stale
+        // (background task refreshes for next time)
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.latest, "99.0.0");
     }
 
     // --- clear_composed_images tests ---

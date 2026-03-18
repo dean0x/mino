@@ -86,6 +86,72 @@ pub(crate) async fn stream_child_output(
     all_output
 }
 
+/// Follow a child process's stderr/stdout until a marker line is found or timeout expires.
+///
+/// Returns `true` if the marker was found, `false` on timeout. Calls `on_line`
+/// for each line received. The child process is killed on timeout or once marker is found.
+///
+/// Uses `String` callback (same pattern as `stream_child_output`) to avoid
+/// lifetime issues with `async_trait` desugaring.
+pub(crate) async fn follow_until_marker(
+    child: &mut tokio::process::Child,
+    marker: &str,
+    timeout: std::time::Duration,
+    on_line: &(dyn Fn(String) + Send + Sync),
+) -> bool {
+    let stderr = child.stderr.take().expect("stderr piped");
+    let stdout = child.stdout.take().expect("stdout piped");
+
+    let mut stderr_reader = BufReader::new(stderr).lines();
+    let mut stdout_reader = BufReader::new(stdout).lines();
+
+    let mut stderr_done = false;
+    let mut stdout_done = false;
+    let mut found = false;
+
+    let sleep = tokio::time::sleep(timeout);
+    tokio::pin!(sleep);
+
+    while !found && (!stderr_done || !stdout_done) {
+        tokio::select! {
+            _ = &mut sleep => {
+                // Timeout — kill the logs process
+                let _ = child.kill().await;
+                break;
+            }
+            result = stderr_reader.next_line(), if !stderr_done => {
+                match result {
+                    Ok(Some(line)) => {
+                        if line.contains(marker) {
+                            found = true;
+                        }
+                        on_line(line);
+                    }
+                    _ => stderr_done = true,
+                }
+            }
+            result = stdout_reader.next_line(), if !stdout_done => {
+                match result {
+                    Ok(Some(line)) => {
+                        if line.contains(marker) {
+                            found = true;
+                        }
+                        on_line(line);
+                    }
+                    _ => stdout_done = true,
+                }
+            }
+        }
+    }
+
+    if found {
+        // Marker found — kill the tailing process (we don't need more logs)
+        let _ = child.kill().await;
+    }
+
+    found
+}
+
 /// Parse `du -sb` output to extract the byte size.
 ///
 /// `du -sb` prints `<bytes>\t<path>` -- this extracts and parses the leading

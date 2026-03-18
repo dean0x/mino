@@ -371,6 +371,26 @@ impl ContainerRuntime for MockRuntime {
         self.record("get_container_exit_code", vec![container_id.to_string()]);
         self.take_optional_int("get_container_exit_code", Some(0))
     }
+
+    async fn start_detached(&self, container_id: &str) -> MinoResult<()> {
+        self.record("start_detached", vec![container_id.to_string()]);
+        self.take_unit("start_detached")
+    }
+
+    async fn logs_follow_until(
+        &self,
+        container_id: &str,
+        marker: &str,
+        _timeout: std::time::Duration,
+        on_line: &(dyn Fn(String) + Send + Sync),
+    ) -> MinoResult<bool> {
+        self.record(
+            "logs_follow_until",
+            vec![container_id.to_string(), marker.to_string()],
+        );
+        on_line("Bootstrap complete.".to_string());
+        self.take_bool("logs_follow_until", true)
+    }
 }
 
 /// Create a test session with the given name, status, and optional container ID.
