@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-03-18
+
+### Added
+
+- Persistent per-project home volumes — user-installed tools, shell history, Claude Code sessions, and configs survive image updates and cache clears. `--no-home` flag for ephemeral mode. `cache list` shows home volumes, `cache clear --home` removes them, `cache gc` detects orphans (#49).
+- User-level tool installs — CLI tools (`rg`, `fd`, `bat`, `fzf`, `delta`, `zoxide`, `gh`, `nvim`, `yq`, `tokei`, `eza`, `sd`) ship in `/opt/mino-tools/` and bootstrap symlinks to `~/.local/bin/`. Language runtimes (Node.js, Rust, Python) install via bootstrap with per-step markers. Pure user-install layers skip Dockerfile compose entirely (#51).
+- Version awareness UX — interactive prompt to clear stale composed images on version upgrade, exit notification when updates are available (#47).
+
+### Fixed
+
+- aarch64 Docker builds — correct target triples for ripgrep/bat/delta (`gnu` not `musl`), real SHA256 checksums, neovim v0.10.3 → v0.11.0 (#54).
+- Docker entrypoint sources nvm and applies layer PATH prepends so tools work in non-interactive commands like `mino run -- claude --version` (#55).
+- Session file race condition — `create_file()` now uses single `spawn_blocking` for atomic open/write/close, fixing flaky `smoke_run_detached` test (#55).
+- Claude Code installed via npm (nvm) instead of defunct `cli.anthropic.com` installer (#55).
+- Node.js moved from nodesource RPM to nvm-managed install (Node.js 22 LTS) (#51).
+
+### Changed
+
+- All GitHub Actions upgraded to Node.js 24 versions ahead of June 2026 deprecation deadline (#55).
+
 ## [1.4.1] - 2026-03-15
 
 ### Fixed
@@ -135,6 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
+[1.5.0]: https://github.com/dean0x/mino/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/dean0x/mino/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/dean0x/mino/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/dean0x/mino/compare/v1.2.2...v1.3.0
