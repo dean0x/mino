@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-03-18
+
+### Fixed
+
+- Cache volumes no longer mounted read-only in `Complete` state — fixes EROFS errors during bootstrap `npm install -g`, runtime `npx`, and `cargo install` operations. Content-addressing provides the real protection (#56).
+- Claude Code installed via native installer (`claude.ai/install.sh`) instead of npm, matching official recommended method (#56).
+
+### Changed
+
+- Container workdir now derived from project folder name (e.g., `~/code/my-app` → `/my-app`) instead of always `/workspace`. Blocked system directory names fall back to `/workspace`. Custom `container.workdir` config is respected (#56).
+
 ## [1.5.0] - 2026-03-18
 
 ### Added
@@ -155,6 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
+[1.5.1]: https://github.com/dean0x/mino/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/dean0x/mino/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/dean0x/mino/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/dean0x/mino/compare/v1.3.0...v1.4.0
