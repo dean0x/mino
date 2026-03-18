@@ -205,8 +205,8 @@ RUN useradd -m -s /bin/zsh -u 1000 developer \
     && mkdir -p /workspace /cache \
     && chown -R developer:developer /workspace /cache
 
-# PATH: ~/.local/bin (symlinks) > ~/.npm-global/bin > /opt/mino-tools (fallback)
-ENV PATH="/home/developer/.local/bin:/home/developer/.npm-global/bin:/opt/mino-tools:${PATH}"
+# PATH: ~/.claude/bin > ~/.local/bin (symlinks) > ~/.npm-global/bin > /opt/mino-tools (fallback)
+ENV PATH="/home/developer/.claude/bin:/home/developer/.local/bin:/home/developer/.npm-global/bin:/opt/mino-tools:${PATH}"
 
 # Git configuration for better diffs
 RUN git config --system core.pager delta \
@@ -262,7 +262,7 @@ RUN chmod +x /usr/local/bin/mino-bootstrap /usr/local/bin/mino-entrypoint
 ARG MINO_BASE_VERSION=dev
 RUN echo "$MINO_BASE_VERSION" > /etc/mino-base-version
 
-# Healthcheck script (sources nvm first — claude and node both live there)
+# Healthcheck script (sources nvm for node; claude is on PATH via ~/.claude/bin)
 RUN printf '#!/bin/bash\nset -e\nif [ -d "$HOME/.nvm" ]; then\n  export NVM_DIR="$HOME/.nvm"\n  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"\nfi\ncommand -v claude >/dev/null 2>&1\ncommand -v node >/dev/null 2>&1\ncommand -v git >/dev/null 2>&1\ntest -d /workspace\ntest -d /cache\ntest "$(whoami)" = "developer"\necho "ok"\n' \
     > /usr/local/bin/mino-healthcheck \
     && chmod +x /usr/local/bin/mino-healthcheck
@@ -304,13 +304,14 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 ZSHRC
 
-# Claude Code CLI (user-level install via nvm node, updatable by developer)
-RUN bash -c 'source ~/.nvm/nvm.sh && npm install -g @anthropic-ai/claude-code'
+# Claude Code CLI (native installer, auto-updates)
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Copy developer home to /etc/skel/ for bootstrap on new home volumes
 USER root
 RUN cp -a /home/developer/.oh-my-zsh /etc/skel/.oh-my-zsh \
     && cp -a /home/developer/.nvm /etc/skel/.nvm \
+    && cp -a /home/developer/.claude /etc/skel/.claude \
     && cp /home/developer/.zshrc /etc/skel/.zshrc \
     && touch /etc/skel/.zsh_history
 
@@ -335,7 +336,8 @@ RUN /opt/mino-tools/rg --version \
     && /opt/mino-tools/sd --version
 
 # Verify user-level installs
-RUN bash -c 'source ~/.nvm/nvm.sh && claude --version && node --version && npm --version' \
+RUN claude --version \
+    && bash -c 'source ~/.nvm/nvm.sh && node --version && npm --version' \
     && git --version
 
 HEALTHCHECK CMD mino-healthcheck

@@ -84,7 +84,7 @@ async fn setup_cache_for_lockfile(
         runtime.volume_inspect(&volume_name).await?
     };
 
-    let (state, should_finalize) = match existing {
+    let should_finalize = match existing {
         Some(vol_info) => {
             let label_state = CacheVolume::from_labels(&vol_info.name, &vol_info.labels)
                 .map(|c| c.state)
@@ -96,11 +96,11 @@ async fn setup_cache_for_lockfile(
             match resolved {
                 CacheState::Complete => {
                     debug!(
-                        "Cache hit for {} ({}), mounting read-only",
+                        "Cache hit for {} ({}), reusing complete cache",
                         info.ecosystem,
                         &info.hash[..8]
                     );
-                    (CacheState::Complete, false)
+                    false
                 }
                 CacheState::Building | CacheState::Miss => {
                     debug!(
@@ -125,7 +125,7 @@ async fn setup_cache_for_lockfile(
                             warn!("Failed to backfill sidecar for {}: {}", volume_name, e);
                         }
                     }
-                    (CacheState::Building, true)
+                    true
                 }
             }
         }
@@ -160,18 +160,13 @@ async fn setup_cache_for_lockfile(
                 None => CacheState::Building,
             };
 
-            if resolved == CacheState::Complete {
-                (CacheState::Complete, false)
-            } else {
-                (CacheState::Building, true)
-            }
+            resolved != CacheState::Complete
         }
     };
 
     let mount = CacheMount {
         volume_name,
         container_path: "/cache".to_string(),
-        readonly: state.is_readonly(),
         ecosystem: info.ecosystem,
     };
 
