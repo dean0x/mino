@@ -37,21 +37,24 @@ fi
 # Log to stderr unless quiet mode is enabled
 log() { [ -n "$MINO_QUIET_BOOTSTRAP" ] || echo "$@" >&2; }
 
-# Skip if already bootstrapped — always refresh symlinks before exiting
+# Check bootstrap state — skip skeleton if already done, but always run layer installs
+ALREADY_BOOTSTRAPPED=false
 if [ -f "$MARKER" ]; then
+    ALREADY_BOOTSTRAPPED=true
     BOOTSTRAPPED_VERSION=$(head -1 "$MARKER" 2>/dev/null || echo "")
     if [ "$BOOTSTRAPPED_VERSION" != "$IMAGE_VERSION" ]; then
         echo "Home bootstrapped with $BOOTSTRAPPED_VERSION, current image is $IMAGE_VERSION." >&2
         echo "Run 'mino cache clear --home' to reset, or ignore this message." >&2
     fi
-    refresh_tool_symlinks
-    exit 0
 fi
 
-log "Bootstrapping home directory..."
+if [ "$ALREADY_BOOTSTRAPPED" = false ]; then
+    log "Bootstrapping home directory..."
+fi
 
 # --- Step: skeleton (copy dotfiles from /etc/skel/) ---
-if [ ! -f "$STEP_DIR/skeleton" ]; then
+# Skip if already bootstrapped (image or volume has files from podman auto-copy)
+if [ "$ALREADY_BOOTSTRAPPED" = false ] && [ ! -f "$STEP_DIR/skeleton" ]; then
     for item in .oh-my-zsh .nvm .local .zshrc .zsh_history; do
         if [ ! -e "$HOME/$item" ] && [ -e "/etc/skel/$item" ]; then
             cp -a "/etc/skel/$item" "$HOME/$item" 2>/dev/null || true
