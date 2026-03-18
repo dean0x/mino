@@ -38,7 +38,7 @@ fn resolve_workdir(config_workdir: &str, project_dir: &Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("workspace");
 
-    // Block system directory names to prevent overlay
+    // Block system directory names and mino-reserved paths to prevent overlay
     const BLOCKED: &[&str] = &[
         "bin",
         "dev",
@@ -57,6 +57,7 @@ fn resolve_workdir(config_workdir: &str, project_dir: &Path) -> String {
         "var",
         "cache",
         "workspace",
+        "ssh-agent", // SSH agent socket mount point
     ];
 
     if BLOCKED.contains(&folder_name) {
@@ -314,6 +315,10 @@ mod tests {
         );
         assert_eq!(
             resolve_workdir("/workspace", Path::new("/home/dev/cache")),
+            "/workspace"
+        );
+        assert_eq!(
+            resolve_workdir("/workspace", Path::new("/home/dev/ssh-agent")),
             "/workspace"
         );
     }
