@@ -67,7 +67,7 @@ Content-addressed caching keyed by lockfile SHA256 hash.
 **States:**
 - `Miss` -> create volume, mount read-write
 - `Building` -> mount read-write (resume after crash)
-- `Complete` -> mount read-only (immutable)
+- `Complete` -> skip re-finalization, eligible for GC
 
 **Volume naming:** `mino-cache-{ecosystem}-{hash12}`
 

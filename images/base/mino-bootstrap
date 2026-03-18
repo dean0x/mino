@@ -55,7 +55,7 @@ fi
 # --- Step: skeleton (copy dotfiles from /etc/skel/) ---
 # Skip if already bootstrapped (image or volume has files from podman auto-copy)
 if [ "$ALREADY_BOOTSTRAPPED" = false ] && [ ! -f "$STEP_DIR/skeleton" ]; then
-    for item in .oh-my-zsh .nvm .local .zshrc .zsh_history; do
+    for item in .oh-my-zsh .nvm .claude .local .zshrc .zsh_history; do
         if [ ! -e "$HOME/$item" ] && [ -e "/etc/skel/$item" ]; then
             cp -a "/etc/skel/$item" "$HOME/$item" 2>/dev/null || true
         fi

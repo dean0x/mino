@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 /usr/local/bin/mino-bootstrap || true
 
-# Source nvm so node/claude/npm are on PATH for all commands (not just zsh)
+# Claude Code native install (on PATH before nvm)
+export PATH="${HOME}/.claude/bin:${PATH}"
+
+# Source nvm so node/npm are on PATH for all commands (not just zsh)
 export NVM_DIR="${HOME}/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 

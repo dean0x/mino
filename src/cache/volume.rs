@@ -89,16 +89,11 @@ pub enum CacheState {
     Miss,
     /// Volume exists but session hasn't completed cleanly
     Building,
-    /// Volume is finalized and immutable
+    /// Volume is finalized (skip re-finalization, eligible for GC)
     Complete,
 }
 
 impl CacheState {
-    /// Whether this cache should be mounted read-only
-    pub fn is_readonly(&self) -> bool {
-        matches!(self, Self::Complete)
-    }
-
     /// Parse from label value
     pub fn from_label(s: &str) -> Self {
         match s {
@@ -237,8 +232,6 @@ pub struct CacheMount {
     pub volume_name: String,
     /// Mount path inside container
     pub container_path: String,
-    /// Whether to mount read-only
-    pub readonly: bool,
     /// Ecosystem for setting env vars
     pub ecosystem: Ecosystem,
 }
@@ -246,31 +239,18 @@ pub struct CacheMount {
 impl CacheMount {
     /// Generate the volume mount string for podman
     pub fn volume_arg(&self) -> String {
-        let ro = if self.readonly { ":ro" } else { "" };
-        format!("{}:{}{}", self.volume_name, self.container_path, ro)
+        format!("{}:{}", self.volume_name, self.container_path)
     }
 }
 
 /// Determine cache mounts for a set of lockfiles
-pub fn plan_cache_mounts(
-    lockfiles: &[LockfileInfo],
-    volume_states: &HashMap<String, CacheState>,
-) -> Vec<CacheMount> {
+pub fn plan_cache_mounts(lockfiles: &[LockfileInfo]) -> Vec<CacheMount> {
     lockfiles
         .iter()
-        .map(|info| {
-            let volume_name = info.volume_name();
-            let state = volume_states
-                .get(&volume_name)
-                .copied()
-                .unwrap_or(CacheState::Miss);
-
-            CacheMount {
-                volume_name,
-                container_path: "/cache".to_string(),
-                readonly: state.is_readonly(),
-                ecosystem: info.ecosystem,
-            }
+        .map(|info| CacheMount {
+            volume_name: info.volume_name(),
+            container_path: "/cache".to_string(),
+            ecosystem: info.ecosystem,
         })
         .collect()
 }
@@ -291,13 +271,6 @@ pub async fn resolve_state(volume_name: &str, label_state: CacheState) -> CacheS
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    #[test]
-    fn cache_state_readonly() {
-        assert!(!CacheState::Miss.is_readonly());
-        assert!(!CacheState::Building.is_readonly());
-        assert!(CacheState::Complete.is_readonly());
-    }
 
     #[test]
     fn cache_state_label_roundtrip() {
@@ -370,33 +343,25 @@ mod tests {
         let mount = CacheMount {
             volume_name: "mino-cache-npm-abc123".to_string(),
             container_path: "/cache".to_string(),
-            readonly: true,
             ecosystem: Ecosystem::Npm,
         };
 
-        assert_eq!(mount.volume_arg(), "mino-cache-npm-abc123:/cache:ro");
-
-        let mount_rw = CacheMount {
-            readonly: false,
-            ..mount
-        };
-        assert_eq!(mount_rw.volume_arg(), "mino-cache-npm-abc123:/cache");
+        assert_eq!(mount.volume_arg(), "mino-cache-npm-abc123:/cache");
     }
 
     #[test]
-    fn plan_cache_mounts_miss() {
+    fn plan_cache_mounts_creates_mounts() {
         let lockfiles = vec![LockfileInfo {
             ecosystem: Ecosystem::Npm,
             path: PathBuf::from("/test/package-lock.json"),
             hash: "abc123def456".to_string(),
         }];
 
-        let states = HashMap::new(); // No existing volumes
-
-        let mounts = plan_cache_mounts(&lockfiles, &states);
+        let mounts = plan_cache_mounts(&lockfiles);
 
         assert_eq!(mounts.len(), 1);
-        assert!(!mounts[0].readonly); // Miss = read-write
+        assert_eq!(mounts[0].volume_name, "mino-cache-npm-abc123def456");
+        assert_eq!(mounts[0].container_path, "/cache");
     }
 
     #[test]
@@ -416,25 +381,5 @@ mod tests {
         assert_eq!(vol.ecosystem, Ecosystem::Uv);
         assert_eq!(vol.hash, "uvhash123456");
         assert_eq!(vol.state, CacheState::Building);
-    }
-
-    #[test]
-    fn plan_cache_mounts_complete() {
-        let lockfiles = vec![LockfileInfo {
-            ecosystem: Ecosystem::Npm,
-            path: PathBuf::from("/test/package-lock.json"),
-            hash: "abc123def456".to_string(),
-        }];
-
-        let mut states = HashMap::new();
-        states.insert(
-            "mino-cache-npm-abc123def456".to_string(),
-            CacheState::Complete,
-        );
-
-        let mounts = plan_cache_mounts(&lockfiles, &states);
-
-        assert_eq!(mounts.len(), 1);
-        assert!(mounts[0].readonly); // Complete = read-only
     }
 }

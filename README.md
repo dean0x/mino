@@ -406,7 +406,7 @@ Mino automatically caches package manager dependencies using content-addressed v
    |-------|-------|------|
    | Miss | read-write | No cache exists, creating new |
    | Building | read-write | In progress or crashed (retryable) |
-   | Complete | read-only | Finalized, immutable |
+   | Complete | read-write | Finalized, skip re-finalization |
 
 4. **Environment Variables**: Automatically configured:
    ```
@@ -419,8 +419,7 @@ Mino automatically caches package manager dependencies using content-addressed v
 
 ### Security
 
-- **Tamper-proof**: Complete caches are mounted read-only
-- **Content-addressed**: Changing dependencies = new hash = new cache
+- **Content-addressed**: Same lockfile = same cache volume; changing dependencies = new hash = new cache
 - **Isolated**: Each unique lockfile gets its own cache volume
 
 ### Cache Management

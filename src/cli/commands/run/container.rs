@@ -25,9 +25,51 @@ pub(super) struct ContainerBuildParams<'a> {
     pub home_mount: Option<String>,
 }
 
+/// Derive container workdir from project directory name.
+/// Falls back to /workspace for system dir conflicts or if user overrode the config.
+fn resolve_workdir(config_workdir: &str, project_dir: &Path) -> String {
+    // User explicitly set a custom workdir — respect it
+    if config_workdir != "/workspace" {
+        return config_workdir.to_string();
+    }
+
+    let folder_name = project_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("workspace");
+
+    // Block system directory names to prevent overlay
+    const BLOCKED: &[&str] = &[
+        "bin",
+        "dev",
+        "etc",
+        "home",
+        "lib",
+        "lib64",
+        "opt",
+        "proc",
+        "root",
+        "run",
+        "sbin",
+        "sys",
+        "tmp",
+        "usr",
+        "var",
+        "cache",
+        "workspace",
+    ];
+
+    if BLOCKED.contains(&folder_name) {
+        return "/workspace".to_string();
+    }
+
+    format!("/{folder_name}")
+}
+
 /// Build the container configuration from resolved parameters.
 pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResult<ContainerConfig> {
     let image = params.resolution.image.clone();
+    let workdir = resolve_workdir(&params.config.container.workdir, params.project_dir);
 
     let mut volumes = Vec::new();
 
@@ -36,11 +78,7 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
         volumes.push(home.clone());
     }
 
-    volumes.push(format!(
-        "{}:{}",
-        params.project_dir.display(),
-        params.config.container.workdir
-    ));
+    volumes.push(format!("{}:{}", params.project_dir.display(), workdir));
 
     volumes.extend(params.cache_mounts.iter().map(|m| m.volume_arg()));
 
@@ -67,7 +105,7 @@ pub(super) fn build_container_config(params: &ContainerBuildParams) -> MinoResul
 
     Ok(ContainerConfig {
         image,
-        workdir: params.config.container.workdir.clone(),
+        workdir,
         volumes,
         env: final_env,
         network: params.network_mode.to_podman_network().to_string(),
@@ -248,5 +286,60 @@ mod tests {
         let result = build_with_home(&args, &config, None);
         assert!(result.read_only);
         assert!(result.tmpfs.contains(&"/home/developer".to_string()));
+    }
+
+    #[test]
+    fn workdir_derived_from_project_dir() {
+        let args = test_run_args();
+        let config = Config::default();
+        let result = build_with(&args, &config);
+        // project_dir is /tmp/project → workdir should be /project
+        assert_eq!(result.workdir, "/project");
+        assert!(result.volumes.iter().any(|v| v.ends_with(":/project")));
+    }
+
+    #[test]
+    fn workdir_blocked_name_falls_back() {
+        assert_eq!(
+            resolve_workdir("/workspace", Path::new("/home/dev/bin")),
+            "/workspace"
+        );
+        assert_eq!(
+            resolve_workdir("/workspace", Path::new("/home/dev/etc")),
+            "/workspace"
+        );
+        assert_eq!(
+            resolve_workdir("/workspace", Path::new("/home/dev/tmp")),
+            "/workspace"
+        );
+        assert_eq!(
+            resolve_workdir("/workspace", Path::new("/home/dev/cache")),
+            "/workspace"
+        );
+    }
+
+    #[test]
+    fn workdir_custom_config_preserved() {
+        assert_eq!(
+            resolve_workdir("/code", Path::new("/home/dev/my-project")),
+            "/code"
+        );
+    }
+
+    #[test]
+    fn workdir_root_falls_back() {
+        assert_eq!(resolve_workdir("/workspace", Path::new("/")), "/workspace");
+    }
+
+    #[test]
+    fn workdir_normal_project_names() {
+        assert_eq!(
+            resolve_workdir("/workspace", Path::new("/home/dev/my-app")),
+            "/my-app"
+        );
+        assert_eq!(
+            resolve_workdir("/workspace", Path::new("/Users/dean/Sandbox/minotaur")),
+            "/minotaur"
+        );
     }
 }
