@@ -1143,4 +1143,113 @@ mod tests {
         let resolution = resolve_final_image("base", false);
         assert_eq!(resolution.image, LAYER_BASE_IMAGE);
     }
+
+    /// Build a `SmokeTestFixture`-equivalent with a pre-configured `MockRuntime`.
+    ///
+    /// This lets us queue error responses before wrapping the mock in `Arc`,
+    /// which is necessary because `MockRuntime::on()` takes `self` by value.
+    async fn fixture_with_mock(prefix: &str, mock: MockRuntime, shell_mode: bool) -> SmokeTestFixture {
+        let session_name = format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..8]);
+        let cleanup = SessionCleanup {
+            name: session_name.clone(),
+        };
+
+        let manager = SessionManager::new().await.unwrap();
+        let session = Session::new(
+            session_name.clone(),
+            PathBuf::from("/tmp/test-project"),
+            vec!["bash".to_string()],
+            SessionStatus::Starting,
+        );
+        manager.create(&session).await.unwrap();
+
+        let mock = Arc::new(mock);
+        let runtime: Arc<dyn ContainerRuntime> = mock.clone();
+
+        let container_config = test_container_config();
+        let command = vec!["bash".to_string()];
+        let mut config = Config::default();
+        config.general.audit_log = false;
+        config.general.update_check = false;
+        let audit = AuditLog::new(&config);
+        let ctx = UiContext::detect();
+        let spinner = TaskSpinner::new(&ctx);
+
+        SmokeTestFixture {
+            mock,
+            runtime,
+            manager,
+            session_name,
+            _cleanup: cleanup,
+            container_config,
+            command,
+            config,
+            audit,
+            spinner,
+            is_shell_mode: shell_mode,
+            shell_command: vec!["/bin/zsh".to_string()],
+            network_mode: NetworkMode::Bridge,
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn shell_start_detached_failure_cleans_up_container() {
+        let mock = MockRuntime::new()
+            .on_err(
+                "start_detached",
+                MinoError::ContainerStart("engine failure".to_string()),
+            );
+
+        let mut f = fixture_with_mock("test-shell-detach-err", mock, true).await;
+
+        let result = run_interactive_shell(&mut f.run_ctx()).await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("engine failure"),
+            "expected 'engine failure' in error, got: {}",
+            err_msg
+        );
+
+        // Should have attempted cleanup: create, start_detached (failed), remove, then record_failure
+        f.mock.assert_called("create", 1);
+        f.mock.assert_called("start_detached", 1);
+        f.mock.assert_called("remove", 1);
+
+        // Session should be marked as Failed
+        let updated = f.manager.get(&f.session_name).await.unwrap().unwrap();
+        assert_eq!(updated.status, SessionStatus::Failed);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn shell_logs_follow_until_error_propagates() {
+        let mock = MockRuntime::new()
+            .on_err(
+                "logs_follow_until",
+                MinoError::Internal("log stream broken".to_string()),
+            );
+
+        let mut f = fixture_with_mock("test-shell-logs-err", mock, true).await;
+
+        let result = run_interactive_shell(&mut f.run_ctx()).await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("log stream broken"),
+            "expected 'log stream broken' in error, got: {}",
+            err_msg
+        );
+
+        // create and start_detached succeed, logs_follow_until fails
+        f.mock.assert_called("create", 1);
+        f.mock.assert_called("start_detached", 1);
+        f.mock.assert_called("logs_follow_until", 1);
+
+        // Should NOT proceed to exec phase
+        f.mock.assert_called("exec_in_container", 0);
+    }
 }
