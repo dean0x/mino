@@ -13,7 +13,7 @@ use crate::orchestration::ContainerRuntime;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tracing::warn;
+use tracing::{debug, warn};
 
 const STATE_FILENAME: &str = "version_state.json";
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/dean0x/mino/releases/latest";
@@ -149,8 +149,17 @@ async fn save_state_to(path: &Path, state: &VersionState) {
             return;
         }
     };
-    if let Err(e) = tokio::fs::write(path, json).await {
-        warn!("Failed to write version state: {}", e);
+    // Atomic write: write to temp file then rename to avoid partial reads
+    // from concurrent mino sessions racing on the same state file.
+    let tmp_path = path.with_extension("tmp");
+    if let Err(e) = tokio::fs::write(&tmp_path, json).await {
+        warn!("Failed to write version state temp file: {}", e);
+        return;
+    }
+    if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
+        warn!("Failed to rename version state temp file: {}", e);
+        // Clean up orphaned temp file on rename failure
+        let _ = tokio::fs::remove_file(&tmp_path).await;
     }
 }
 
@@ -234,12 +243,26 @@ async fn check_for_update_inner(config: &Config, path: &Path) -> Option<UpdateIn
     if should_check_update(&state) {
         let path = path.to_path_buf();
         tokio::spawn(async move {
-            if let Ok(Ok(body)) = tokio::task::spawn_blocking(fetch_latest_release).await {
-                if let Some(latest) = parse_github_release(&body) {
+            let body = match tokio::task::spawn_blocking(fetch_latest_release).await {
+                Ok(Ok(body)) => body,
+                Ok(Err(e)) => {
+                    debug!("Background update check failed: {}", e);
+                    return;
+                }
+                Err(e) => {
+                    debug!("Background update check task panicked: {}", e);
+                    return;
+                }
+            };
+            match parse_github_release(&body) {
+                Some(latest) => {
                     let mut state = load_state_from(&path).await;
                     state.last_update_check = Some(Utc::now());
                     state.latest_available = Some(latest);
                     save_state_to(&path, &state).await;
+                }
+                None => {
+                    debug!("Background update check: failed to parse release response");
                 }
             }
         });
