@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::error::MinoResult;
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, UiContext};
-use console::{pad_str, Alignment, style};
+use console::{pad_str, style, Alignment};
 
 /// Execute the list command
 pub async fn execute(args: ListArgs, _config: &Config) -> MinoResult<()> {
@@ -74,12 +74,35 @@ fn print_table(sessions: &[Session]) {
 
     println!(
         "{} {} {} {}",
-        pad_str(&style("NAME").bold().to_string(), W_NAME, Alignment::Left, None),
-        pad_str(&style("STATUS").bold().to_string(), W_STATUS, Alignment::Left, None),
-        pad_str(&style("STARTED").bold().to_string(), W_STARTED, Alignment::Left, None),
-        pad_str(&style("PROJECT").bold().to_string(), W_PROJECT, Alignment::Left, None),
+        pad_str(
+            &style("NAME").bold().to_string(),
+            W_NAME,
+            Alignment::Left,
+            None
+        ),
+        pad_str(
+            &style("STATUS").bold().to_string(),
+            W_STATUS,
+            Alignment::Left,
+            None
+        ),
+        pad_str(
+            &style("STARTED").bold().to_string(),
+            W_STARTED,
+            Alignment::Left,
+            None
+        ),
+        pad_str(
+            &style("PROJECT").bold().to_string(),
+            W_PROJECT,
+            Alignment::Left,
+            None
+        ),
     );
-    println!("{}", "-".repeat(W_NAME + 1 + W_STATUS + 1 + W_STARTED + 1 + W_PROJECT));
+    println!(
+        "{}",
+        "-".repeat(W_NAME + 1 + W_STATUS + 1 + W_STARTED + 1 + W_PROJECT)
+    );
 
     for session in sessions {
         let status_styled = match session.status {

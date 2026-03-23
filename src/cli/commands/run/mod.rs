@@ -546,11 +546,12 @@ async fn run_interactive_shell(ctx: &mut RunContext<'_>) -> MinoResult<i32> {
     // When NetworkMode::Allow is active, the container has CAP_NET_ADMIN for
     // iptables setup in phase 1. Drop it before handing control to the user
     // shell to prevent `iptables -F` from bypassing the firewall rules.
-    let exec_command = if let NetworkMode::Allow(_) = ctx.network_mode {
-        let mut escaped_args = String::new();
-        for arg in &ctx.shell_command {
-            escaped_args.push_str(&format!(" '{}'", shell_escape(arg)));
-        }
+    let exec_command = if matches!(ctx.network_mode, NetworkMode::Allow(_)) {
+        let escaped_args: String = ctx
+            .shell_command
+            .iter()
+            .map(|arg| format!(" '{}'", shell_escape(arg)))
+            .collect();
         vec![
             "/bin/sh".to_string(),
             "-c".to_string(),
@@ -1144,64 +1145,65 @@ mod tests {
         assert_eq!(resolution.image, LAYER_BASE_IMAGE);
     }
 
-    /// Build a `SmokeTestFixture`-equivalent with a pre-configured `MockRuntime`.
-    ///
-    /// This lets us queue error responses before wrapping the mock in `Arc`,
-    /// which is necessary because `MockRuntime::on()` takes `self` by value.
-    async fn fixture_with_mock(prefix: &str, mock: MockRuntime, shell_mode: bool) -> SmokeTestFixture {
-        let session_name = format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..8]);
-        let cleanup = SessionCleanup {
-            name: session_name.clone(),
-        };
+    impl SmokeTestFixture {
+        /// Build a fixture with a pre-configured `MockRuntime`.
+        ///
+        /// This lets us queue error responses before wrapping the mock in `Arc`,
+        /// which is necessary because `MockRuntime::on()` takes `self` by value.
+        async fn with_mock(prefix: &str, mock: MockRuntime, shell_mode: bool) -> Self {
+            let session_name = format!("{}-{}", prefix, &Uuid::new_v4().to_string()[..8]);
+            let cleanup = SessionCleanup {
+                name: session_name.clone(),
+            };
 
-        let manager = SessionManager::new().await.unwrap();
-        let session = Session::new(
-            session_name.clone(),
-            PathBuf::from("/tmp/test-project"),
-            vec!["bash".to_string()],
-            SessionStatus::Starting,
-        );
-        manager.create(&session).await.unwrap();
+            let manager = SessionManager::new().await.unwrap();
+            let session = Session::new(
+                session_name.clone(),
+                PathBuf::from("/tmp/test-project"),
+                vec!["bash".to_string()],
+                SessionStatus::Starting,
+            );
+            manager.create(&session).await.unwrap();
 
-        let mock = Arc::new(mock);
-        let runtime: Arc<dyn ContainerRuntime> = mock.clone();
+            let mock = Arc::new(mock);
+            let runtime: Arc<dyn ContainerRuntime> = mock.clone();
 
-        let container_config = test_container_config();
-        let command = vec!["bash".to_string()];
-        let mut config = Config::default();
-        config.general.audit_log = false;
-        config.general.update_check = false;
-        let audit = AuditLog::new(&config);
-        let ctx = UiContext::detect();
-        let spinner = TaskSpinner::new(&ctx);
+            let container_config = test_container_config();
+            let command = vec!["bash".to_string()];
+            let mut config = Config::default();
+            config.general.audit_log = false;
+            config.general.update_check = false;
+            let audit = AuditLog::new(&config);
+            let ctx = UiContext::detect();
+            let spinner = TaskSpinner::new(&ctx);
 
-        SmokeTestFixture {
-            mock,
-            runtime,
-            manager,
-            session_name,
-            _cleanup: cleanup,
-            container_config,
-            command,
-            config,
-            audit,
-            spinner,
-            is_shell_mode: shell_mode,
-            shell_command: vec!["/bin/zsh".to_string()],
-            network_mode: NetworkMode::Bridge,
+            Self {
+                mock,
+                runtime,
+                manager,
+                session_name,
+                _cleanup: cleanup,
+                container_config,
+                command,
+                config,
+                audit,
+                spinner,
+                is_shell_mode: shell_mode,
+                shell_command: vec!["/bin/zsh".to_string()],
+                network_mode: NetworkMode::Bridge,
+            }
         }
     }
 
     #[tokio::test]
     #[serial]
     async fn shell_start_detached_failure_cleans_up_container() {
-        let mock = MockRuntime::new()
-            .on_err(
-                "start_detached",
-                MinoError::ContainerStart("engine failure".to_string()),
-            );
+        let mock = MockRuntime::new().on_err(
+            "start_detached",
+            MinoError::ContainerStart("engine failure".to_string()),
+        );
 
-        let mut f = fixture_with_mock("test-shell-detach-err", mock, true).await;
+        let mut f = SmokeTestFixture::with_mock("test-shell-detach-err", mock, true).await;
 
         let result = run_interactive_shell(&mut f.run_ctx()).await;
 
@@ -1226,13 +1228,12 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn shell_logs_follow_until_error_propagates() {
-        let mock = MockRuntime::new()
-            .on_err(
-                "logs_follow_until",
-                MinoError::Internal("log stream broken".to_string()),
-            );
+        let mock = MockRuntime::new().on_err(
+            "logs_follow_until",
+            MinoError::Internal("log stream broken".to_string()),
+        );
 
-        let mut f = fixture_with_mock("test-shell-logs-err", mock, true).await;
+        let mut f = SmokeTestFixture::with_mock("test-shell-logs-err", mock, true).await;
 
         let result = run_interactive_shell(&mut f.run_ctx()).await;
 

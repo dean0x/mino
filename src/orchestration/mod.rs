@@ -250,6 +250,7 @@ pub(crate) fn parse_volume_inspect_json(
 mod tests {
     use super::*;
     use crate::error::MinoError;
+    use std::sync::{Arc, Mutex};
 
     // -- parse_du_bytes --
 
@@ -546,23 +547,32 @@ mod tests {
 
     // -- follow_until_marker --
 
-    #[tokio::test]
-    async fn follow_until_marker_found_on_stdout() {
-        use tokio::process::Command;
-
-        let mut child = Command::new("sh")
+    /// Spawn a child process with piped stdout/stderr for marker tests.
+    fn spawn_marker_test(script: &str) -> tokio::process::Child {
+        tokio::process::Command::new("sh")
             .arg("-c")
-            .arg("echo 'line one'; echo 'READY_MARKER'; echo 'line three'")
+            .arg(script)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .expect("failed to spawn");
+            .expect("failed to spawn")
+    }
 
-        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    /// Create a line-collecting callback for marker tests.
+    fn collecting_callback() -> (impl Fn(String) + Send + Sync, Arc<Mutex<Vec<String>>>) {
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
         let lines_clone = lines.clone();
         let on_line = move |line: String| {
             lines_clone.lock().unwrap().push(line);
         };
+        (on_line, lines)
+    }
+
+    #[tokio::test]
+    async fn follow_until_marker_found_on_stdout() {
+        let mut child =
+            spawn_marker_test("echo 'line one'; echo 'READY_MARKER'; echo 'line three'");
+        let (on_line, lines) = collecting_callback();
 
         let found = follow_until_marker(
             &mut child,
@@ -582,15 +592,7 @@ mod tests {
 
     #[tokio::test]
     async fn follow_until_marker_found_on_stderr() {
-        use tokio::process::Command;
-
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("echo 'stderr READY_MARKER' >&2")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("failed to spawn");
+        let mut child = spawn_marker_test("echo 'stderr READY_MARKER' >&2");
 
         let found = follow_until_marker(
             &mut child,
@@ -605,10 +607,8 @@ mod tests {
 
     #[tokio::test]
     async fn follow_until_marker_timeout_when_not_found() {
-        use tokio::process::Command;
-
         // sleep 60 will never produce the marker, so we expect a timeout
-        let mut child = Command::new("sleep")
+        let mut child = tokio::process::Command::new("sleep")
             .arg("60")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -628,22 +628,8 @@ mod tests {
 
     #[tokio::test]
     async fn follow_until_marker_eof_without_marker() {
-        use tokio::process::Command;
-
-        // Process exits quickly without printing the marker
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("echo 'no marker here'; echo 'still no marker'")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("failed to spawn");
-
-        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let lines_clone = lines.clone();
-        let on_line = move |line: String| {
-            lines_clone.lock().unwrap().push(line);
-        };
+        let mut child = spawn_marker_test("echo 'no marker here'; echo 'still no marker'");
+        let (on_line, lines) = collecting_callback();
 
         let found = follow_until_marker(
             &mut child,
@@ -653,7 +639,10 @@ mod tests {
         )
         .await;
 
-        assert!(!found, "should return false when EOF reached without marker");
+        assert!(
+            !found,
+            "should return false when EOF reached without marker"
+        );
         let captured = lines.lock().unwrap();
         assert_eq!(captured.len(), 2, "should have captured both output lines");
     }

@@ -12,7 +12,7 @@ use crate::home::HomeVolume;
 use crate::orchestration::{create_runtime, ContainerRuntime};
 use crate::ui::{self, UiContext};
 use chrono::Utc;
-use console::{pad_str, Alignment, style};
+use console::{pad_str, style, Alignment};
 use std::env;
 use std::path::PathBuf;
 use tracing::debug;
@@ -118,7 +118,10 @@ fn print_cache_table(caches: &[(CacheVolume, u64)], total_size: u64, limit_bytes
         pad_str("SIZE", W_SIZE, Alignment::Left, None),
         pad_str("CREATED", W_CREATED, Alignment::Left, None),
     );
-    println!("{}", "-".repeat(W_VOLUME + 1 + W_ECO + 1 + W_STATE + 1 + W_SIZE + 1 + W_CREATED));
+    println!(
+        "{}",
+        "-".repeat(W_VOLUME + 1 + W_ECO + 1 + W_STATE + 1 + W_SIZE + 1 + W_CREATED)
+    );
 
     for (cache, size) in caches {
         let state_display = match cache.state {

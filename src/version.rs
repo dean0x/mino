@@ -247,8 +247,12 @@ async fn load_cached_update_inner(config: &Config, path: &Path) -> Option<Update
     }
 
     let state = load_state_from(path).await;
-    let current = env!("CARGO_PKG_VERSION");
+    cached_update_from_state(&state)
+}
 
+/// Build an `UpdateInfo` from cached state if a newer version is available.
+fn cached_update_from_state(state: &VersionState) -> Option<UpdateInfo> {
+    let current = env!("CARGO_PKG_VERSION");
     let latest = state.latest_available.as_deref()?;
     if is_newer_version(latest, current) {
         Some(UpdateInfo {
@@ -266,7 +270,6 @@ async fn check_for_update_inner(config: &Config, path: &Path) -> Option<UpdateIn
     }
 
     let state = load_state_from(path).await;
-    let current = env!("CARGO_PKG_VERSION");
 
     // Background refresh if cache is stale (fire-and-forget)
     if should_check_update(&state) {
@@ -298,15 +301,7 @@ async fn check_for_update_inner(config: &Config, path: &Path) -> Option<UpdateIn
     }
 
     // Always use cached result (instant, zero latency)
-    let latest = state.latest_available.as_deref()?;
-    if is_newer_version(latest, current) {
-        Some(UpdateInfo {
-            latest: latest.to_string(),
-            current: current.to_string(),
-        })
-    } else {
-        None
-    }
+    cached_update_from_state(&state)
 }
 
 fn fetch_latest_release() -> Result<String, String> {
