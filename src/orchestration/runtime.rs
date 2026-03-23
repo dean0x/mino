@@ -125,4 +125,19 @@ pub trait ContainerRuntime: Send + Sync {
     /// the exit code. Returns `None` if the exit code cannot be determined
     /// (e.g. the container was already removed).
     async fn get_container_exit_code(&self, container_id: &str) -> MinoResult<Option<i32>>;
+
+    /// Start a created container in detached mode.
+    async fn start_detached(&self, container_id: &str) -> MinoResult<()>;
+
+    /// Follow container logs until a marker string is found or timeout expires.
+    ///
+    /// Calls `on_line` for each log line received. Returns `true` if the marker
+    /// was found, `false` on timeout.
+    async fn logs_follow_until(
+        &self,
+        container_id: &str,
+        marker: &str,
+        timeout: std::time::Duration,
+        on_line: &(dyn Fn(String) + Send + Sync),
+    ) -> MinoResult<bool>;
 }

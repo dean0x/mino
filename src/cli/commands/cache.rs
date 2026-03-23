@@ -12,7 +12,7 @@ use crate::home::HomeVolume;
 use crate::orchestration::{create_runtime, ContainerRuntime};
 use crate::ui::{self, UiContext};
 use chrono::Utc;
-use console::style;
+use console::{pad_str, style, Alignment};
 use std::env;
 use std::path::PathBuf;
 use tracing::debug;
@@ -100,15 +100,28 @@ async fn list_caches(
 }
 
 fn print_cache_table(caches: &[(CacheVolume, u64)], total_size: u64, limit_bytes: u64) {
+    const W_VOLUME: usize = 40;
+    const W_ECO: usize = 10;
+    const W_STATE: usize = 10;
+    const W_SIZE: usize = 10;
+    const W_CREATED: usize = 16;
+
     let ctx = UiContext::detect();
 
     ui::intro(&ctx, "Cache Volumes");
 
     println!(
-        "{:<40} {:<10} {:<10} {:<10} {:<16}",
-        "VOLUME", "ECOSYSTEM", "STATE", "SIZE", "CREATED"
+        "{} {} {} {} {}",
+        pad_str("VOLUME", W_VOLUME, Alignment::Left, None),
+        pad_str("ECOSYSTEM", W_ECO, Alignment::Left, None),
+        pad_str("STATE", W_STATE, Alignment::Left, None),
+        pad_str("SIZE", W_SIZE, Alignment::Left, None),
+        pad_str("CREATED", W_CREATED, Alignment::Left, None),
     );
-    println!("{}", "-".repeat(90));
+    println!(
+        "{}",
+        "-".repeat(W_VOLUME + 1 + W_ECO + 1 + W_STATE + 1 + W_SIZE + 1 + W_CREATED)
+    );
 
     for (cache, size) in caches {
         let state_display = match cache.state {
@@ -126,8 +139,12 @@ fn print_cache_table(caches: &[(CacheVolume, u64)], total_size: u64, limit_bytes
         let created = cache.created_at.format("%Y-%m-%d %H:%M").to_string();
 
         println!(
-            "{:<40} {:<10} {:<10} {:<10} {:<16}",
-            cache.name, cache.ecosystem, state_display, size_display, created
+            "{} {} {} {} {}",
+            pad_str(&cache.name, W_VOLUME, Alignment::Left, None),
+            pad_str(&cache.ecosystem.to_string(), W_ECO, Alignment::Left, None),
+            pad_str(&state_display, W_STATE, Alignment::Left, None),
+            pad_str(&size_display, W_SIZE, Alignment::Left, None),
+            pad_str(&created, W_CREATED, Alignment::Left, None),
         );
     }
 
@@ -162,16 +179,30 @@ fn print_cache_table(caches: &[(CacheVolume, u64)], total_size: u64, limit_bytes
 }
 
 fn print_home_table(home_vols: &[HomeVolume]) {
+    const W_VOLUME: usize = 40;
+    const W_PROJECT: usize = 40;
+    const W_CREATED: usize = 16;
+
     let ctx = UiContext::detect();
 
     ui::intro(&ctx, "Home Volumes");
 
-    println!("{:<40} {:<40} {:<16}", "VOLUME", "PROJECT", "CREATED");
-    println!("{}", "-".repeat(96));
+    println!(
+        "{} {} {}",
+        pad_str("VOLUME", W_VOLUME, Alignment::Left, None),
+        pad_str("PROJECT", W_PROJECT, Alignment::Left, None),
+        pad_str("CREATED", W_CREATED, Alignment::Left, None),
+    );
+    println!("{}", "-".repeat(W_VOLUME + 1 + W_PROJECT + 1 + W_CREATED));
 
     for hv in home_vols {
         let created = hv.created_at.format("%Y-%m-%d %H:%M").to_string();
-        println!("{:<40} {:<40} {:<16}", hv.name, hv.project_path, created);
+        println!(
+            "{} {} {}",
+            pad_str(&hv.name, W_VOLUME, Alignment::Left, None),
+            pad_str(&hv.project_path, W_PROJECT, Alignment::Left, Some("...")),
+            pad_str(&created, W_CREATED, Alignment::Left, None),
+        );
     }
 
     println!();
