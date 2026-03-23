@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-03-24
+
+### Added
+
+- Two-phase bootstrap for interactive shells — container starts with a spinner while monitoring bootstrap progress, then execs into the shell. Replaces streaming bootstrap output with a clean UX.
+- Fire-and-forget background update check — non-blocking HTTP check that caches result for exit notification (zero startup latency).
+
+### Fixed
+
+- ANSI-aware table column alignment in `mino cache list` and `mino list` — colored/bold text no longer shifts columns right.
+- `CAP_NET_ADMIN` dropped in exec phase for `--network-allow` mode — prevents users from bypassing firewall rules.
+- Zombie processes properly reaped in `follow_until_marker` after `child.kill()`.
+- Version state file writes are now atomic (write-to-temp-then-rename) to prevent corruption from concurrent sessions.
+- Bootstrap log path uses `mktemp` instead of predictable `/tmp/mino-bootstrap.log`.
+
+### Changed
+
+- Shell command resolution deduplicated — computed once and reused for both container start and exec phases.
+- Background update check now logs errors at `debug!` level instead of silently swallowing failures.
+
 ## [1.5.1] - 2026-03-18
 
 ### Fixed
@@ -166,6 +186,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
+[1.6.0]: https://github.com/dean0x/mino/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/dean0x/mino/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/dean0x/mino/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/dean0x/mino/compare/v1.4.0...v1.4.1

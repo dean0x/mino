@@ -1,6 +1,6 @@
 {
   "name": "@dean0x/mino-linux-arm64",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Mino binary for Linux ARM64",
   "license": "MIT",
   "repository": {
