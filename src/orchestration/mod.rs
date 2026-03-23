@@ -117,6 +117,7 @@ pub(crate) async fn follow_until_marker(
             _ = &mut sleep => {
                 // Timeout — kill the logs process
                 let _ = child.kill().await;
+                let _ = child.wait().await; // reap to avoid zombie
                 break;
             }
             result = stderr_reader.next_line(), if !stderr_done => {
@@ -147,6 +148,7 @@ pub(crate) async fn follow_until_marker(
     if found {
         // Marker found — kill the tailing process (we don't need more logs)
         let _ = child.kill().await;
+        let _ = child.wait().await; // reap to avoid zombie
     }
 
     found
@@ -540,5 +542,119 @@ mod tests {
         let result = parse_volume_inspect_json(json, "vol").unwrap().unwrap();
         assert_eq!(result.labels.len(), 1);
         assert_eq!(result.labels["valid"], "yes");
+    }
+
+    // -- follow_until_marker --
+
+    #[tokio::test]
+    async fn follow_until_marker_found_on_stdout() {
+        use tokio::process::Command;
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("echo 'line one'; echo 'READY_MARKER'; echo 'line three'")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn");
+
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let lines_clone = lines.clone();
+        let on_line = move |line: String| {
+            lines_clone.lock().unwrap().push(line);
+        };
+
+        let found = follow_until_marker(
+            &mut child,
+            "READY_MARKER",
+            std::time::Duration::from_secs(5),
+            &on_line,
+        )
+        .await;
+
+        assert!(found, "marker should have been found");
+        let captured = lines.lock().unwrap();
+        assert!(
+            captured.iter().any(|l| l.contains("READY_MARKER")),
+            "captured lines should include the marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_until_marker_found_on_stderr() {
+        use tokio::process::Command;
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("echo 'stderr READY_MARKER' >&2")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn");
+
+        let found = follow_until_marker(
+            &mut child,
+            "READY_MARKER",
+            std::time::Duration::from_secs(5),
+            &|_| {},
+        )
+        .await;
+
+        assert!(found, "marker should have been found on stderr");
+    }
+
+    #[tokio::test]
+    async fn follow_until_marker_timeout_when_not_found() {
+        use tokio::process::Command;
+
+        // sleep 60 will never produce the marker, so we expect a timeout
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn");
+
+        let found = follow_until_marker(
+            &mut child,
+            "NEVER_APPEARS",
+            std::time::Duration::from_millis(100),
+            &|_| {},
+        )
+        .await;
+
+        assert!(!found, "should return false on timeout");
+    }
+
+    #[tokio::test]
+    async fn follow_until_marker_eof_without_marker() {
+        use tokio::process::Command;
+
+        // Process exits quickly without printing the marker
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("echo 'no marker here'; echo 'still no marker'")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn");
+
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let lines_clone = lines.clone();
+        let on_line = move |line: String| {
+            lines_clone.lock().unwrap().push(line);
+        };
+
+        let found = follow_until_marker(
+            &mut child,
+            "MISSING_MARKER",
+            std::time::Duration::from_secs(5),
+            &on_line,
+        )
+        .await;
+
+        assert!(!found, "should return false when EOF reached without marker");
+        let captured = lines.lock().unwrap();
+        assert_eq!(captured.len(), 2, "should have captured both output lines");
     }
 }
