@@ -18,7 +18,8 @@ use crate::cli::args::RunArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::network::{
-    generate_iptables_wrapper, resolve_network_mode, NetworkMode, NetworkResolutionInput,
+    generate_iptables_wrapper, resolve_network_mode, shell_escape, NetworkMode,
+    NetworkResolutionInput,
 };
 use crate::orchestration::{create_runtime, ContainerConfig, ContainerRuntime, Platform};
 use crate::session::{Session, SessionManager, SessionStatus};
@@ -197,7 +198,7 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     }
 
     // Layers compose on mino-base which has Oh My Zsh configured
-    let command = if args.command.is_empty() {
+    let shell_command = if args.command.is_empty() {
         if using_layers {
             vec!["/bin/zsh".to_string()]
         } else {
@@ -208,10 +209,12 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     };
 
     let command = if let NetworkMode::Allow(ref rules) = network_mode {
-        generate_iptables_wrapper(rules, &command)
+        generate_iptables_wrapper(rules, &shell_command)
     } else {
-        command
+        shell_command.clone()
     };
+
+    let is_shell_mode = args.command.is_empty();
 
     let mut session = Session::new(
         session_name.clone(),
@@ -259,17 +262,6 @@ pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
     } else {
         spinner.message("Starting container...");
     }
-
-    let is_shell_mode = args.command.is_empty();
-    let shell_command = if is_shell_mode {
-        if using_layers {
-            vec!["/bin/zsh".to_string()]
-        } else {
-            vec![config.session.shell.clone()]
-        }
-    } else {
-        vec![]
-    };
 
     let mut run_ctx = RunContext {
         runtime: &runtime,
@@ -416,7 +408,7 @@ async fn run_detached(ctx: &mut RunContext<'_>, cache_session: CacheSession) -> 
 /// shell mode, or the existing `start_attached` flow for explicit commands.
 async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) -> MinoResult<()> {
     let exit_code = if ctx.is_shell_mode {
-        run_interactive_shell(ctx, &cache_session).await?
+        run_interactive_shell(ctx).await?
     } else {
         run_interactive_command(ctx).await?
     };
@@ -451,7 +443,7 @@ async fn run_interactive(ctx: &mut RunContext<'_>, cache_session: CacheSession) 
 
     // Show update notification on exit (reads cached state from disk, picks up
     // any background refresh that completed during this session)
-    if let Some(update) = crate::version::check_for_update(ctx.config).await {
+    if let Some(update) = crate::version::load_cached_update(ctx.config).await {
         let method = crate::version::detect_install_method();
         let hint = crate::version::update_hint(&method);
         println!(
@@ -502,10 +494,7 @@ async fn run_interactive_command(ctx: &mut RunContext<'_>) -> MinoResult<i32> {
 /// Instead, bootstrap output goes to a log file inside the container, and we
 /// show a spinner while monitoring `podman logs -f` for the "Bootstrap complete."
 /// marker.
-async fn run_interactive_shell(
-    ctx: &mut RunContext<'_>,
-    _cache_session: &CacheSession,
-) -> MinoResult<i32> {
+async fn run_interactive_shell(ctx: &mut RunContext<'_>) -> MinoResult<i32> {
     // Phase 1: Create container with sleep infinity
     let sleep_command = vec!["sleep".to_string(), "infinity".to_string()];
     let phase1_command = if let NetworkMode::Allow(ref rules) = ctx.network_mode {
@@ -554,19 +543,39 @@ async fn run_interactive_shell(
     ctx.spinner.clear();
 
     // Phase 2: Exec interactive shell
+    // When NetworkMode::Allow is active, the container has CAP_NET_ADMIN for
+    // iptables setup in phase 1. Drop it before handing control to the user
+    // shell to prevent `iptables -F` from bypassing the firewall rules.
+    let exec_command = if let NetworkMode::Allow(_) = ctx.network_mode {
+        let mut escaped_args = String::new();
+        for arg in &ctx.shell_command {
+            escaped_args.push_str(&format!(" '{}'", shell_escape(arg)));
+        }
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            format!(
+                "if command -v capsh >/dev/null 2>&1; then exec capsh --drop=cap_net_admin -- -c 'exec \"$@\"' --{}; \
+                 else echo 'mino: capsh not found. Cannot drop CAP_NET_ADMIN -- network allowlist is bypassable without it.' >&2; exit 1; fi",
+                escaped_args
+            ),
+        ]
+    } else {
+        ctx.shell_command.clone()
+    };
     debug!(
         "Exec into container {}: {:?}",
         &container_id[..12],
-        ctx.shell_command
+        exec_command
     );
     let exit_code = ctx
         .runtime
-        .exec_in_container(&container_id, &ctx.shell_command, true)
+        .exec_in_container(&container_id, &exec_command, true)
         .await?;
 
     // Stop the sleep infinity process
     if let Err(e) = ctx.runtime.stop(&container_id).await {
-        debug!("Stop after exec: {}", e);
+        warn!("Failed to stop container {}: {}", &container_id[..12], e);
     }
 
     // Remove container

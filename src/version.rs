@@ -231,6 +231,35 @@ pub async fn check_for_update(config: &Config) -> Option<UpdateInfo> {
     check_for_update_inner(config, &state_path()).await
 }
 
+/// Load cached update info without triggering a background refresh.
+///
+/// Reads the persisted version state and returns `Some(UpdateInfo)` if the
+/// cached `latest_available` is newer than the running binary. Unlike
+/// `check_for_update`, this never spawns an HTTP request -- ideal for exit
+/// notifications where we just want to surface any result cached earlier.
+pub async fn load_cached_update(config: &Config) -> Option<UpdateInfo> {
+    load_cached_update_inner(config, &state_path()).await
+}
+
+async fn load_cached_update_inner(config: &Config, path: &Path) -> Option<UpdateInfo> {
+    if !config.general.update_check {
+        return None;
+    }
+
+    let state = load_state_from(path).await;
+    let current = env!("CARGO_PKG_VERSION");
+
+    let latest = state.latest_available.as_deref()?;
+    if is_newer_version(latest, current) {
+        Some(UpdateInfo {
+            latest: latest.to_string(),
+            current: current.to_string(),
+        })
+    } else {
+        None
+    }
+}
+
 async fn check_for_update_inner(config: &Config, path: &Path) -> Option<UpdateInfo> {
     if !config.general.update_check {
         return None;
