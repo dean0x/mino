@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::error::MinoResult;
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, UiContext};
-use console::style;
+use console::{pad_str, Alignment, style};
 
 /// Execute the list command
 pub async fn execute(args: ListArgs, _config: &Config) -> MinoResult<()> {
@@ -64,24 +64,29 @@ fn format_plain(sessions: &[Session]) -> String {
 }
 
 fn print_table(sessions: &[Session]) {
+    const W_NAME: usize = 20;
+    const W_STATUS: usize = 12;
+    const W_STARTED: usize = 15;
+    const W_PROJECT: usize = 30;
+
     let ctx = UiContext::detect();
     ui::intro(&ctx, "Sessions");
 
     println!(
-        "{:<20} {:<12} {:<15} {:<30}",
-        style("NAME").bold(),
-        style("STATUS").bold(),
-        style("STARTED").bold(),
-        style("PROJECT").bold()
+        "{} {} {} {}",
+        pad_str(&style("NAME").bold().to_string(), W_NAME, Alignment::Left, None),
+        pad_str(&style("STATUS").bold().to_string(), W_STATUS, Alignment::Left, None),
+        pad_str(&style("STARTED").bold().to_string(), W_STARTED, Alignment::Left, None),
+        pad_str(&style("PROJECT").bold().to_string(), W_PROJECT, Alignment::Left, None),
     );
-    println!("{}", "-".repeat(77));
+    println!("{}", "-".repeat(W_NAME + 1 + W_STATUS + 1 + W_STARTED + 1 + W_PROJECT));
 
     for session in sessions {
         let status_styled = match session.status {
-            SessionStatus::Running => style("running").green(),
-            SessionStatus::Starting => style("starting").yellow(),
-            SessionStatus::Stopped => style("stopped").dim(),
-            SessionStatus::Failed => style("failed").red(),
+            SessionStatus::Running => style("running").green().to_string(),
+            SessionStatus::Starting => style("starting").yellow().to_string(),
+            SessionStatus::Stopped => style("stopped").dim().to_string(),
+            SessionStatus::Failed => style("failed").red().to_string(),
         };
 
         let started = session.created_at.format("%Y-%m-%d %H:%M").to_string();
@@ -92,8 +97,11 @@ fn print_table(sessions: &[Session]) {
             .unwrap_or("unknown");
 
         println!(
-            "{:<20} {:<12} {:<15} {:<30}",
-            session.name, status_styled, started, project
+            "{} {} {} {}",
+            pad_str(&session.name, W_NAME, Alignment::Left, None),
+            pad_str(&status_styled, W_STATUS, Alignment::Left, None),
+            pad_str(&started, W_STARTED, Alignment::Left, None),
+            pad_str(project, W_PROJECT, Alignment::Left, None),
         );
     }
 
