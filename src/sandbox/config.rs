@@ -65,7 +65,7 @@ impl Default for SandboxConfig {
             max_processes: 256,
             max_cpu_seconds: 0,
             max_file_size_mb: 0,
-            sandbox_user: "mino-sandbox".to_string(),
+            sandbox_user: "_mino_agent".to_string(),
             cache_mode: "read-only".to_string(),
             passthrough_paths: vec![],
             writable_paths: vec![],
@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(config.max_processes, 256);
         assert_eq!(config.max_cpu_seconds, 0);
         assert_eq!(config.max_file_size_mb, 0);
-        assert_eq!(config.sandbox_user, "mino-sandbox");
+        assert_eq!(config.sandbox_user, "_mino_agent");
         assert_eq!(config.cache_mode, "read-only");
         assert!(config.passthrough_paths.is_empty());
         assert!(config.writable_paths.is_empty());

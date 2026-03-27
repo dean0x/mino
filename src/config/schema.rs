@@ -400,7 +400,7 @@ mod tests {
     fn config_sandbox_defaults() {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.sandbox.max_memory_mb, 4096);
-        assert_eq!(config.sandbox.sandbox_user, "mino-sandbox");
+        assert_eq!(config.sandbox.sandbox_user, "_mino_agent");
     }
 
     #[test]

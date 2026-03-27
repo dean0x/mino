@@ -6,9 +6,9 @@
 //! - Managing pf (packet filter) firewall rules
 //! - Setting up filesystem jails
 //!
-//! Real implementation comes in a later phase.
+//! TODO(Phase 4): Real implementation — ACL management, pf rules, process spawning as _mino_agent.
 
 fn main() {
-    eprintln!("mino-sandbox-helper: not yet implemented");
+    eprintln!("mino-sandbox-helper: not yet implemented. Run `mino setup --native` first.");
     std::process::exit(1);
 }
