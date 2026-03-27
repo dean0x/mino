@@ -235,19 +235,27 @@ async fn handle_socks5(
         return Err(MinoError::NetworkProxy("Invalid SOCKS5 greeting".into()));
     }
 
+    let nmethods = buf[1] as usize;
+    if n < 2 + nmethods {
+        return Err(MinoError::NetworkProxy(
+            "Incomplete SOCKS5 greeting: NMETHODS field exceeds received bytes".into(),
+        ));
+    }
+
     // Reply: no authentication required (method 0x00)
     stream
         .write_all(&[0x05, 0x00])
         .await
         .map_err(|e| MinoError::NetworkProxy(format!("SOCKS5 write error: {e}")))?;
 
-    // --- Request phase ---
+    // --- Request phase (fresh buffer to avoid leftover greeting bytes) ---
+    let mut req_buf = [0u8; 258];
     let n = stream
-        .read(&mut buf)
+        .read(&mut req_buf)
         .await
         .map_err(|e| MinoError::NetworkProxy(format!("SOCKS5 read error: {e}")))?;
 
-    if n < 4 || buf[0] != 0x05 || buf[1] != 0x01 {
+    if n < 4 || req_buf[0] != 0x05 || req_buf[1] != 0x01 {
         // Not a CONNECT command — reply "command not supported"
         stream
             .write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
@@ -258,7 +266,7 @@ async fn handle_socks5(
         ));
     }
 
-    let (host, port) = parse_socks5_address(&buf[..n])?;
+    let (host, port) = parse_socks5_address(&req_buf[..n])?;
     validate_hostname(&host)?;
 
     // --- Policy check ---
@@ -1011,14 +1019,14 @@ mod tests {
 
     #[test]
     fn max_request_size_is_reasonable() {
-        assert!(MAX_REQUEST_SIZE >= 1024);
-        assert!(MAX_REQUEST_SIZE <= 65536);
+        const { assert!(MAX_REQUEST_SIZE >= 1024) };
+        const { assert!(MAX_REQUEST_SIZE <= 65536) };
     }
 
     #[test]
     fn max_concurrent_connections_is_reasonable() {
-        assert!(MAX_CONCURRENT_CONNECTIONS >= 16);
-        assert!(MAX_CONCURRENT_CONNECTIONS <= 4096);
+        const { assert!(MAX_CONCURRENT_CONNECTIONS >= 16) };
+        const { assert!(MAX_CONCURRENT_CONNECTIONS <= 4096) };
     }
 
     #[test]
