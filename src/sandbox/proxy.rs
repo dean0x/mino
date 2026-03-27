@@ -220,9 +220,7 @@ async fn handle_socks5(mut stream: TcpStream, rules: &[NetworkRule]) -> MinoResu
 /// Address type is at byte 3: 0x01 (IPv4), 0x03 (domain), 0x04 (IPv6).
 fn parse_socks5_address(buf: &[u8]) -> MinoResult<(String, u16)> {
     if buf.len() < 4 {
-        return Err(MinoError::NetworkProxy(
-            "SOCKS5 request too short".into(),
-        ));
+        return Err(MinoError::NetworkProxy("SOCKS5 request too short".into()));
     }
 
     match buf[3] {
@@ -305,10 +303,7 @@ fn build_socks5_success_reply(target: &TcpStream) -> Vec<u8> {
 ///
 /// Reads the first line to extract host:port, checks the allowlist,
 /// and if permitted establishes a bidirectional relay.
-async fn handle_http_connect(
-    mut stream: TcpStream,
-    rules: &[NetworkRule],
-) -> MinoResult<()> {
+async fn handle_http_connect(mut stream: TcpStream, rules: &[NetworkRule]) -> MinoResult<()> {
     let mut buf = vec![0u8; 4096];
     let n = stream
         .read(&mut buf)
@@ -475,7 +470,8 @@ mod tests {
 
     #[test]
     fn parse_connect_request_custom_port() {
-        let (host, port) = parse_connect_request("CONNECT api.example.com:8080 HTTP/1.1\r\n").unwrap();
+        let (host, port) =
+            parse_connect_request("CONNECT api.example.com:8080 HTTP/1.1\r\n").unwrap();
         assert_eq!(host, "api.example.com");
         assert_eq!(port, 8080);
     }
@@ -681,7 +677,8 @@ mod tests {
             .await
             .unwrap();
 
-        let request = format!("CONNECT 127.0.0.1:{target_port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let request =
+            format!("CONNECT 127.0.0.1:{target_port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
         stream.write_all(request.as_bytes()).await.unwrap();
 
         // Read response
@@ -771,9 +768,16 @@ mod tests {
         // CONNECT to 127.0.0.1:<target_port> using IPv4 address type
         let port_bytes = target_port.to_be_bytes();
         let request = [
-            0x05, 0x01, 0x00, 0x01, // VER, CMD=CONNECT, RSV, ATYP=IPv4
-            127, 0, 0, 1,           // IP
-            port_bytes[0], port_bytes[1], // PORT
+            0x05,
+            0x01,
+            0x00,
+            0x01, // VER, CMD=CONNECT, RSV, ATYP=IPv4
+            127,
+            0,
+            0,
+            1, // IP
+            port_bytes[0],
+            port_bytes[1], // PORT
         ];
         stream.write_all(&request).await.unwrap();
 
@@ -816,9 +820,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let connect_handle = tokio::spawn(async move {
-            TcpStream::connect(addr).await.unwrap()
-        });
+        let connect_handle = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
 
         let (server, _) = listener.accept().await.unwrap();
         let client = connect_handle.await.unwrap();
