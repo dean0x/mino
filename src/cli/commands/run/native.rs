@@ -8,7 +8,7 @@ use crate::audit::AuditLog;
 use crate::cli::args::RunArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
-use crate::network::{resolve_network_mode, NetworkResolutionInput};
+use crate::network::{resolve_network_mode, NetworkMode, NetworkResolutionInput};
 use crate::sandbox::config::validate_sandbox_paths;
 use crate::sandbox::dotfiles;
 use crate::sandbox::native::{NativeSandbox, SandboxSpawnConfig};
@@ -76,7 +76,24 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     }
 
     // 7. Build environment variables
-    let env = build_sandbox_env(config, &credentials);
+    let mut env = build_sandbox_env(config, &credentials);
+
+    // 7b. Start filtering proxy for NetworkMode::Allow
+    //     The proxy runs in the main process and filters outbound connections.
+    //     The handle must outlive the sandbox process (Drop shuts it down).
+    let _proxy_handle = if let NetworkMode::Allow(ref rules) = network_mode {
+        spinner.message("Starting network proxy...");
+        let handle = crate::sandbox::proxy::start_proxy(rules.clone()).await?;
+        debug!("Network proxy started on {}", handle.addr);
+
+        for (key, value) in handle.proxy_env_vars() {
+            env.insert(key, value);
+        }
+
+        Some(handle)
+    } else {
+        None
+    };
 
     // 8. Prepare dotfiles
     let dotfile_dir = prepare_dotfiles(config).await?;
