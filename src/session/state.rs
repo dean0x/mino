@@ -62,6 +62,18 @@ pub struct Session {
     /// Home volume name (if mounted)
     #[serde(default)]
     pub home_volume: Option<String>,
+
+    /// Runtime mode used for this session ("container" or "native")
+    #[serde(default)]
+    pub runtime_mode: Option<String>,
+
+    /// Native mode: PID of sandboxed process
+    #[serde(default)]
+    pub process_id: Option<u32>,
+
+    /// Native detached: path to log file
+    #[serde(default)]
+    pub log_file: Option<PathBuf>,
 }
 
 impl Session {
@@ -84,6 +96,9 @@ impl Session {
             updated_at: now,
             cloud_providers: vec![],
             home_volume: None,
+            runtime_mode: None,
+            process_id: None,
+            log_file: None,
         }
     }
 
@@ -313,6 +328,64 @@ mod tests {
         assert!(validate_session_name("foo bar").is_err());
         assert!(validate_session_name("foo.bar").is_err());
         assert!(validate_session_name("foo@bar").is_err());
+    }
+
+    #[test]
+    fn session_serialize_with_runtime_mode() {
+        let mut session = Session::new(
+            "test-session".to_string(),
+            PathBuf::from("/project"),
+            vec!["bash".to_string()],
+            SessionStatus::Running,
+        );
+        session.runtime_mode = Some("native".to_string());
+        session.process_id = Some(12345);
+        session.log_file = Some(PathBuf::from("/tmp/mino-session.log"));
+
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"runtime_mode\":\"native\""));
+        assert!(json.contains("\"process_id\":12345"));
+        assert!(json.contains("mino-session.log"));
+
+        let parsed: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.runtime_mode.as_deref(), Some("native"));
+        assert_eq!(parsed.process_id, Some(12345));
+        assert!(parsed.log_file.is_some());
+    }
+
+    #[test]
+    fn session_deserialize_backward_compat() {
+        // Old format without new fields — must deserialize with defaults
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000000",
+            "name": "old-session",
+            "project_dir": "/project",
+            "command": ["bash"],
+            "container_id": null,
+            "status": "running",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "cloud_providers": []
+        }"#;
+        let session: Session = serde_json::from_str(json).unwrap();
+        assert_eq!(session.name, "old-session");
+        assert!(session.runtime_mode.is_none());
+        assert!(session.process_id.is_none());
+        assert!(session.log_file.is_none());
+        assert!(session.home_volume.is_none());
+    }
+
+    #[test]
+    fn session_new_fields_default_none() {
+        let session = Session::new(
+            "test".to_string(),
+            PathBuf::from("/project"),
+            vec!["bash".to_string()],
+            SessionStatus::Starting,
+        );
+        assert!(session.runtime_mode.is_none());
+        assert!(session.process_id.is_none());
+        assert!(session.log_file.is_none());
     }
 
     // -- SessionStatus Display tests --
