@@ -36,6 +36,7 @@ pub struct Cli {
 
 /// Available commands
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Start a sandboxed session
     Run(RunArgs),
