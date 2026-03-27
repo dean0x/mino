@@ -26,9 +26,15 @@ pub fn strip_gitconfig_secrets(content: &str) -> String {
     for line in content.lines() {
         let trimmed = line.trim();
 
-        // Detect start of a [credential] or [credential "..."] section
-        if trimmed.starts_with("[credential") && (trimmed.ends_with(']') || trimmed.contains("\"]"))
-        {
+        // Detect start of a [credential] or [credential "..."] section.
+        // Also handles trailing inline comments like `[credential]  # comment`.
+        // We strip the comment/whitespace suffix before checking for the closing `]`.
+        let before_comment = trimmed
+            .split_once('#')
+            .or_else(|| trimmed.split_once(';'))
+            .map_or(trimmed, |(before, _)| before.trim_end());
+
+        if before_comment.starts_with("[credential") && before_comment.ends_with(']') {
             in_credential_section = true;
             continue;
         }
@@ -167,6 +173,53 @@ mod tests {
         assert!(output.contains("[core]"));
         assert!(!output.contains("[credential"));
         assert!(!output.contains("helper"));
+    }
+
+    #[test]
+    fn strip_gitconfig_credential_with_inline_comment() {
+        let input = r#"[user]
+    name = Test
+
+[credential] # macOS keychain helper
+    helper = osxkeychain
+
+[core]
+    editor = vim
+"#;
+        let output = strip_gitconfig_secrets(input);
+        assert!(output.contains("[user]"));
+        assert!(output.contains("[core]"));
+        assert!(!output.contains("[credential"));
+        assert!(!output.contains("osxkeychain"));
+    }
+
+    #[test]
+    fn strip_gitconfig_credential_url_with_semicolon_comment() {
+        let input = r#"[credential "https://github.com"] ; GH credentials
+    helper = !gh auth git-credential
+
+[alias]
+    co = checkout
+"#;
+        let output = strip_gitconfig_secrets(input);
+        assert!(!output.contains("[credential"));
+        assert!(!output.contains("helper"));
+        assert!(output.contains("[alias]"));
+    }
+
+    #[test]
+    fn strip_gitconfig_commented_out_credential_preserved() {
+        // A comment that mentions [credential] should not trigger stripping
+        let input = r#"[user]
+    name = Test
+# [credential]
+#     helper = osxkeychain
+[core]
+    editor = vim
+"#;
+        let output = strip_gitconfig_secrets(input);
+        assert!(output.contains("# [credential]"));
+        assert!(output.contains("#     helper = osxkeychain"));
     }
 
     #[test]

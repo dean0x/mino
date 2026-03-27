@@ -16,6 +16,8 @@ const SENSITIVE_PATHS: &[&str] = &[
     ".gnupg",
     ".config/gcloud",
     ".kube",
+    ".docker",
+    ".netrc",
 ];
 
 /// Valid cache access modes
