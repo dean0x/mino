@@ -129,30 +129,7 @@ pub async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
     // to avoid TOCTOU race where the file is world-readable before chmod.
     let request_file = std::env::temp_dir().join(format!("mino-helper-{}.json", config.session_id));
     let request_json = serde_json::to_string(&request)?;
-    {
-        use std::fs::OpenOptions;
-        #[cfg(unix)]
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut opts = OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        opts.mode(0o600);
-
-        let result = tokio::task::spawn_blocking({
-            let request_file = request_file.clone();
-            let request_json = request_json.clone();
-            move || -> std::io::Result<()> {
-                use std::io::Write;
-                let mut f = opts.open(&request_file)?;
-                f.write_all(request_json.as_bytes())?;
-                Ok(())
-            }
-        })
-        .await
-        .map_err(|e| MinoError::io("spawning request file writer", e.into()))?;
-        result.map_err(|e| MinoError::io("writing helper request", e))?;
-    }
+    write_restricted_file(&request_file, &request_json).await?;
 
     // Call helper via sudo
     debug!(
@@ -197,30 +174,7 @@ pub async fn cleanup_macos_sandbox(
 
     let request_file = std::env::temp_dir().join(format!("mino-cleanup-{}.json", session_id));
     let request_json = serde_json::to_string(&request)?;
-    {
-        use std::fs::OpenOptions;
-        #[cfg(unix)]
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut opts = OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        opts.mode(0o600);
-
-        let result = tokio::task::spawn_blocking({
-            let request_file = request_file.clone();
-            let request_json = request_json.clone();
-            move || -> std::io::Result<()> {
-                use std::io::Write;
-                let mut f = opts.open(&request_file)?;
-                f.write_all(request_json.as_bytes())?;
-                Ok(())
-            }
-        })
-        .await
-        .map_err(|e| MinoError::io("spawning cleanup file writer", e.into()))?;
-        result.map_err(|e| MinoError::io("writing cleanup request", e))?;
-    }
+    write_restricted_file(&request_file, &request_json).await?;
 
     let output = Command::new("sudo")
         .arg(HELPER_BINARY)
@@ -312,6 +266,30 @@ pub fn generate_pf_rules(sandbox_user: &str, _session_id: &str, proxy_port: Opti
     }
 
     rules
+}
+
+/// Write content to a file with mode 0o600 from creation, avoiding TOCTOU races.
+async fn write_restricted_file(path: &std::path::Path, content: &str) -> MinoResult<()> {
+    use std::fs::OpenOptions;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+
+    let path = path.to_path_buf();
+    let content = content.to_string();
+    let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = opts.open(&path)?;
+        f.write_all(content.as_bytes())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| MinoError::io("spawning restricted file writer", e.into()))?;
+    result.map_err(|e| MinoError::io("writing restricted file", e))
 }
 
 #[cfg(test)]

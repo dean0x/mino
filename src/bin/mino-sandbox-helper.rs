@@ -168,10 +168,7 @@ fn handle_spawn(params: SpawnParams) {
             "Failed to set ACL on home dir: {}",
             home_dir.display()
         ));
-        // Clean up ACLs already set
-        for acl in &acl_paths {
-            let _ = remove_acl(&acl.path);
-        }
+        cleanup_acls(&acl_paths, None);
         print_error(&format!("ACL setup failed: {}", e));
         process::exit(1);
     }
@@ -182,11 +179,7 @@ fn handle_spawn(params: SpawnParams) {
         Some(uid) => uid,
         None => {
             print_error(&format!("User '{}' not found", sandbox_user));
-            // Clean up
-            for acl in &acl_paths {
-                let _ = remove_acl(&acl.path);
-            }
-            let _ = remove_acl(&home_dir);
+            cleanup_acls(&acl_paths, Some(&home_dir));
             process::exit(1);
         }
     };
@@ -194,11 +187,7 @@ fn handle_spawn(params: SpawnParams) {
         Some(gid) => gid,
         None => {
             print_error(&format!("GID for user '{}' not found", sandbox_user));
-            // Clean up
-            for acl in &acl_paths {
-                let _ = remove_acl(&acl.path);
-            }
-            let _ = remove_acl(&home_dir);
+            cleanup_acls(&acl_paths, Some(&home_dir));
             process::exit(1);
         }
     };
@@ -459,10 +448,7 @@ unsafe fn parent_process(
     };
 
     // Clean up ACLs
-    for acl in acl_paths {
-        let _ = remove_acl(&acl.path);
-    }
-    let _ = remove_acl(home_dir);
+    cleanup_acls(acl_paths, Some(home_dir));
     let _ = std::fs::remove_dir_all(home_dir);
 
     print_response(&HelperResponse::Spawned { pid: pid as u32 });
@@ -515,6 +501,16 @@ fn set_acl(path: &Path, writable: bool) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Remove ACLs from all tracked paths and optionally the home directory.
+fn cleanup_acls(acl_paths: &[AclEntry], home_dir: Option<&Path>) {
+    for acl in acl_paths {
+        let _ = remove_acl(&acl.path);
+    }
+    if let Some(home) = home_dir {
+        let _ = remove_acl(home);
+    }
 }
 
 fn remove_acl(path: &Path) -> Result<(), String> {
@@ -585,53 +581,39 @@ fn get_user_gid(username: &str) -> Option<u32> {
 /// runs with default OS limits for the failed resource.
 #[cfg(unix)]
 unsafe fn apply_resource_limits(limits: &ResourceLimitsDto) {
-    if limits.max_memory_bytes > 0 {
-        let rlim = libc::rlimit {
-            rlim_cur: limits.max_memory_bytes,
-            rlim_max: limits.max_memory_bytes,
-        };
-        if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
-            eprintln!(
-                "[mino-helper] setrlimit RLIMIT_AS failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
+    set_rlimit(libc::RLIMIT_AS, limits.max_memory_bytes, "RLIMIT_AS");
+    set_rlimit(
+        libc::RLIMIT_NPROC,
+        u64::from(limits.max_processes),
+        "RLIMIT_NPROC",
+    );
+    set_rlimit(libc::RLIMIT_CPU, limits.max_cpu_seconds, "RLIMIT_CPU");
+    set_rlimit(
+        libc::RLIMIT_FSIZE,
+        limits.max_file_size_bytes,
+        "RLIMIT_FSIZE",
+    );
+}
+
+/// Set a single resource limit. Zero values are skipped (no limit).
+///
+/// # Safety
+/// Calls libc::setrlimit. Must be called before dropping root privileges.
+#[cfg(unix)]
+unsafe fn set_rlimit(resource: libc::c_int, value: u64, name: &str) {
+    if value == 0 {
+        return;
     }
-    if limits.max_processes > 0 {
-        let rlim = libc::rlimit {
-            rlim_cur: u64::from(limits.max_processes),
-            rlim_max: u64::from(limits.max_processes),
-        };
-        if libc::setrlimit(libc::RLIMIT_NPROC, &rlim) != 0 {
-            eprintln!(
-                "[mino-helper] setrlimit RLIMIT_NPROC failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
-    if limits.max_cpu_seconds > 0 {
-        let rlim = libc::rlimit {
-            rlim_cur: limits.max_cpu_seconds,
-            rlim_max: limits.max_cpu_seconds,
-        };
-        if libc::setrlimit(libc::RLIMIT_CPU, &rlim) != 0 {
-            eprintln!(
-                "[mino-helper] setrlimit RLIMIT_CPU failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
-    if limits.max_file_size_bytes > 0 {
-        let rlim = libc::rlimit {
-            rlim_cur: limits.max_file_size_bytes,
-            rlim_max: limits.max_file_size_bytes,
-        };
-        if libc::setrlimit(libc::RLIMIT_FSIZE, &rlim) != 0 {
-            eprintln!(
-                "[mino-helper] setrlimit RLIMIT_FSIZE failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
+    let rlim = libc::rlimit {
+        rlim_cur: value,
+        rlim_max: value,
+    };
+    if libc::setrlimit(resource, &rlim) != 0 {
+        eprintln!(
+            "[mino-helper] setrlimit {} failed: {}",
+            name,
+            std::io::Error::last_os_error()
+        );
     }
 }
 

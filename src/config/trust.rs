@@ -645,7 +645,9 @@ mod tests {
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
         assert!(analysis.has_sensitive());
-        assert!(analysis.fields.contains(&"sandbox.allow_sensitive".to_string()));
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.allow_sensitive".to_string()));
     }
 
     #[test]
@@ -659,11 +661,9 @@ mod tests {
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
         assert!(analysis.has_sensitive());
-        assert!(
-            analysis
-                .fields
-                .contains(&"sandbox.passthrough_paths".to_string())
-        );
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.passthrough_paths".to_string()));
     }
 
     #[test]
@@ -677,11 +677,9 @@ mod tests {
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
         assert!(analysis.has_sensitive());
-        assert!(
-            analysis
-                .fields
-                .contains(&"sandbox.writable_paths".to_string())
-        );
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.writable_paths".to_string()));
     }
 
     #[test]
@@ -695,11 +693,9 @@ mod tests {
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
         assert!(analysis.has_sensitive());
-        assert!(
-            analysis
-                .fields
-                .contains(&"sandbox.sandbox_user".to_string())
-        );
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.sandbox_user".to_string()));
     }
 
     #[test]
@@ -716,10 +712,18 @@ mod tests {
         .unwrap();
         let analysis = analyze_sensitive_fields(&value);
         assert!(analysis.has_sensitive());
-        assert!(analysis.fields.contains(&"sandbox.allow_sensitive".to_string()));
-        assert!(analysis.fields.contains(&"sandbox.passthrough_paths".to_string()));
-        assert!(analysis.fields.contains(&"sandbox.sandbox_user".to_string()));
-        assert!(analysis.fields.contains(&"sandbox.max_memory_mb".to_string()));
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.allow_sensitive".to_string()));
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.passthrough_paths".to_string()));
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.sandbox_user".to_string()));
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.max_memory_mb".to_string()));
         assert_eq!(analysis.fields.len(), 4);
     }
 

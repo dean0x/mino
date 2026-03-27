@@ -24,6 +24,13 @@ enum StepResult {
     Blocked,
 }
 
+impl StepResult {
+    /// Whether the step completed successfully (already ok or just installed).
+    fn is_ok(self) -> bool {
+        matches!(self, Self::AlreadyOk | Self::Installed)
+    }
+}
+
 /// Execute the setup command
 pub async fn execute(args: SetupArgs, config: &Config) -> MinoResult<()> {
     let ctx = UiContext::detect().with_auto_yes(args.yes);
@@ -86,72 +93,64 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
 
     // Step 1: Check Homebrew
     let homebrew_result = check_homebrew(ctx, args).await;
-    if homebrew_result == StepResult::Failed || homebrew_result == StepResult::Skipped {
+    if !homebrew_result.is_ok() {
         issues += 1;
     }
 
     // Step 2: Check OrbStack
-    let orbstack_result =
-        if homebrew_result == StepResult::AlreadyOk || homebrew_result == StepResult::Installed {
-            check_orbstack(ctx, args).await
-        } else {
-            ui::step_blocked(ctx, "OrbStack", "Homebrew");
-            StepResult::Blocked
-        };
-    if orbstack_result == StepResult::Failed || orbstack_result == StepResult::Skipped {
+    let orbstack_result = if homebrew_result.is_ok() {
+        check_orbstack(ctx, args).await
+    } else {
+        ui::step_blocked(ctx, "OrbStack", "Homebrew");
+        StepResult::Blocked
+    };
+    if !orbstack_result.is_ok() {
         issues += 1;
     }
 
     // Step 3: Check OrbStack running
-    let orbstack_running_result =
-        if orbstack_result == StepResult::AlreadyOk || orbstack_result == StepResult::Installed {
-            check_orbstack_running(ctx, args).await
-        } else {
-            ui::step_blocked(ctx, "OrbStack Service", "OrbStack");
-            StepResult::Blocked
-        };
-    if orbstack_running_result == StepResult::Failed
-        || orbstack_running_result == StepResult::Skipped
-    {
+    let orbstack_running_result = if orbstack_result.is_ok() {
+        check_orbstack_running(ctx, args).await
+    } else {
+        ui::step_blocked(ctx, "OrbStack Service", "OrbStack");
+        StepResult::Blocked
+    };
+    if !orbstack_running_result.is_ok() {
         issues += 1;
     }
 
     // Step 4: Check VM exists
     let vm_name = &config.vm.name;
     let vm_distro = &config.vm.distro;
-    let vm_result = if orbstack_running_result == StepResult::AlreadyOk
-        || orbstack_running_result == StepResult::Installed
-    {
+    let vm_result = if orbstack_running_result.is_ok() {
         check_vm(ctx, args, vm_name, vm_distro).await
     } else {
         ui::step_blocked(ctx, &format!("Mino VM ({})", vm_name), "OrbStack");
         StepResult::Blocked
     };
-    if vm_result == StepResult::Failed || vm_result == StepResult::Skipped {
+    if !vm_result.is_ok() {
         issues += 1;
     }
 
     // Step 5: Check Podman in VM
-    let podman_result = if vm_result == StepResult::AlreadyOk || vm_result == StepResult::Installed
-    {
+    let podman_result = if vm_result.is_ok() {
         check_podman_in_vm(ctx, args, vm_name, vm_distro).await
     } else {
         ui::step_blocked(ctx, "Podman (in VM)", "VM");
         StepResult::Blocked
     };
-    if podman_result == StepResult::Failed || podman_result == StepResult::Skipped {
+    if !podman_result.is_ok() {
         issues += 1;
     }
 
     // Step 6: Check rootless Podman in VM
-    let rootless_result =
-        if podman_result == StepResult::AlreadyOk || podman_result == StepResult::Installed {
-            check_rootless_mode_in_vm(ctx, args, vm_name).await
-        } else {
-            ui::step_blocked(ctx, "Rootless Mode (in VM)", "Podman");
-            StepResult::Blocked
-        };
-    if rootless_result == StepResult::Failed || rootless_result == StepResult::Skipped {
+    let rootless_result = if podman_result.is_ok() {
+        check_rootless_mode_in_vm(ctx, args, vm_name).await
+    } else {
+        ui::step_blocked(ctx, "Rootless Mode (in VM)", "Podman");
+        StepResult::Blocked
+    };
+    if !rootless_result.is_ok() {
         issues += 1;
     }
 
@@ -179,31 +178,29 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
 
     // Step 1: Check/install Podman
     let podman_result = check_native_podman(ctx, args).await;
-    if podman_result == StepResult::Failed || podman_result == StepResult::Skipped {
+    if !podman_result.is_ok() {
         issues += 1;
     }
 
     // Step 2: Check rootless mode
-    let rootless_result =
-        if podman_result == StepResult::AlreadyOk || podman_result == StepResult::Installed {
-            check_rootless_mode(ctx, args).await
-        } else {
-            ui::step_blocked(ctx, "Rootless Mode", "Podman");
-            StepResult::Blocked
-        };
-    if rootless_result == StepResult::Failed || rootless_result == StepResult::Skipped {
+    let rootless_result = if podman_result.is_ok() {
+        check_rootless_mode(ctx, args).await
+    } else {
+        ui::step_blocked(ctx, "Rootless Mode", "Podman");
+        StepResult::Blocked
+    };
+    if !rootless_result.is_ok() {
         issues += 1;
     }
 
     // Step 3: Check user namespace support
-    let userns_result =
-        if rootless_result == StepResult::AlreadyOk || rootless_result == StepResult::Installed {
-            check_user_namespaces(ctx, args).await
-        } else {
-            ui::step_blocked(ctx, "User Namespaces", "Rootless Mode");
-            StepResult::Blocked
-        };
-    if userns_result == StepResult::Failed || userns_result == StepResult::Skipped {
+    let userns_result = if rootless_result.is_ok() {
+        check_user_namespaces(ctx, args).await
+    } else {
+        ui::step_blocked(ctx, "User Namespaces", "Rootless Mode");
+        StepResult::Blocked
+    };
+    if !userns_result.is_ok() {
         issues += 1;
     }
 
@@ -850,41 +847,33 @@ async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()>
     let user_result = setup_sandbox_user(ctx, args, sandbox_user).await;
 
     // Step 2: Install helper binary
-    let helper_result =
-        if user_result == StepResult::AlreadyOk || user_result == StepResult::Installed {
-            install_helper_binary(ctx, args).await
-        } else {
-            ui::step_blocked(ctx, "Helper Binary", "System User");
-            StepResult::Blocked
-        };
+    let helper_result = if user_result.is_ok() {
+        install_helper_binary(ctx, args).await
+    } else {
+        ui::step_blocked(ctx, "Helper Binary", "System User");
+        StepResult::Blocked
+    };
 
     // Step 3: Configure sudoers
-    let sudoers_result =
-        if helper_result == StepResult::AlreadyOk || helper_result == StepResult::Installed {
-            configure_sudoers(ctx, args).await
-        } else {
-            ui::step_blocked(ctx, "Sudoers", "Helper Binary");
-            StepResult::Blocked
-        };
+    let sudoers_result = if helper_result.is_ok() {
+        configure_sudoers(ctx, args).await
+    } else {
+        ui::step_blocked(ctx, "Sudoers", "Helper Binary");
+        StepResult::Blocked
+    };
 
     // Step 4: Configure pf anchor
-    let pf_result =
-        if sudoers_result == StepResult::AlreadyOk || sudoers_result == StepResult::Installed {
-            configure_pf_anchor(ctx, args, sandbox_user).await
-        } else {
-            ui::step_blocked(ctx, "pf Anchor", "Sudoers");
-            StepResult::Blocked
-        };
+    let pf_result = if sudoers_result.is_ok() {
+        configure_pf_anchor(ctx, args, sandbox_user).await
+    } else {
+        ui::step_blocked(ctx, "pf Anchor", "Sudoers");
+        StepResult::Blocked
+    };
 
     // Summary
     let issues = [user_result, helper_result, sudoers_result, pf_result]
         .iter()
-        .filter(|r| {
-            matches!(
-                r,
-                StepResult::Failed | StepResult::Skipped | StepResult::Blocked
-            )
-        })
+        .filter(|r| !r.is_ok())
         .count();
 
     if issues > 0 {
@@ -1487,5 +1476,14 @@ mod tests {
     fn step_result_eq() {
         assert_eq!(StepResult::AlreadyOk, StepResult::AlreadyOk);
         assert_ne!(StepResult::AlreadyOk, StepResult::Failed);
+    }
+
+    #[test]
+    fn step_result_is_ok() {
+        assert!(StepResult::AlreadyOk.is_ok());
+        assert!(StepResult::Installed.is_ok());
+        assert!(!StepResult::Failed.is_ok());
+        assert!(!StepResult::Skipped.is_ok());
+        assert!(!StepResult::Blocked.is_ok());
     }
 }
