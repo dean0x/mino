@@ -123,6 +123,7 @@ pub async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
         acl_paths,
         dotfile_dir: config.dotfile_dir.clone(),
         home_dir,
+        sandbox_user: config.sandbox_config.sandbox_user.clone(),
     };
 
     // Write request to temp file with restricted permissions from the start
@@ -166,10 +167,12 @@ pub async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
 pub async fn cleanup_macos_sandbox(
     session_id: &str,
     project_dir: &std::path::Path,
+    sandbox_user: &str,
 ) -> MinoResult<()> {
     let request = HelperRequest::Cleanup {
         session_id: session_id.to_string(),
         project_dir: project_dir.to_path_buf(),
+        sandbox_user: sandbox_user.to_string(),
     };
 
     let request_file = std::env::temp_dir().join(format!("mino-cleanup-{}.json", session_id));
@@ -415,6 +418,7 @@ mod tests {
             acl_paths,
             dotfile_dir: config.dotfile_dir.clone(),
             home_dir: PathBuf::from("/tmp/mino-home-serialize-test"),
+            sandbox_user: config.sandbox_config.sandbox_user.clone(),
         };
 
         let json = serde_json::to_string(&request).unwrap();

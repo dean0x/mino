@@ -11,7 +11,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum HelperRequest {
-    /// Spawn a sandboxed process as _mino_agent
+    /// Spawn a sandboxed process as the sandbox user
     Spawn {
         session_id: String,
         project_dir: PathBuf,
@@ -21,14 +21,24 @@ pub enum HelperRequest {
         acl_paths: Vec<AclEntry>,
         dotfile_dir: Option<PathBuf>,
         home_dir: PathBuf,
+        /// Sandbox user to run as (e.g., "_mino_agent")
+        sandbox_user: String,
     },
     /// Clean up ACLs and pf rules for a session
     Cleanup {
         session_id: String,
         project_dir: PathBuf,
+        /// Sandbox user whose ACLs to remove (defaults to "_mino_agent" if absent)
+        #[serde(default = "default_sandbox_user")]
+        sandbox_user: String,
     },
     /// Health check
     HealthCheck,
+}
+
+/// Default sandbox user for backward compatibility with older Cleanup requests.
+fn default_sandbox_user() -> String {
+    "_mino_agent".to_string()
 }
 
 /// ACL entry for a path
@@ -103,6 +113,7 @@ mod tests {
             ],
             dotfile_dir: Some(PathBuf::from("/tmp/dotfiles")),
             home_dir: PathBuf::from("/tmp/mino-home-sess-123"),
+            sandbox_user: "_mino_agent".to_string(),
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -118,6 +129,7 @@ mod tests {
                 acl_paths,
                 dotfile_dir,
                 home_dir,
+                sandbox_user,
             } => {
                 assert_eq!(session_id, "sess-123");
                 assert_eq!(project_dir, PathBuf::from("/home/user/project"));
@@ -130,6 +142,7 @@ mod tests {
                 assert!(!acl_paths[1].writable);
                 assert_eq!(dotfile_dir, Some(PathBuf::from("/tmp/dotfiles")));
                 assert_eq!(home_dir, PathBuf::from("/tmp/mino-home-sess-123"));
+                assert_eq!(sandbox_user, "_mino_agent");
             }
             _ => panic!("expected Spawn variant"),
         }
@@ -140,6 +153,7 @@ mod tests {
         let request = HelperRequest::Cleanup {
             session_id: "sess-456".to_string(),
             project_dir: PathBuf::from("/home/user/project"),
+            sandbox_user: "custom-user".to_string(),
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -149,9 +163,24 @@ mod tests {
             HelperRequest::Cleanup {
                 session_id,
                 project_dir,
+                sandbox_user,
             } => {
                 assert_eq!(session_id, "sess-456");
                 assert_eq!(project_dir, PathBuf::from("/home/user/project"));
+                assert_eq!(sandbox_user, "custom-user");
+            }
+            _ => panic!("expected Cleanup variant"),
+        }
+    }
+
+    #[test]
+    fn cleanup_request_backward_compat_default_user() {
+        // Old-format JSON without sandbox_user field should default
+        let json = r#"{"action":"Cleanup","session_id":"s1","project_dir":"/tmp"}"#;
+        let parsed: HelperRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            HelperRequest::Cleanup { sandbox_user, .. } => {
+                assert_eq!(sandbox_user, "_mino_agent");
             }
             _ => panic!("expected Cleanup variant"),
         }
@@ -260,11 +289,13 @@ mod tests {
             acl_paths: vec![],
             dotfile_dir: None,
             home_dir: PathBuf::from("/tmp/home"),
+            sandbox_user: "_mino_agent".to_string(),
         };
 
         let json = serde_json::to_string(&request).unwrap();
         // Verify the tag discriminant is present
         assert!(json.contains(r#""action":"Spawn"#));
+        assert!(json.contains(r#""sandbox_user":"_mino_agent"#));
     }
 
     #[test]
@@ -272,6 +303,7 @@ mod tests {
         let request = HelperRequest::Cleanup {
             session_id: "s1".to_string(),
             project_dir: PathBuf::from("/tmp"),
+            sandbox_user: "_mino_agent".to_string(),
         };
 
         let json = serde_json::to_string(&request).unwrap();

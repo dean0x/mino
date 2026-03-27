@@ -136,11 +136,14 @@ async fn exec_native(session: &Session, command: &[String]) -> MinoResult<i32> {
     #[cfg(target_os = "macos")]
     {
         let pid_str = pid.to_string();
+        let sandbox_user = session.sandbox_user.as_deref().unwrap_or("_mino_agent");
         let status = tokio::process::Command::new("sudo")
             .arg("mino-sandbox-helper")
             .arg("exec")
             .arg("--session-id")
             .arg(&session.name)
+            .arg("--sandbox-user")
+            .arg(sandbox_user)
             .arg("--pid")
             .arg(pid_str)
             .arg("--")

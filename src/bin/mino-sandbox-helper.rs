@@ -4,8 +4,8 @@
 //! Called via sudoers.d: `<user> ALL=(root) NOPASSWD: /usr/local/bin/mino-sandbox-helper`
 //!
 //! Operations:
-//! - spawn: Set ACLs, create pf sub-anchor, fork+setuid to _mino_agent, exec command
-//! - exec: Drop privileges to _mino_agent and exec a command (no ACL setup, no fork)
+//! - spawn: Set ACLs, create pf sub-anchor, fork+setuid to sandbox user, exec command
+//! - exec: Drop privileges to sandbox user and exec a command (no ACL setup, no fork)
 //! - cleanup: Remove ACLs, remove pf sub-anchor
 //! - health-check: Return version
 
@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicI32, Ordering};
 
+use mino::sandbox::helper;
 use mino::sandbox::helper_protocol::*;
+use mino::session::validate_session_name;
 
 /// Parameters for the spawn operation, extracted from HelperRequest::Spawn
 struct SpawnParams {
@@ -26,6 +28,26 @@ struct SpawnParams {
     acl_paths: Vec<AclEntry>,
     dotfile_dir: Option<PathBuf>,
     home_dir: PathBuf,
+    sandbox_user: String,
+}
+
+/// Pre-fork state: everything needed to fork+exec, validated and resolved.
+struct SpawnReady {
+    uid: u32,
+    gid: u32,
+    sandbox_user: String,
+}
+
+/// Arguments for the child process after fork.
+struct ChildArgs<'a> {
+    uid: u32,
+    gid: u32,
+    resource_limits: &'a ResourceLimitsDto,
+    env: &'a HashMap<String, String>,
+    home_dir: &'a Path,
+    project_dir: &'a Path,
+    command: &'a [String],
+    sandbox_user: &'a str,
 }
 
 fn main() {
@@ -51,7 +73,7 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from);
 
-    match action.as_str() {
+    let result: Result<i32, String> = match action.as_str() {
         "spawn" | "cleanup" => {
             let request_file = match request_file {
                 Some(f) => f,
@@ -87,47 +109,96 @@ fn main() {
                     acl_paths,
                     dotfile_dir,
                     home_dir,
-                } => {
-                    handle_spawn(SpawnParams {
-                        session_id,
-                        project_dir,
-                        env,
-                        command,
-                        resource_limits,
-                        acl_paths,
-                        dotfile_dir,
-                        home_dir,
-                    });
-                }
+                    sandbox_user,
+                } => handle_spawn(SpawnParams {
+                    session_id,
+                    project_dir,
+                    env,
+                    command,
+                    resource_limits,
+                    acl_paths,
+                    dotfile_dir,
+                    home_dir,
+                    sandbox_user,
+                }),
                 HelperRequest::Cleanup {
                     session_id,
                     project_dir,
-                } => {
-                    handle_cleanup(&session_id, &project_dir);
-                }
+                    sandbox_user,
+                } => handle_cleanup(&session_id, &project_dir, &sandbox_user).map(|()| 0),
                 HelperRequest::HealthCheck => {
                     print_response(&HelperResponse::Healthy {
                         version: env!("CARGO_PKG_VERSION").to_string(),
                     });
+                    Ok(0)
                 }
             }
         }
-        "exec" => {
-            handle_exec(&args[2..]);
-        }
+        "exec" => handle_exec(&args[2..]),
         "health-check" => {
             print_response(&HelperResponse::Healthy {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             });
+            Ok(0)
         }
         _ => {
             print_error(&format!("Unknown action: {}", action));
             process::exit(1);
         }
+    };
+
+    match result {
+        Ok(code) => process::exit(code),
+        Err(msg) => {
+            print_error(&msg);
+            process::exit(1);
+        }
     }
 }
 
-fn handle_spawn(params: SpawnParams) {
+/// Validate sandbox_user and look up UID/GID before forking.
+///
+/// On error, cleans up any ACLs that were already set and returns Err.
+fn prepare_spawn(
+    sandbox_user: &str,
+    acl_paths: &[AclEntry],
+    home_dir: &Path,
+) -> Result<SpawnReady, String> {
+    // Validate username using the same rules as the config module
+    if sandbox_user.is_empty()
+        || !sandbox_user
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(format!(
+            "Invalid sandbox_user '{}': must be alphanumeric, underscore, or hyphen",
+            sandbox_user
+        ));
+    }
+
+    let uid = match get_user_uid(sandbox_user) {
+        Some(uid) => uid,
+        None => {
+            cleanup_acls(acl_paths, Some(home_dir), sandbox_user);
+            return Err(format!("User '{}' not found", sandbox_user));
+        }
+    };
+    let gid = match get_user_gid(sandbox_user) {
+        Some(gid) => gid,
+        None => {
+            cleanup_acls(acl_paths, Some(home_dir), sandbox_user);
+            return Err(format!("GID for user '{}' not found", sandbox_user));
+        }
+    };
+
+    Ok(SpawnReady {
+        uid,
+        gid,
+        sandbox_user: sandbox_user.to_string(),
+    })
+}
+
+fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     let SpawnParams {
         session_id,
         project_dir,
@@ -137,105 +208,74 @@ fn handle_spawn(params: SpawnParams) {
         acl_paths,
         dotfile_dir,
         home_dir,
+        sandbox_user,
     } = params;
 
     // 1. Create home directory
-    if let Err(e) = std::fs::create_dir_all(&home_dir) {
-        print_error(&format!("Failed to create home dir: {}", e));
-        process::exit(1);
-    }
+    std::fs::create_dir_all(&home_dir).map_err(|e| format!("Failed to create home dir: {}", e))?;
 
     // 2. Copy dotfiles to home
     if let Some(dotfile_src) = &dotfile_dir {
         copy_dotfiles(dotfile_src, &home_dir);
     }
 
-    // 3. Set ACLs for _mino_agent on all paths
+    // 3. Set ACLs for sandbox user on all paths
     for acl in &acl_paths {
-        if let Err(e) = set_acl(&acl.path, acl.writable) {
-            print_error(&format!(
-                "Failed to set ACL on {}: {}",
-                acl.path.display(),
-                e
-            ));
-            process::exit(1);
-        }
+        set_acl(&acl.path, acl.writable, &sandbox_user)?;
     }
 
     // Set ACL on home dir
-    if let Err(e) = set_acl(&home_dir, true) {
-        print_error(&format!(
-            "Failed to set ACL on home dir: {}",
-            home_dir.display()
-        ));
-        cleanup_acls(&acl_paths, None);
-        print_error(&format!("ACL setup failed: {}", e));
-        process::exit(1);
+    if let Err(e) = set_acl(&home_dir, true, &sandbox_user) {
+        cleanup_acls(&acl_paths, None, &sandbox_user);
+        return Err(format!("ACL setup failed on home dir: {}", e));
     }
 
-    // 4. Look up _mino_agent UID and GID
-    let sandbox_user = "_mino_agent";
-    let uid = match get_user_uid(sandbox_user) {
-        Some(uid) => uid,
-        None => {
-            print_error(&format!("User '{}' not found", sandbox_user));
-            cleanup_acls(&acl_paths, Some(&home_dir));
-            process::exit(1);
-        }
-    };
-    let gid = match get_user_gid(sandbox_user) {
-        Some(gid) => gid,
-        None => {
-            print_error(&format!("GID for user '{}' not found", sandbox_user));
-            cleanup_acls(&acl_paths, Some(&home_dir));
-            process::exit(1);
-        }
-    };
+    // 4. Look up sandbox user UID and GID
+    let ready = prepare_spawn(&sandbox_user, &acl_paths, &home_dir)?;
 
     // 5. Fork + setgid + setuid + exec
-    // The parent stays alive to relay signals and report exit code
     #[cfg(unix)]
     unsafe {
         let pid = libc::fork();
         if pid < 0 {
-            print_error("fork() failed");
-            process::exit(1);
+            return Err("fork() failed".to_string());
         }
 
         if pid == 0 {
-            // Child process
-            child_process(
-                uid,
-                gid,
-                &resource_limits,
-                &env,
-                &home_dir,
-                &project_dir,
-                &command,
-            );
+            // Child process — never returns
+            child_process(ChildArgs {
+                uid: ready.uid,
+                gid: ready.gid,
+                resource_limits: &resource_limits,
+                env: &env,
+                home_dir: &home_dir,
+                project_dir: &project_dir,
+                command: &command,
+                sandbox_user: &ready.sandbox_user,
+            });
         } else {
-            // Parent process — wait for child, relay signals
-            parent_process(pid, &acl_paths, &home_dir, &session_id);
+            // Parent process — never returns
+            parent_process(pid, &acl_paths, &home_dir, &session_id, &sandbox_user);
         }
     }
 
     #[cfg(not(unix))]
     {
-        let _ = (session_id, env, command, resource_limits, uid, gid);
-        print_error("Spawn is only supported on Unix");
-        process::exit(1);
+        let _ = (session_id, env, command, resource_limits, ready);
+        Err("Spawn is only supported on Unix".to_string())
     }
 }
 
-/// Execute a command as `_mino_agent` inside an existing session.
+/// Execute a command as the sandbox user inside an existing session.
 ///
 /// Unlike `spawn`, this does not set up ACLs or fork — it simply drops
 /// privileges to the sandbox user and execs the command directly.
 /// ACLs from the original `spawn` are still active on the session's paths.
 ///
-/// Usage: mino-sandbox-helper exec --session-id <id> [--pid <pid>] -- <command...>
-fn handle_exec(args: &[String]) {
+/// Usage: mino-sandbox-helper exec --session-id <id> --sandbox-user <user> [--pid <pid>] -- <command...>
+fn handle_exec(args: &[String]) -> Result<i32, String> {
     let mut session_id: Option<&str> = None;
+    let mut sandbox_user: Option<&str> = None;
     let mut command_start: Option<usize> = None;
 
     let mut i = 0;
@@ -243,6 +283,10 @@ fn handle_exec(args: &[String]) {
         match args[i].as_str() {
             "--session-id" => {
                 session_id = args.get(i + 1).map(|s| s.as_str());
+                i += 2;
+            }
+            "--sandbox-user" => {
+                sandbox_user = args.get(i + 1).map(|s| s.as_str());
                 i += 2;
             }
             "--pid" => {
@@ -261,33 +305,32 @@ fn handle_exec(args: &[String]) {
 
     let session_id = match session_id {
         Some(id) if !id.is_empty() => id,
-        _ => {
-            print_error("Missing --session-id argument");
-            process::exit(1);
-        }
+        _ => return Err("Missing --session-id argument".to_string()),
     };
 
-    // Validate session_id: must be alphanumeric plus hyphen/underscore.
-    // Same validation as handle_cleanup to prevent path injection.
-    if !session_id
+    // Validate session_id using the library function
+    validate_session_name(session_id).map_err(|e| format!("Invalid session_id: {}", e))?;
+
+    let sandbox_user = match sandbox_user {
+        Some(u) if !u.is_empty() => u,
+        _ => return Err("Missing --sandbox-user argument".to_string()),
+    };
+
+    // Validate sandbox_user
+    if !sandbox_user
         .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
-        print_error(&format!("Invalid session_id: {:?}", session_id));
-        process::exit(1);
+        return Err(format!("Invalid sandbox_user: {:?}", sandbox_user));
     }
 
     let command: &[String] = match command_start {
         Some(idx) if idx < args.len() => &args[idx..],
-        _ => {
-            print_error("Missing command after '--'");
-            process::exit(1);
-        }
+        _ => return Err("Missing command after '--'".to_string()),
     };
 
     if command.is_empty() {
-        print_error("Empty command");
-        process::exit(1);
+        return Err("Empty command".to_string());
     }
 
     eprintln!(
@@ -295,54 +338,42 @@ fn handle_exec(args: &[String]) {
         session_id, &command[0]
     );
 
-    let sandbox_user = "_mino_agent";
-    let uid = match get_user_uid(sandbox_user) {
-        Some(uid) => uid,
-        None => {
-            print_error(&format!("User '{}' not found", sandbox_user));
-            process::exit(1);
-        }
-    };
-    let gid = match get_user_gid(sandbox_user) {
-        Some(gid) => gid,
-        None => {
-            print_error(&format!("GID for user '{}' not found", sandbox_user));
-            process::exit(1);
-        }
-    };
+    let uid =
+        get_user_uid(sandbox_user).ok_or_else(|| format!("User '{}' not found", sandbox_user))?;
+    let gid = get_user_gid(sandbox_user)
+        .ok_or_else(|| format!("GID for user '{}' not found", sandbox_user))?;
 
     #[cfg(unix)]
     unsafe {
         // Drop supplementary groups
         if libc::setgroups(0, std::ptr::null()) != 0 {
-            eprintln!("setgroups failed");
-            process::exit(1);
+            return Err("setgroups failed".to_string());
         }
 
         // setgid before setuid (after setuid we can't change GID)
         if libc::setgid(gid) != 0 {
-            eprintln!("setgid failed");
-            process::exit(1);
+            return Err("setgid failed".to_string());
         }
 
-        // setuid to _mino_agent (drops root)
+        // setuid to sandbox user (drops root)
         if libc::setuid(uid) != 0 {
-            eprintln!("setuid failed");
-            process::exit(1);
+            return Err("setuid failed".to_string());
         }
     }
 
     #[cfg(not(unix))]
     {
-        let _ = (uid, gid, session_id);
-        print_error("Exec is only supported on Unix");
-        process::exit(1);
+        let _ = (uid, gid);
+        return Err("Exec is only supported on Unix".to_string());
     }
 
+    // Build minimal env for exec (don't inherit root's environment)
+    let home_dir = PathBuf::from(format!("/tmp/mino-home-{}", session_id));
+    let exec_env = helper::build_exec_env(&home_dir, sandbox_user);
+
     // exec the command — this replaces the current process
-    let err = exec_command(command);
-    eprintln!("exec failed: {}", err);
-    process::exit(1);
+    let err = exec_command(command, Some(&exec_env));
+    Err(format!("exec failed: {}", err))
 }
 
 /// Child process: drop privileges and exec command
@@ -355,17 +386,9 @@ fn handle_exec(args: &[String]) {
 /// Privilege drop order: setgid MUST come before setuid, because once
 /// we drop root UID we lose the ability to change our GID.
 #[cfg(unix)]
-unsafe fn child_process(
-    uid: u32,
-    gid: u32,
-    resource_limits: &ResourceLimitsDto,
-    env: &HashMap<String, String>,
-    home_dir: &Path,
-    project_dir: &Path,
-    command: &[String],
-) -> ! {
+unsafe fn child_process(args: ChildArgs<'_>) -> ! {
     // Set resource limits (must happen before dropping root)
-    apply_resource_limits(resource_limits);
+    apply_resource_limits(args.resource_limits);
 
     // Drop supplementary groups first
     if libc::setgroups(0, std::ptr::null()) != 0 {
@@ -374,42 +397,33 @@ unsafe fn child_process(
     }
 
     // setgid MUST come before setuid — after setuid we can't change GID
-    if libc::setgid(gid) != 0 {
+    if libc::setgid(args.gid) != 0 {
         eprintln!("setgid failed");
         process::exit(1);
     }
 
-    // setuid to _mino_agent (drops root)
-    if libc::setuid(uid) != 0 {
+    // setuid to sandbox user (drops root)
+    if libc::setuid(args.uid) != 0 {
         eprintln!("setuid failed");
         process::exit(1);
     }
 
-    // Clear environment
-    for (key, _) in std::env::vars() {
-        std::env::remove_var(&key);
-    }
-
-    // Set sandbox environment
-    for (key, value) in env {
-        std::env::set_var(key, value);
-    }
-    std::env::set_var("HOME", home_dir.to_str().unwrap_or("/tmp"));
-    std::env::set_var("USER", "_mino_agent");
+    // Build final environment using the library helper
+    let final_env = helper::build_child_env(args.env, args.home_dir, args.sandbox_user);
 
     // Change to project dir
-    if std::env::set_current_dir(project_dir).is_err() {
-        eprintln!("Failed to chdir to {}", project_dir.display());
+    if std::env::set_current_dir(args.project_dir).is_err() {
+        eprintln!("Failed to chdir to {}", args.project_dir.display());
         process::exit(1);
     }
 
     // exec the command
-    if command.is_empty() {
+    if args.command.is_empty() {
         eprintln!("Empty command");
         process::exit(1);
     }
 
-    let err = exec_command(command);
+    let err = exec_command(args.command, Some(&final_env));
     eprintln!("exec failed: {}", err);
     process::exit(1);
 }
@@ -426,6 +440,7 @@ unsafe fn parent_process(
     acl_paths: &[AclEntry],
     home_dir: &Path,
     _session_id: &str,
+    sandbox_user: &str,
 ) -> ! {
     // Forward SIGINT and SIGTERM to child
     setup_signal_forwarding(pid);
@@ -448,50 +463,38 @@ unsafe fn parent_process(
     };
 
     // Clean up ACLs
-    cleanup_acls(acl_paths, Some(home_dir));
+    cleanup_acls(acl_paths, Some(home_dir), sandbox_user);
     let _ = std::fs::remove_dir_all(home_dir);
 
     print_response(&HelperResponse::Spawned { pid: pid as u32 });
     process::exit(exit_code);
 }
 
-fn handle_cleanup(session_id: &str, project_dir: &Path) {
-    // Validate session_id to prevent anchor path injection.
-    // Must be alphanumeric plus hyphen/underscore — no slashes, spaces, or
-    // special characters that could reference arbitrary pf anchors.
-    if session_id.is_empty()
-        || !session_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        print_error(&format!("Invalid session_id: {:?}", session_id));
-        process::exit(1);
-    }
+fn handle_cleanup(session_id: &str, project_dir: &Path, sandbox_user: &str) -> Result<(), String> {
+    // Validate session_id using the library function
+    validate_session_name(session_id).map_err(|e| format!("Invalid session_id: {}", e))?;
 
     // Remove ACLs on project dir
-    let _ = remove_acl(project_dir);
+    let _ = remove_acl(project_dir, sandbox_user);
 
-    // Remove pf sub-anchor
-    let _ = std::process::Command::new("pfctl")
-        .args(["-a", &format!("mino/session-{}", session_id), "-F", "rules"])
-        .output();
+    // Remove pf sub-anchor using validated args from library
+    if let Ok(pf_args) = helper::build_pf_cleanup_args(session_id) {
+        let _ = std::process::Command::new("pfctl").args(&pf_args).output();
+    }
 
     print_response(&HelperResponse::Cleaned);
+    Ok(())
 }
 
-fn set_acl(path: &Path, writable: bool) -> Result<(), String> {
-    let perms = if writable {
-        "allow read,write,execute,file_inherit,directory_inherit"
-    } else {
-        "allow read,execute,file_inherit,directory_inherit"
-    };
-
+fn set_acl(path: &Path, writable: bool, sandbox_user: &str) -> Result<(), String> {
     let path_str = path
         .to_str()
         .ok_or_else(|| "Invalid UTF-8 in path".to_string())?;
 
+    let args = helper::build_acl_args(path_str, sandbox_user, writable);
+
     let output = std::process::Command::new("chmod")
-        .args(["+a", &format!("_mino_agent {}", perms), path_str])
+        .args(&args)
         .output()
         .map_err(|e| format!("chmod +a failed: {}", e))?;
 
@@ -504,35 +507,25 @@ fn set_acl(path: &Path, writable: bool) -> Result<(), String> {
 }
 
 /// Remove ACLs from all tracked paths and optionally the home directory.
-fn cleanup_acls(acl_paths: &[AclEntry], home_dir: Option<&Path>) {
+fn cleanup_acls(acl_paths: &[AclEntry], home_dir: Option<&Path>, sandbox_user: &str) {
     for acl in acl_paths {
-        let _ = remove_acl(&acl.path);
+        let _ = remove_acl(&acl.path, sandbox_user);
     }
     if let Some(home) = home_dir {
-        let _ = remove_acl(home);
+        let _ = remove_acl(home, sandbox_user);
     }
 }
 
-fn remove_acl(path: &Path) -> Result<(), String> {
+fn remove_acl(path: &Path, sandbox_user: &str) -> Result<(), String> {
     let path_str = path.to_str().unwrap_or("");
 
     // Remove read-write ACL
-    let _ = std::process::Command::new("chmod")
-        .args([
-            "-a",
-            "_mino_agent allow read,write,execute,file_inherit,directory_inherit",
-            path_str,
-        ])
-        .output();
+    let rw_args = helper::build_remove_acl_args(path_str, sandbox_user, true);
+    let _ = std::process::Command::new("chmod").args(&rw_args).output();
 
     // Remove read-only ACL
-    let _ = std::process::Command::new("chmod")
-        .args([
-            "-a",
-            "_mino_agent allow read,execute,file_inherit,directory_inherit",
-            path_str,
-        ])
-        .output();
+    let ro_args = helper::build_remove_acl_args(path_str, sandbox_user, false);
+    let _ = std::process::Command::new("chmod").args(&ro_args).output();
 
     Ok(())
 }
@@ -617,12 +610,23 @@ unsafe fn set_rlimit(resource: libc::c_int, value: u64, name: &str) {
     }
 }
 
+/// Execute a command, optionally with a custom environment.
+///
+/// With `Some(env)`: clears the process environment and sets only the provided vars.
+/// With `None`: inherits the current environment.
+///
+/// On success, this function never returns (the process image is replaced).
+/// On failure, returns the IO error from the exec attempt.
 #[cfg(unix)]
-fn exec_command(command: &[String]) -> std::io::Error {
+fn exec_command(command: &[String], env: Option<&HashMap<String, String>>) -> std::io::Error {
     use std::os::unix::process::CommandExt;
-    std::process::Command::new(&command[0])
-        .args(&command[1..])
-        .exec()
+    let mut cmd = std::process::Command::new(&command[0]);
+    cmd.args(&command[1..]);
+    if let Some(env_map) = env {
+        cmd.env_clear();
+        cmd.envs(env_map);
+    }
+    cmd.exec()
 }
 
 /// Set up signal forwarding to child process

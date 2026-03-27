@@ -407,9 +407,13 @@ pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> 
         // On macOS, attempt to clean up ACLs and pf rules via the helper
         #[cfg(target_os = "macos")]
         {
-            if let Err(e) =
-                crate::sandbox::macos::cleanup_macos_sandbox(&session.name, &session.project_dir)
-                    .await
+            let sandbox_user = session.sandbox_user.as_deref().unwrap_or("_mino_agent");
+            if let Err(e) = crate::sandbox::macos::cleanup_macos_sandbox(
+                &session.name,
+                &session.project_dir,
+                sandbox_user,
+            )
+            .await
             {
                 tracing::warn!(
                     "Failed to clean up macOS sandbox for session {}: {}",
