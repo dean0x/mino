@@ -74,6 +74,10 @@ pub struct Session {
     /// Native detached: path to log file
     #[serde(default)]
     pub log_file: Option<PathBuf>,
+
+    /// Native mode: sandbox user name (for exec dispatch)
+    #[serde(default)]
+    pub sandbox_user: Option<String>,
 }
 
 impl Session {
@@ -99,6 +103,7 @@ impl Session {
             runtime_mode: None,
             process_id: None,
             log_file: None,
+            sandbox_user: None,
         }
     }
 
@@ -341,16 +346,19 @@ mod tests {
         session.runtime_mode = Some("native".to_string());
         session.process_id = Some(12345);
         session.log_file = Some(PathBuf::from("/tmp/mino-session.log"));
+        session.sandbox_user = Some("_mino_agent".to_string());
 
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("\"runtime_mode\":\"native\""));
         assert!(json.contains("\"process_id\":12345"));
         assert!(json.contains("mino-session.log"));
+        assert!(json.contains("\"sandbox_user\":\"_mino_agent\""));
 
         let parsed: Session = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.runtime_mode.as_deref(), Some("native"));
         assert_eq!(parsed.process_id, Some(12345));
         assert!(parsed.log_file.is_some());
+        assert_eq!(parsed.sandbox_user.as_deref(), Some("_mino_agent"));
     }
 
     #[test]
@@ -373,6 +381,7 @@ mod tests {
         assert!(session.process_id.is_none());
         assert!(session.log_file.is_none());
         assert!(session.home_volume.is_none());
+        assert!(session.sandbox_user.is_none());
     }
 
     #[test]
@@ -386,6 +395,7 @@ mod tests {
         assert!(session.runtime_mode.is_none());
         assert!(session.process_id.is_none());
         assert!(session.log_file.is_none());
+        assert!(session.sandbox_user.is_none());
     }
 
     // -- SessionStatus Display tests --

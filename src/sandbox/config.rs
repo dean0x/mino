@@ -20,8 +20,25 @@ const SENSITIVE_PATHS: &[&str] = &[
     ".netrc",
 ];
 
-/// Valid cache access modes
-const VALID_CACHE_MODES: &[&str] = &["read-only", "read-write", "none"];
+/// Cache access mode for the sandbox
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CacheMode {
+    #[default]
+    ReadOnly,
+    ReadWrite,
+    None,
+}
+
+impl std::fmt::Display for CacheMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CacheMode::ReadOnly => write!(f, "read-only"),
+            CacheMode::ReadWrite => write!(f, "read-write"),
+            CacheMode::None => write!(f, "none"),
+        }
+    }
+}
 
 /// Sandbox-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,8 +59,8 @@ pub struct SandboxConfig {
     /// macOS: sandbox user name
     pub sandbox_user: String,
 
-    /// Cache access mode: "read-only", "read-write", "none"
-    pub cache_mode: String,
+    /// Cache access mode
+    pub cache_mode: CacheMode,
 
     /// Additional read-only paths
     pub passthrough_paths: Vec<String>,
@@ -66,7 +83,7 @@ impl Default for SandboxConfig {
             max_cpu_seconds: 0,
             max_file_size_mb: 0,
             sandbox_user: "_mino_agent".to_string(),
-            cache_mode: "read-only".to_string(),
+            cache_mode: CacheMode::ReadOnly,
             passthrough_paths: vec![],
             writable_paths: vec![],
             dotfiles: vec![],
@@ -117,7 +134,6 @@ pub fn validate_sandbox_paths(config: &SandboxConfig, home_dir: &Path) -> MinoRe
         validate_path_not_sensitive(path, home_dir, config.allow_sensitive)?;
     }
 
-    validate_cache_mode(&config.cache_mode)?;
     validate_sandbox_user(&config.sandbox_user)?;
 
     Ok(())
@@ -146,19 +162,6 @@ pub fn validate_sandbox_user(username: &str) -> MinoResult<()> {
     Ok(())
 }
 
-/// Parse and validate cache mode
-pub fn validate_cache_mode(mode: &str) -> MinoResult<()> {
-    if VALID_CACHE_MODES.contains(&mode) {
-        Ok(())
-    } else {
-        Err(MinoError::User(format!(
-            "Invalid cache mode '{}'. Valid modes: {}",
-            mode,
-            VALID_CACHE_MODES.join(", ")
-        )))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,7 +175,7 @@ mod tests {
         assert_eq!(config.max_cpu_seconds, 0);
         assert_eq!(config.max_file_size_mb, 0);
         assert_eq!(config.sandbox_user, "_mino_agent");
-        assert_eq!(config.cache_mode, "read-only");
+        assert_eq!(config.cache_mode, CacheMode::ReadOnly);
         assert!(config.passthrough_paths.is_empty());
         assert!(config.writable_paths.is_empty());
         assert!(config.dotfiles.is_empty());
@@ -205,7 +208,7 @@ mod tests {
     fn empty_config_deserializes_to_defaults() {
         let config: SandboxConfig = toml::from_str("").unwrap();
         assert_eq!(config.max_memory_mb, 4096);
-        assert_eq!(config.cache_mode, "read-only");
+        assert_eq!(config.cache_mode, CacheMode::ReadOnly);
     }
 
     #[test]
@@ -252,21 +255,27 @@ mod tests {
     }
 
     #[test]
-    fn cache_mode_valid_values() {
-        for mode in VALID_CACHE_MODES {
-            assert!(
-                validate_cache_mode(mode).is_ok(),
-                "expected '{}' to be valid",
-                mode
-            );
+    fn cache_mode_serde_roundtrip() {
+        let modes = [CacheMode::ReadOnly, CacheMode::ReadWrite, CacheMode::None];
+        for mode in modes {
+            let json = serde_json::to_string(&mode).unwrap();
+            let parsed: CacheMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, mode);
         }
     }
 
     #[test]
-    fn cache_mode_invalid() {
-        let err = validate_cache_mode("foo").unwrap_err();
-        assert!(err.to_string().contains("Invalid cache mode"));
-        assert!(err.to_string().contains("foo"));
+    fn cache_mode_display() {
+        assert_eq!(CacheMode::ReadOnly.to_string(), "read-only");
+        assert_eq!(CacheMode::ReadWrite.to_string(), "read-write");
+        assert_eq!(CacheMode::None.to_string(), "none");
+    }
+
+    #[test]
+    fn cache_mode_deserializes_from_toml() {
+        let toml_str = r#"cache_mode = "read-write""#;
+        let config: SandboxConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.cache_mode, CacheMode::ReadWrite);
     }
 
     #[test]
@@ -301,13 +310,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_sandbox_paths_checks_cache_mode() {
+    fn validate_sandbox_paths_accepts_valid_cache_modes() {
         let home = PathBuf::from("/home/user");
-        let config = SandboxConfig {
-            cache_mode: "invalid".to_string(),
-            ..Default::default()
-        };
-        assert!(validate_sandbox_paths(&config, &home).is_err());
+        for mode in [CacheMode::ReadOnly, CacheMode::ReadWrite, CacheMode::None] {
+            let config = SandboxConfig {
+                cache_mode: mode,
+                ..Default::default()
+            };
+            assert!(validate_sandbox_paths(&config, &home).is_ok());
+        }
     }
 
     #[test]

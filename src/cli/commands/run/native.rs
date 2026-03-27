@@ -152,6 +152,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         SessionStatus::Starting,
     );
     session.runtime_mode = Some("native".to_string());
+    session.sandbox_user = Some(config.sandbox.sandbox_user.clone());
     manager.create(&session).await?;
 
     let audit = AuditLog::new(config);

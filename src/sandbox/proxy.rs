@@ -508,19 +508,42 @@ fn is_allowed(host: &str, port: u16, rules: &[NetworkRule]) -> bool {
     rules.iter().any(|r| r.host == host && r.port == port)
 }
 
-/// Bidirectional TCP relay using `tokio::io::copy`.
+/// Bidirectional TCP relay with graceful half-close.
 ///
-/// Returns when either direction finishes (EOF or error).
+/// When one direction reaches EOF, shuts down the write side of the other
+/// direction (sending FIN instead of RST) and allows the remaining data
+/// to drain with a 5-second timeout to prevent zombie connections.
 async fn relay(client: TcpStream, server: TcpStream) {
-    let (mut cr, mut cw) = client.into_split();
-    let (mut sr, mut sw) = server.into_split();
+    let (cr, cw) = client.into_split();
+    let (sr, sw) = server.into_split();
 
-    let c2s = tokio::io::copy(&mut cr, &mut sw);
-    let s2c = tokio::io::copy(&mut sr, &mut cw);
+    // Spawn each half into its own task so that borrow lifetimes are isolated
+    let c2s = tokio::spawn(async move {
+        let mut cr = cr;
+        let mut sw = sw;
+        let result = tokio::io::copy(&mut cr, &mut sw).await;
+        let _ = sw.shutdown().await;
+        result
+    });
+    let s2c = tokio::spawn(async move {
+        let mut sr = sr;
+        let mut cw = cw;
+        let result = tokio::io::copy(&mut sr, &mut cw).await;
+        let _ = cw.shutdown().await;
+        result
+    });
+
+    // Wait for both halves with a timeout on the slower one
+    tokio::pin!(c2s);
+    tokio::pin!(s2c);
 
     tokio::select! {
-        _ = c2s => {}
-        _ = s2c => {}
+        _ = &mut c2s => {
+            let _ = tokio::time::timeout(Duration::from_secs(5), s2c).await;
+        }
+        _ = &mut s2c => {
+            let _ = tokio::time::timeout(Duration::from_secs(5), c2s).await;
+        }
     }
 }
 
