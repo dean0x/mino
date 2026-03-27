@@ -14,6 +14,7 @@ pub mod home;
 pub mod layer;
 pub mod network;
 pub mod orchestration;
+pub mod sandbox;
 pub mod session;
 pub(crate) mod terminal;
 pub mod ui;
