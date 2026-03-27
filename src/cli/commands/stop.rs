@@ -35,9 +35,7 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
         return Ok(());
     }
 
-    let is_native = session.runtime_mode.as_deref() == Some("native");
-
-    if is_native {
+    if session.runtime_mode.as_deref() == Some("native") {
         // Native mode: kill the process directly
         if let Some(pid) = session.process_id {
             let mut spinner = TaskSpinner::new(&ctx);

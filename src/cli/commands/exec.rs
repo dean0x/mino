@@ -33,22 +33,20 @@ pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<()> {
         args.command
     };
 
-    let is_native = session.runtime_mode.as_deref() == Some("native");
-
-    if is_native {
-        let exit_code = exec_native(&session, &command).await?;
-        debug!(exit_code, "Native exec finished");
-        if exit_code != 0 {
-            std::process::exit((exit_code & 0xFF) as i32);
-        }
+    let exit_code = if session.runtime_mode.as_deref() == Some("native") {
+        let code = exec_native(&session, &command).await?;
+        debug!(code, "Native exec finished");
+        code
     } else {
         let runtime = create_runtime(config)?;
         let tty = std::io::stdin().is_terminal();
-        let exit_code = exec_in_session(&session, &*runtime, &command, tty).await?;
-        debug!(exit_code, "Container exec finished");
-        if exit_code != 0 {
-            std::process::exit((exit_code & 0xFF) as i32);
-        }
+        let code = exec_in_session(&session, &*runtime, &command, tty).await?;
+        debug!(code, "Container exec finished");
+        code
+    };
+
+    if exit_code != 0 {
+        std::process::exit((exit_code & 0xFF) as i32);
     }
 
     Ok(())

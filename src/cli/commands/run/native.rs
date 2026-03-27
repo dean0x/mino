@@ -122,7 +122,10 @@ async fn validate_and_resolve(
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     validate_sandbox_paths(&config.sandbox, &home_dir)?;
 
-    let _ = spinner; // silence unused warning — spinner is held for lifetime
+    // spinner is passed by &mut reference — the caller controls its lifetime.
+    // No need to bind it here; using _ to indicate spinner is intentionally unused
+    // from this point forward.
+    let _ = spinner;
     Ok((project_dir, network_mode))
 }
 
@@ -132,7 +135,7 @@ async fn gather_credentials_and_env(
     config: &Config,
     ctx: &UiContext,
     spinner: &mut TaskSpinner,
-    _project_dir: &PathBuf,
+    _project_dir: &Path,
 ) -> MinoResult<CredentialResult> {
     spinner.message("Gathering credentials...");
     let (credentials, active_providers, cred_failures) =
@@ -295,12 +298,11 @@ async fn spawn_and_monitor(
     } = ctx;
 
     spinner.message("Starting native sandbox...");
-    let dotfile_dir_cleanup = dotfile_dir.clone();
 
     let mut process = match platform.spawn(spawn_config).await {
         Ok(p) => p,
         Err(e) => {
-            cleanup_dotfile_dir(&dotfile_dir_cleanup).await;
+            cleanup_dotfile_dir(&dotfile_dir).await;
             manager
                 .update_status(&session_name, SessionStatus::Failed)
                 .await?;
@@ -336,7 +338,7 @@ async fn spawn_and_monitor(
     ));
 
     let exit_code = wait_with_signal_forwarding(&mut process).await?;
-    cleanup_dotfile_dir(&dotfile_dir_cleanup).await;
+    cleanup_dotfile_dir(&dotfile_dir).await;
 
     let final_status = if exit_code == 0 {
         SessionStatus::Stopped
@@ -491,7 +493,7 @@ fn resolve_project_dir(args: &RunArgs) -> MinoResult<PathBuf> {
 /// Clean up the dotfile temp directory after sandbox exit.
 /// Best-effort: logs a warning on failure but does not propagate errors.
 async fn cleanup_dotfile_dir(dir: &Option<PathBuf>) {
-    if let Some(ref path) = dir {
+    if let Some(path) = dir {
         if path.exists() {
             if let Err(e) = tokio::fs::remove_dir_all(path).await {
                 tracing::warn!("Failed to clean up dotfile dir {}: {}", path.display(), e);

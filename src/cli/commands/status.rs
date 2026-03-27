@@ -391,13 +391,19 @@ pub(crate) fn is_stale_native_session(session: &Session) -> bool {
 /// to remove ACLs and pf rules for the stale session.
 pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> {
     let sessions = Session::list_all().await?;
+    let stale: Vec<_> = sessions
+        .iter()
+        .filter(|s| is_stale_native_session(s))
+        .collect();
+
+    if stale.is_empty() {
+        return Ok(0);
+    }
+
+    let manager = crate::session::SessionManager::new().await?;
     let mut cleaned = 0;
 
-    for session in &sessions {
-        if !is_stale_native_session(session) {
-            continue;
-        }
-
+    for session in &stale {
         tracing::debug!(
             "Cleaning up stale native session: {} (pid: {:?})",
             session.name,
@@ -424,8 +430,6 @@ pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> 
             }
         }
 
-        // Update session status to Failed
-        let manager = crate::session::SessionManager::new().await?;
         manager
             .update_status(&session.name, SessionStatus::Failed)
             .await?;

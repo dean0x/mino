@@ -31,11 +31,10 @@ struct SpawnParams {
     sandbox_user: String,
 }
 
-/// Pre-fork state: everything needed to fork+exec, validated and resolved.
+/// Pre-fork state: UID/GID resolved and validated, ready to fork.
 struct SpawnReady {
     uid: u32,
     gid: u32,
-    sandbox_user: String,
 }
 
 /// Arguments for the child process after fork.
@@ -191,11 +190,7 @@ fn prepare_spawn(
         }
     };
 
-    Ok(SpawnReady {
-        uid,
-        gid,
-        sandbox_user: sandbox_user.to_string(),
-    })
+    Ok(SpawnReady { uid, gid })
 }
 
 fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
@@ -251,7 +246,7 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
                 home_dir: &home_dir,
                 project_dir: &project_dir,
                 command: &command,
-                sandbox_user: &ready.sandbox_user,
+                sandbox_user: &sandbox_user,
             });
         } else {
             // Parent process — never returns

@@ -9,18 +9,22 @@ use crate::session::validate_session_name;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// ACL permission string for macOS `chmod +a/-a` commands.
+fn acl_perms(writable: bool) -> &'static str {
+    if writable {
+        "allow read,write,execute,file_inherit,directory_inherit"
+    } else {
+        "allow read,execute,file_inherit,directory_inherit"
+    }
+}
+
 /// Generate `chmod +a` arguments to add an ACL entry for a user.
 ///
 /// Returns the full argument list for `std::process::Command::new("chmod").args(...)`.
 pub fn build_acl_args(path: &str, username: &str, writable: bool) -> Vec<String> {
-    let perms = if writable {
-        "allow read,write,execute,file_inherit,directory_inherit"
-    } else {
-        "allow read,execute,file_inherit,directory_inherit"
-    };
     vec![
         "+a".to_string(),
-        format!("{} {}", username, perms),
+        format!("{} {}", username, acl_perms(writable)),
         path.to_string(),
     ]
 }
@@ -29,14 +33,9 @@ pub fn build_acl_args(path: &str, username: &str, writable: bool) -> Vec<String>
 ///
 /// Returns the full argument list for `std::process::Command::new("chmod").args(...)`.
 pub fn build_remove_acl_args(path: &str, username: &str, writable: bool) -> Vec<String> {
-    let perms = if writable {
-        "allow read,write,execute,file_inherit,directory_inherit"
-    } else {
-        "allow read,execute,file_inherit,directory_inherit"
-    };
     vec![
         "-a".to_string(),
-        format!("{} {}", username, perms),
+        format!("{} {}", username, acl_perms(writable)),
         path.to_string(),
     ]
 }

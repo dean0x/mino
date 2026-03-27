@@ -304,11 +304,9 @@ pub fn generate_pf_rules(sandbox_user: &str, _session_id: &str, proxy_port: Opti
 
     let mut rules = String::new();
 
-    // Block all outbound TCP/UDP from the sandbox user
-    rules.push_str(&format!(
-        "block out quick proto {{ tcp udp }} user {}\n",
-        sandbox_user
-    ));
+    // Pass rules MUST come before the block rule because pf evaluates rules
+    // in order and `quick` stops processing on first match. If the block rule
+    // came first, DNS and proxy pass rules would be unreachable.
 
     // Allow DNS (system resolver)
     rules.push_str(&format!(
@@ -327,6 +325,12 @@ pub fn generate_pf_rules(sandbox_user: &str, _session_id: &str, proxy_port: Opti
             port, sandbox_user
         ));
     }
+
+    // Block all remaining outbound TCP/UDP from the sandbox user
+    rules.push_str(&format!(
+        "block out quick proto {{ tcp udp }} user {}\n",
+        sandbox_user
+    ));
 
     rules
 }
@@ -582,5 +586,21 @@ mod tests {
         // Port max
         let rules = generate_pf_rules("_mino_agent", "sess-1", Some(65535));
         assert!(rules.contains("port 65535 user _mino_agent"));
+    }
+
+    #[test]
+    fn pf_rules_pass_rules_before_block_rule() {
+        // pf evaluates rules in order; `quick` stops on first match.
+        // Pass rules MUST come before the block rule or they are unreachable.
+        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(8080));
+        let block_pos = rules.find("block out quick").expect("missing block rule");
+        let dns_pos = rules
+            .find("pass out quick proto udp to any port 53")
+            .expect("missing DNS pass");
+        let proxy_pos = rules
+            .find("pass out quick proto tcp to 127.0.0.1 port 8080")
+            .expect("missing proxy pass");
+        assert!(dns_pos < block_pos, "DNS pass must come before block");
+        assert!(proxy_pos < block_pos, "proxy pass must come before block");
     }
 }
