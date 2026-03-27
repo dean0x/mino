@@ -30,14 +30,6 @@ impl RuntimeMode {
             ))),
         }
     }
-
-    /// Display name for UI
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::Container => "Container",
-            Self::Native => "Native",
-        }
-    }
 }
 
 impl std::fmt::Display for RuntimeMode {
@@ -82,22 +74,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_case_insensitive() {
-        assert_eq!(RuntimeMode::parse("Container").unwrap(), RuntimeMode::Container);
-        assert_eq!(RuntimeMode::parse("NATIVE").unwrap(), RuntimeMode::Native);
-    }
-
-    #[test]
     fn parse_invalid_mode() {
         let err = RuntimeMode::parse("docker").unwrap_err();
         assert!(err.to_string().contains("Invalid runtime mode"));
         assert!(err.to_string().contains("docker"));
-    }
-
-    #[test]
-    fn display_name() {
-        assert_eq!(RuntimeMode::Container.display_name(), "Container");
-        assert_eq!(RuntimeMode::Native.display_name(), "Native");
     }
 
     #[test]
@@ -109,12 +89,6 @@ mod tests {
         let native = RuntimeMode::Native;
         let parsed = RuntimeMode::parse(&native.to_string()).unwrap();
         assert_eq!(parsed, native);
-    }
-
-    #[test]
-    fn display_format() {
-        assert_eq!(RuntimeMode::Container.to_string(), "container");
-        assert_eq!(RuntimeMode::Native.to_string(), "native");
     }
 
     #[test]

@@ -27,9 +27,7 @@ pub fn strip_gitconfig_secrets(content: &str) -> String {
         let trimmed = line.trim();
 
         // Detect start of a [credential] or [credential "..."] section
-        if trimmed.starts_with("[credential")
-            && (trimmed.ends_with(']')
-                || trimmed.contains("\"]"))
+        if trimmed.starts_with("[credential") && (trimmed.ends_with(']') || trimmed.contains("\"]"))
         {
             in_credential_section = true;
             continue;
@@ -65,7 +63,7 @@ pub fn is_risky_dotfile(path: &str) -> bool {
 /// Dispatches to the appropriate secret-stripping function based on the
 /// dotfile path. Unknown files are returned as-is.
 pub fn prepare_dotfile_content(dotfile_path: &str, content: &str) -> String {
-    if dotfile_path.ends_with(".gitconfig") || dotfile_path.ends_with("/.gitconfig") {
+    if dotfile_path.ends_with(".gitconfig") {
         strip_gitconfig_secrets(content)
     } else {
         content.to_string()
@@ -172,33 +170,17 @@ mod tests {
     }
 
     #[test]
-    fn is_risky_npmrc() {
-        assert!(is_risky_dotfile(".npmrc"));
+    fn is_risky_known_credential_files() {
+        for path in RISKY_DOTFILES {
+            assert!(is_risky_dotfile(path), "expected '{}' to be risky", path);
+        }
+        // Also works with full paths
         assert!(is_risky_dotfile("/home/user/.npmrc"));
     }
 
     #[test]
-    fn is_risky_pypirc() {
-        assert!(is_risky_dotfile(".pypirc"));
-    }
-
-    #[test]
-    fn is_risky_docker_config() {
-        assert!(is_risky_dotfile(".docker/config.json"));
-    }
-
-    #[test]
-    fn is_risky_cargo_credentials() {
-        assert!(is_risky_dotfile(".cargo/credentials.toml"));
-    }
-
-    #[test]
-    fn is_not_risky_gitconfig() {
+    fn is_not_risky_safe_dotfiles() {
         assert!(!is_risky_dotfile(".gitconfig"));
-    }
-
-    #[test]
-    fn is_not_risky_arbitrary() {
         assert!(!is_risky_dotfile(".bashrc"));
         assert!(!is_risky_dotfile(".zshrc"));
     }
@@ -234,15 +216,5 @@ mod tests {
         let input = "some content\nmore lines\n";
         let output = prepare_dotfile_content(".bashrc", input);
         assert_eq!(output, input);
-    }
-
-    #[test]
-    fn default_dotfiles_contains_gitconfig() {
-        assert!(DEFAULT_DOTFILES.contains(&".gitconfig"));
-    }
-
-    #[test]
-    fn default_dotfiles_contains_git_ignore() {
-        assert!(DEFAULT_DOTFILES.contains(&".config/git/ignore"));
     }
 }

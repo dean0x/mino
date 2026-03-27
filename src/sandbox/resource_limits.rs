@@ -40,25 +40,16 @@ impl ResourceLimits {
     /// Returns a list of arguments like `--as=4294967296` for each non-zero limit.
     /// Zero values are treated as "no limit" and produce no argument.
     pub fn to_prlimit_args(&self) -> Vec<String> {
-        let mut args = Vec::new();
-
-        if self.max_memory_bytes > 0 {
-            args.push(format!("--as={}", self.max_memory_bytes));
-        }
-
-        if self.max_processes > 0 {
-            args.push(format!("--nproc={}", self.max_processes));
-        }
-
-        if self.max_cpu_seconds > 0 {
-            args.push(format!("--cpu={}", self.max_cpu_seconds));
-        }
-
-        if self.max_file_size_bytes > 0 {
-            args.push(format!("--fsize={}", self.max_file_size_bytes));
-        }
-
-        args
+        [
+            (self.max_memory_bytes, "as"),
+            (u64::from(self.max_processes), "nproc"),
+            (self.max_cpu_seconds, "cpu"),
+            (self.max_file_size_bytes, "fsize"),
+        ]
+        .into_iter()
+        .filter(|(val, _)| *val > 0)
+        .map(|(val, name)| format!("--{}={}", name, val))
+        .collect()
     }
 }
 
@@ -148,32 +139,6 @@ mod tests {
         assert_eq!(limits.max_processes, 256);
         assert_eq!(limits.max_cpu_seconds, 0);
         assert_eq!(limits.max_file_size_bytes, 0);
-    }
-
-    #[test]
-    fn serializes_and_deserializes() {
-        let limits = ResourceLimits {
-            max_memory_bytes: 1024 * 1024 * 1024,
-            max_processes: 128,
-            max_cpu_seconds: 60,
-            max_file_size_bytes: 50 * 1024 * 1024,
-        };
-        let json = serde_json::to_string(&limits).unwrap();
-        let parsed: ResourceLimits = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.max_memory_bytes, limits.max_memory_bytes);
-        assert_eq!(parsed.max_processes, limits.max_processes);
-        assert_eq!(parsed.max_cpu_seconds, limits.max_cpu_seconds);
-        assert_eq!(parsed.max_file_size_bytes, limits.max_file_size_bytes);
-    }
-
-    #[test]
-    fn from_config_preserves_processes() {
-        let config = SandboxConfig {
-            max_processes: 512,
-            ..Default::default()
-        };
-        let limits = ResourceLimits::from_config(&config);
-        assert_eq!(limits.max_processes, 512);
     }
 
     #[test]

@@ -278,62 +278,37 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_not_setup_display() {
-        let err = MinoError::SandboxNotSetup;
-        assert!(err.to_string().contains("Native sandbox not set up"));
-    }
+    fn sandbox_errors_display_and_hint() {
+        let setup = MinoError::SandboxNotSetup;
+        assert!(setup.to_string().contains("Native sandbox not set up"));
+        assert_eq!(setup.hint(), Some("Run: mino setup --native"));
 
-    #[test]
-    fn sandbox_not_setup_hint() {
-        let err = MinoError::SandboxNotSetup;
-        assert_eq!(err.hint(), Some("Run: mino setup --native"));
-    }
+        let helper = MinoError::SandboxHelper("pfctl failed".to_string());
+        assert!(helper.to_string().contains("pfctl failed"));
+        assert_eq!(helper.hint(), Some("Check helper status: mino status"));
 
-    #[test]
-    fn sandbox_helper_display() {
-        let err = MinoError::SandboxHelper("pfctl failed".to_string());
-        assert!(err.to_string().contains("pfctl failed"));
-    }
-
-    #[test]
-    fn sandbox_helper_hint() {
-        let err = MinoError::SandboxHelper("failed".to_string());
-        assert_eq!(err.hint(), Some("Check helper status: mino status"));
-    }
-
-    #[test]
-    fn namespace_setup_display() {
-        let err = MinoError::NamespaceSetup("user namespace denied".to_string());
-        assert!(err.to_string().contains("user namespace denied"));
-    }
-
-    #[test]
-    fn namespace_setup_hint() {
-        let err = MinoError::NamespaceSetup("denied".to_string());
+        let ns = MinoError::NamespaceSetup("user namespace denied".to_string());
+        assert!(ns.to_string().contains("user namespace denied"));
         assert_eq!(
-            err.hint(),
+            ns.hint(),
             Some("Check kernel config: sysctl kernel.unprivileged_userns_clone")
         );
     }
 
     #[test]
-    fn resource_limit_display() {
-        let err = MinoError::ResourceLimit("RLIMIT_AS failed".to_string());
-        assert!(err.to_string().contains("RLIMIT_AS failed"));
-    }
+    fn sandbox_errors_display() {
+        let rlimit = MinoError::ResourceLimit("RLIMIT_AS failed".to_string());
+        assert!(rlimit.to_string().contains("RLIMIT_AS failed"));
 
-    #[test]
-    fn network_proxy_display() {
-        let err = MinoError::NetworkProxy("bind failed".to_string());
-        assert!(err.to_string().contains("bind failed"));
-    }
+        let proxy = MinoError::NetworkProxy("bind failed".to_string());
+        assert!(proxy.to_string().contains("bind failed"));
 
-    #[test]
-    fn native_unsupported_display() {
-        let err = MinoError::NativeUnsupported {
+        let unsupported = MinoError::NativeUnsupported {
             feature: "SSH agent forwarding".to_string(),
         };
-        assert!(err.to_string().contains("SSH agent forwarding"));
-        assert!(err.to_string().contains("not supported in native sandbox"));
+        assert!(unsupported.to_string().contains("SSH agent forwarding"));
+        assert!(unsupported
+            .to_string()
+            .contains("not supported in native sandbox"));
     }
 }

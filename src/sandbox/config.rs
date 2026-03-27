@@ -100,14 +100,12 @@ pub fn validate_path_not_sensitive(
 
 /// Validate all paths in the sandbox config
 pub fn validate_sandbox_paths(config: &SandboxConfig, home_dir: &Path) -> MinoResult<()> {
-    for path_str in &config.passthrough_paths {
-        let path = Path::new(path_str);
-        validate_path_not_sensitive(path, home_dir, config.allow_sensitive)?;
-    }
-
-    for path_str in &config.writable_paths {
-        let path = Path::new(path_str);
-        validate_path_not_sensitive(path, home_dir, config.allow_sensitive)?;
+    for path_str in config
+        .passthrough_paths
+        .iter()
+        .chain(&config.writable_paths)
+    {
+        validate_path_not_sensitive(Path::new(path_str), home_dir, config.allow_sensitive)?;
     }
 
     validate_cache_mode(&config.cache_mode)?;
@@ -194,24 +192,16 @@ mod tests {
     }
 
     #[test]
-    fn sensitive_path_aws_blocked() {
+    fn all_sensitive_paths_blocked() {
         let home = PathBuf::from("/home/user");
-        let path = PathBuf::from("/home/user/.aws");
-        assert!(validate_path_not_sensitive(&path, &home, false).is_err());
-    }
-
-    #[test]
-    fn sensitive_path_gcloud_blocked() {
-        let home = PathBuf::from("/home/user");
-        let path = PathBuf::from("/home/user/.config/gcloud");
-        assert!(validate_path_not_sensitive(&path, &home, false).is_err());
-    }
-
-    #[test]
-    fn sensitive_path_kube_blocked() {
-        let home = PathBuf::from("/home/user");
-        let path = PathBuf::from("/home/user/.kube");
-        assert!(validate_path_not_sensitive(&path, &home, false).is_err());
+        for suffix in SENSITIVE_PATHS {
+            let path = home.join(suffix);
+            assert!(
+                validate_path_not_sensitive(&path, &home, false).is_err(),
+                "expected {} to be blocked",
+                path.display()
+            );
+        }
     }
 
     #[test]
@@ -229,18 +219,14 @@ mod tests {
     }
 
     #[test]
-    fn cache_mode_valid_read_only() {
-        assert!(validate_cache_mode("read-only").is_ok());
-    }
-
-    #[test]
-    fn cache_mode_valid_read_write() {
-        assert!(validate_cache_mode("read-write").is_ok());
-    }
-
-    #[test]
-    fn cache_mode_valid_none() {
-        assert!(validate_cache_mode("none").is_ok());
+    fn cache_mode_valid_values() {
+        for mode in VALID_CACHE_MODES {
+            assert!(
+                validate_cache_mode(mode).is_ok(),
+                "expected '{}' to be valid",
+                mode
+            );
+        }
     }
 
     #[test]
