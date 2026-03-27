@@ -90,26 +90,6 @@ impl NativeSandbox {
 mod tests {
     use super::*;
 
-    #[test]
-    fn spawn_config_builds_correctly() {
-        let config = SandboxSpawnConfig {
-            session_id: "test-123".to_string(),
-            project_dir: PathBuf::from("/home/user/project"),
-            command: vec!["echo".to_string(), "hello".to_string()],
-            env: HashMap::from([("HOME".to_string(), "/home/agent".to_string())]),
-            network_mode: NetworkMode::Bridge,
-            sandbox_config: SandboxConfig::default(),
-            dotfile_dir: None,
-            interactive: true,
-        };
-
-        assert_eq!(config.session_id, "test-123");
-        assert_eq!(config.project_dir, PathBuf::from("/home/user/project"));
-        assert_eq!(config.command, vec!["echo", "hello"]);
-        assert!(config.interactive);
-        assert!(config.dotfile_dir.is_none());
-    }
-
     #[tokio::test]
     async fn validate_setup_returns_unsupported_on_macos() {
         // On macOS (where tests typically run), this should return NativeUnsupported

@@ -126,59 +126,37 @@ mod tests {
             .expect("failed to spawn 'true'")
     }
 
-    #[tokio::test]
-    async fn new_creates_with_session_id() {
-        let child = spawn_true();
-        let process = SandboxProcess::new(child, "test-session-1".to_string());
-        assert_eq!(process.session_id(), "test-session-1");
-        assert!(process.log_file().is_none());
-    }
-
-    #[tokio::test]
-    async fn pid_returns_some_for_running_process() {
-        let child = Command::new("sleep")
-            .arg("10")
+    fn spawn_sleep() -> Child {
+        Command::new("sleep")
+            .arg("60")
             .spawn()
-            .expect("failed to spawn sleep");
-        let mut process = SandboxProcess::new(child, "test-pid".to_string());
-        assert!(process.pid().is_some());
-        // Clean up
-        let _ = process.kill().await;
+            .expect("failed to spawn sleep")
     }
 
     #[tokio::test]
-    async fn with_log_file_sets_path() {
-        let child = spawn_true();
-        let process = SandboxProcess::new(child, "test-log".to_string())
+    async fn accessors_reflect_construction() {
+        let process = SandboxProcess::new(spawn_true(), "sess-1".to_string())
             .with_log_file(PathBuf::from("/tmp/test.log"));
+        assert_eq!(process.session_id(), "sess-1");
         assert_eq!(process.log_file(), Some(&PathBuf::from("/tmp/test.log")));
     }
 
     #[tokio::test]
-    async fn wait_returns_zero_for_true() {
-        let child = spawn_true();
-        let mut process = SandboxProcess::new(child, "test-wait".to_string());
-        let code = process.wait().await.unwrap();
-        assert_eq!(code, 0);
-    }
+    async fn wait_returns_exit_code() {
+        let mut success = SandboxProcess::new(spawn_true(), "ok".to_string());
+        assert_eq!(success.wait().await.unwrap(), 0);
 
-    #[tokio::test]
-    async fn wait_returns_nonzero_for_false() {
         let child = Command::new("false")
             .spawn()
             .expect("failed to spawn 'false'");
-        let mut process = SandboxProcess::new(child, "test-wait-fail".to_string());
-        let code = process.wait().await.unwrap();
-        assert_ne!(code, 0);
+        let mut failure = SandboxProcess::new(child, "fail".to_string());
+        assert_ne!(failure.wait().await.unwrap(), 0);
     }
 
     #[tokio::test]
-    async fn kill_stops_process() {
-        let child = Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .expect("failed to spawn sleep");
-        let mut process = SandboxProcess::new(child, "test-kill".to_string());
+    async fn kill_stops_running_process() {
+        let mut process = SandboxProcess::new(spawn_sleep(), "kill".to_string());
+        assert!(process.pid().is_some());
         assert!(process.kill().await.is_ok());
     }
 }

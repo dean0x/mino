@@ -107,7 +107,14 @@ pub fn validate_sandbox_paths(config: &SandboxConfig, home_dir: &Path) -> MinoRe
         .iter()
         .chain(&config.writable_paths)
     {
-        validate_path_not_sensitive(Path::new(path_str), home_dir, config.allow_sensitive)?;
+        let path = Path::new(path_str);
+        if !path.is_absolute() {
+            return Err(MinoError::User(format!(
+                "Sandbox path '{}' must be absolute (start with /)",
+                path_str
+            )));
+        }
+        validate_path_not_sensitive(path, home_dir, config.allow_sensitive)?;
     }
 
     validate_cache_mode(&config.cache_mode)?;
@@ -277,5 +284,27 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_sandbox_paths(&config, &home).is_err());
+    }
+
+    #[test]
+    fn validate_sandbox_paths_rejects_relative_passthrough() {
+        let home = PathBuf::from("/home/user");
+        let config = SandboxConfig {
+            passthrough_paths: vec!["../etc/shadow".to_string()],
+            ..Default::default()
+        };
+        let err = validate_sandbox_paths(&config, &home).unwrap_err();
+        assert!(err.to_string().contains("must be absolute"));
+    }
+
+    #[test]
+    fn validate_sandbox_paths_rejects_relative_writable() {
+        let home = PathBuf::from("/home/user");
+        let config = SandboxConfig {
+            writable_paths: vec!["relative/path".to_string()],
+            ..Default::default()
+        };
+        let err = validate_sandbox_paths(&config, &home).unwrap_err();
+        assert!(err.to_string().contains("must be absolute"));
     }
 }

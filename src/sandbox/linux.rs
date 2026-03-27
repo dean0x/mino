@@ -123,6 +123,19 @@ pub async fn spawn_linux_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
     Ok(SandboxProcess::new(child, config.session_id))
 }
 
+/// Single-quote a string for safe inclusion in shell scripts.
+///
+/// Wraps the value in single quotes after escaping embedded single quotes
+/// using the POSIX `'\''` idiom (end quote, escaped quote, restart quote).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", crate::network::shell_escape(s))
+}
+
+/// Single-quote a filesystem path for safe shell interpolation.
+fn shell_quote_path(p: &std::path::Path) -> String {
+    shell_quote(&p.display().to_string())
+}
+
 /// Generate the setup script that runs inside the namespace.
 ///
 /// This script:
@@ -188,34 +201,34 @@ pub(crate) fn generate_setup_script(
     script.push_str(&format!("mount -t tmpfs tmpfs {root}/dev/shm\n"));
 
     // 6. Bind-mount project dir read-write
-    let project_dir = config.project_dir.display();
+    let project_dir = shell_quote_path(&config.project_dir);
     script.push_str(&format!("mount --bind {project_dir} {root}/workspace\n"));
 
     // 7. Bind-mount passthrough paths read-only
     for path_str in &config.sandbox_config.passthrough_paths {
         let mount_point = path_str.trim_start_matches('/');
+        let quoted = shell_quote(path_str);
+        let quoted_mount = shell_quote(mount_point);
         script.push_str(&format!(
-            "[ -d {path} ] && mkdir -p {root}/{mount} && mount --bind {path} {root}/{mount} && mount -o remount,ro,bind {root}/{mount}\n",
-            path = path_str,
-            mount = mount_point
+            "[ -d {quoted} ] && mkdir -p {root}/{quoted_mount} && mount --bind {quoted} {root}/{quoted_mount} && mount -o remount,ro,bind {root}/{quoted_mount}\n"
         ));
     }
 
     // 8. Bind-mount writable paths
     for path_str in &config.sandbox_config.writable_paths {
         let mount_point = path_str.trim_start_matches('/');
+        let quoted = shell_quote(path_str);
+        let quoted_mount = shell_quote(mount_point);
         script.push_str(&format!(
-            "[ -d {path} ] && mkdir -p {root}/{mount} && mount --bind {path} {root}/{mount}\n",
-            path = path_str,
-            mount = mount_point
+            "[ -d {quoted} ] && mkdir -p {root}/{quoted_mount} && mount --bind {quoted} {root}/{quoted_mount}\n"
         ));
     }
 
     // 9. Copy dotfiles to sandbox HOME
     if let Some(dotfile_dir) = &config.dotfile_dir {
+        let quoted = shell_quote_path(dotfile_dir);
         script.push_str(&format!(
-            "cp -a {}/* {root}/home/agent/ 2>/dev/null || true\n",
-            dotfile_dir.display()
+            "cp -a {quoted}/* {root}/home/agent/ 2>/dev/null || true\n"
         ));
     }
 
@@ -271,7 +284,6 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    /// Helper to create a minimal SandboxSpawnConfig for testing
     fn test_spawn_config() -> SandboxSpawnConfig {
         SandboxSpawnConfig {
             session_id: "test-session".to_string(),
@@ -285,11 +297,11 @@ mod tests {
         }
     }
 
-    fn test_resource_limits() -> ResourceLimits {
+    fn default_limits() -> ResourceLimits {
         ResourceLimits::from_config(&SandboxConfig::default())
     }
 
-    fn zero_resource_limits() -> ResourceLimits {
+    fn no_limits() -> ResourceLimits {
         ResourceLimits {
             max_memory_bytes: 0,
             max_processes: 0,
@@ -298,30 +310,18 @@ mod tests {
         }
     }
 
+    /// Generate script with default config and no resource limits
+    fn script_default() -> String {
+        generate_setup_script(&test_spawn_config(), &no_limits()).unwrap()
+    }
+
     // ---- Script structure tests ----
 
     #[test]
-    fn script_starts_with_set_e() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
+    fn script_creates_tmpfs_root_and_required_dirs() {
+        let script = generate_setup_script(&test_spawn_config(), &default_limits()).unwrap();
         assert!(script.starts_with("set -e\n"));
-    }
-
-    #[test]
-    fn script_creates_tmpfs_root() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
         assert!(script.contains("mount -t tmpfs tmpfs /tmp/mino-root-$$"));
-    }
-
-    #[test]
-    fn script_creates_required_directories() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-
         for dir in ROOT_DIRS {
             assert!(
                 script.contains(&format!("mkdir -p /tmp/mino-root-$$/{}", dir)),
@@ -335,10 +335,7 @@ mod tests {
 
     #[test]
     fn script_bind_mounts_system_paths_readonly() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-
+        let script = script_default();
         for path in SYSTEM_BIND_MOUNTS {
             assert!(
                 script.contains(&format!("mount --bind {path} /tmp/mino-root-$${path}")),
@@ -355,23 +352,15 @@ mod tests {
 
     #[test]
     fn script_bind_mounts_lib64_optionally() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-
+        let script = script_default();
         assert!(script.contains("[ -d /lib64 ] && mkdir -p /tmp/mino-root-$$/lib64"));
         assert!(script.contains("mount --bind /lib64 /tmp/mino-root-$$/lib64"));
         assert!(script.contains("mount -o remount,ro,bind /tmp/mino-root-$$/lib64"));
     }
 
-    // ---- /etc entries tests ----
-
     #[test]
-    fn script_mounts_etc_entries() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-
+    fn script_mounts_etc_entries_readonly() {
+        let script = script_default();
         for entry in ETC_ENTRIES {
             assert!(
                 script.contains(&format!("mount --bind /etc/{entry}")),
@@ -388,14 +377,9 @@ mod tests {
         }
     }
 
-    // ---- Device node tests ----
-
     #[test]
-    fn script_mounts_device_nodes() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-
+    fn script_mounts_device_nodes_and_shm() {
+        let script = script_default();
         for dev in DEVICE_NODES {
             assert!(
                 script.contains(&format!("touch /tmp/mino-root-$$/dev/{dev}")),
@@ -410,146 +394,95 @@ mod tests {
                 dev
             );
         }
-    }
-
-    #[test]
-    fn script_mounts_dev_shm_as_tmpfs() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
         assert!(script.contains("mount -t tmpfs tmpfs /tmp/mino-root-$$/dev/shm"));
     }
 
-    // ---- Project directory tests ----
-
     #[test]
-    fn script_bind_mounts_project_dir() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("mount --bind /home/user/project /tmp/mino-root-$$/workspace"));
+    fn script_mounts_project_dir_and_filesystems() {
+        let script = script_default();
+        assert!(script.contains("mount --bind '/home/user/project' /tmp/mino-root-$$/workspace"));
+        assert!(script.contains("mount -t tmpfs tmpfs /tmp/mino-root-$$/tmp"));
+        assert!(script.contains("mount -t proc proc /tmp/mino-root-$$/proc"));
     }
 
-    // ---- pivot_root tests ----
+    // ---- pivot_root, cleanup, and environment ----
 
     #[test]
-    fn script_contains_pivot_root() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("pivot_root /tmp/mino-root-$$ /tmp/mino-root-$$/old_root"));
-    }
+    fn script_pivot_root_then_cleanup_then_env() {
+        let script = script_default();
+        let pivot_pos = script.find("pivot_root").expect("missing pivot_root");
+        let umount_pos = script.find("umount -l /old_root").expect("missing umount");
+        let rmdir_pos = script.find("rmdir /old_root").expect("missing rmdir");
+        let home_pos = script
+            .find("export HOME=/home/agent")
+            .expect("missing HOME export");
+        let cd_pos = script.find("cd /workspace").expect("missing cd");
+        let exec_pos = script.find("exec ").expect("missing exec");
 
-    #[test]
-    fn script_unmounts_old_root() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("umount -l /old_root"));
-    }
-
-    #[test]
-    fn script_removes_old_root() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("rmdir /old_root"));
-    }
-
-    // ---- Environment tests ----
-
-    #[test]
-    fn script_sets_home_to_agent() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("export HOME=/home/agent"));
-    }
-
-    #[test]
-    fn script_cd_to_workspace() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("cd /workspace"));
+        assert!(pivot_pos < umount_pos);
+        assert!(umount_pos < rmdir_pos);
+        assert!(rmdir_pos < home_pos);
+        assert!(home_pos < cd_pos);
+        assert!(cd_pos < exec_pos);
     }
 
     // ---- Resource limit tests ----
 
     #[test]
-    fn script_applies_memory_limit_when_nonzero() {
+    fn script_applies_each_limit_individually() {
         let config = test_spawn_config();
-        let limits = ResourceLimits {
-            max_memory_bytes: 4096 * 1024 * 1024, // 4 GB
-            max_processes: 0,
-            max_cpu_seconds: 0,
-            max_file_size_bytes: 0,
-        };
-        let script = generate_setup_script(&config, &limits).unwrap();
-        let expected_kb = 4096 * 1024 * 1024u64 / 1024;
-        assert!(script.contains(&format!("ulimit -v {expected_kb}")));
-    }
-
-    #[test]
-    fn script_applies_process_limit_when_nonzero() {
-        let config = test_spawn_config();
-        let limits = ResourceLimits {
-            max_memory_bytes: 0,
-            max_processes: 256,
-            max_cpu_seconds: 0,
-            max_file_size_bytes: 0,
-        };
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("ulimit -u 256"));
-    }
-
-    #[test]
-    fn script_applies_cpu_limit_when_nonzero() {
-        let config = test_spawn_config();
-        let limits = ResourceLimits {
-            max_memory_bytes: 0,
-            max_processes: 0,
-            max_cpu_seconds: 3600,
-            max_file_size_bytes: 0,
-        };
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("ulimit -t 3600"));
-    }
-
-    #[test]
-    fn script_applies_file_size_limit_when_nonzero() {
-        let config = test_spawn_config();
-        let limits = ResourceLimits {
-            max_memory_bytes: 0,
-            max_processes: 0,
-            max_cpu_seconds: 0,
-            max_file_size_bytes: 100 * 1024 * 1024, // 100 MB
-        };
-        let script = generate_setup_script(&config, &limits).unwrap();
-        let expected_blocks = 100 * 1024 * 1024u64 / 512;
-        assert!(script.contains(&format!("ulimit -f {expected_blocks}")));
+        let cases: &[(ResourceLimits, &str)] = &[
+            (
+                ResourceLimits {
+                    max_memory_bytes: 4096 * 1024 * 1024,
+                    ..no_limits()
+                },
+                &format!("ulimit -v {}", 4096 * 1024 * 1024u64 / 1024),
+            ),
+            (
+                ResourceLimits {
+                    max_processes: 256,
+                    ..no_limits()
+                },
+                "ulimit -u 256",
+            ),
+            (
+                ResourceLimits {
+                    max_cpu_seconds: 3600,
+                    ..no_limits()
+                },
+                "ulimit -t 3600",
+            ),
+            (
+                ResourceLimits {
+                    max_file_size_bytes: 100 * 1024 * 1024,
+                    ..no_limits()
+                },
+                &format!("ulimit -f {}", 100 * 1024 * 1024u64 / 512),
+            ),
+        ];
+        for (limits, expected) in cases {
+            let script = generate_setup_script(&config, limits).unwrap();
+            assert!(
+                script.contains(expected),
+                "Expected '{}' in script for limits {:?}",
+                expected,
+                limits
+            );
+        }
     }
 
     #[test]
     fn script_skips_all_limits_when_zero() {
-        let config = test_spawn_config();
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(!script.contains("ulimit -v "));
-        assert!(!script.contains("ulimit -u "));
-        assert!(!script.contains("ulimit -t "));
-        assert!(!script.contains("ulimit -f "));
+        let script = script_default();
+        assert!(!script.contains("ulimit"));
     }
 
     #[test]
     fn script_applies_default_limits() {
-        let config = test_spawn_config();
-        let limits = test_resource_limits(); // default: 4096 MB memory, 256 processes
-        let script = generate_setup_script(&config, &limits).unwrap();
-        // Default config has max_memory_mb=4096 and max_processes=256
+        let script = generate_setup_script(&test_spawn_config(), &default_limits()).unwrap();
         assert!(script.contains("ulimit -v "));
         assert!(script.contains("ulimit -u 256"));
-        // cpu and file size are 0 by default
         assert!(!script.contains("ulimit -t "));
         assert!(!script.contains("ulimit -f "));
     }
@@ -558,9 +491,7 @@ mod tests {
 
     #[test]
     fn script_exec_with_properly_escaped_command() {
-        let config = test_spawn_config();
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
+        let script = script_default();
         assert!(script.contains("exec 'echo' 'hello'"));
     }
 
@@ -568,7 +499,7 @@ mod tests {
     fn script_exec_escapes_single_quotes() {
         let mut config = test_spawn_config();
         config.command = vec!["echo".to_string(), "it's alive".to_string()];
-        let limits = zero_resource_limits();
+        let limits = no_limits();
         let script = generate_setup_script(&config, &limits).unwrap();
         assert!(script.contains("exec 'echo' 'it'\\''s alive'"));
     }
@@ -577,123 +508,89 @@ mod tests {
     fn script_exec_single_command() {
         let mut config = test_spawn_config();
         config.command = vec!["/bin/bash".to_string()];
-        let limits = zero_resource_limits();
+        let limits = no_limits();
         let script = generate_setup_script(&config, &limits).unwrap();
         assert!(script.contains("exec '/bin/bash'\n"));
     }
 
-    // ---- Passthrough paths tests ----
+    // ---- Shell injection safety tests ----
 
     #[test]
-    fn script_includes_passthrough_paths_readonly() {
+    fn script_quotes_project_dir_with_spaces() {
+        let mut config = test_spawn_config();
+        config.project_dir = PathBuf::from("/home/user/my project");
+        let limits = no_limits();
+        let script = generate_setup_script(&config, &limits).unwrap();
+        assert!(script.contains("mount --bind '/home/user/my project' /tmp/mino-root-$$/workspace"));
+    }
+
+    #[test]
+    fn script_quotes_project_dir_with_single_quotes() {
+        let mut config = test_spawn_config();
+        config.project_dir = PathBuf::from("/home/user/it's");
+        let limits = no_limits();
+        let script = generate_setup_script(&config, &limits).unwrap();
+        assert!(script.contains("mount --bind '/home/user/it'\\''s' /tmp/mino-root-$$/workspace"));
+    }
+
+    #[test]
+    fn script_quotes_passthrough_path_with_spaces() {
+        let mut config = test_spawn_config();
+        config.sandbox_config.passthrough_paths = vec!["/opt/my tools".to_string()];
+        let limits = no_limits();
+        let script = generate_setup_script(&config, &limits).unwrap();
+        assert!(script.contains("mount --bind '/opt/my tools'"));
+    }
+
+    #[test]
+    fn script_quotes_dotfile_dir_with_special_chars() {
+        let mut config = test_spawn_config();
+        config.dotfile_dir = Some(PathBuf::from("/tmp/mino dots $(id)"));
+        let limits = no_limits();
+        let script = generate_setup_script(&config, &limits).unwrap();
+        assert!(script.contains("cp -a '/tmp/mino dots $(id)'/*"));
+    }
+
+    // ---- Optional config paths ----
+
+    #[test]
+    fn script_passthrough_paths_mounted_readonly() {
         let mut config = test_spawn_config();
         config.sandbox_config.passthrough_paths =
             vec!["/opt/toolchain".to_string(), "/usr/local/go".to_string()];
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
+        let script = generate_setup_script(&config, &no_limits()).unwrap();
 
-        assert!(script.contains("mount --bind /opt/toolchain /tmp/mino-root-$$/opt/toolchain"));
-        assert!(script.contains("mount -o remount,ro,bind /tmp/mino-root-$$/opt/toolchain"));
-        assert!(script.contains("mount --bind /usr/local/go /tmp/mino-root-$$/usr/local/go"));
-        assert!(script.contains("mount -o remount,ro,bind /tmp/mino-root-$$/usr/local/go"));
+        assert!(script.contains("mount --bind '/opt/toolchain' /tmp/mino-root-$$/'opt/toolchain'"));
+        assert!(script.contains("mount -o remount,ro,bind /tmp/mino-root-$$/'opt/toolchain'"));
+        assert!(script.contains("mount --bind '/usr/local/go' /tmp/mino-root-$$/'usr/local/go'"));
+        assert!(script.contains("mount -o remount,ro,bind /tmp/mino-root-$$/'usr/local/go'"));
     }
 
-    // ---- Writable paths tests ----
-
     #[test]
-    fn script_includes_writable_paths_readwrite() {
+    fn script_writable_paths_mounted_readwrite() {
         let mut config = test_spawn_config();
         config.sandbox_config.writable_paths = vec!["/tmp/shared".to_string()];
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
+        let script = generate_setup_script(&config, &no_limits()).unwrap();
 
-        assert!(script.contains("mount --bind /tmp/shared /tmp/mino-root-$$/tmp/shared"));
-        // Should NOT have remount ro for writable paths
-        assert!(!script.contains("remount,ro,bind /tmp/mino-root-$$/tmp/shared"));
+        assert!(script.contains("mount --bind '/tmp/shared' /tmp/mino-root-$$/'tmp/shared'"));
+        assert!(!script.contains("remount,ro,bind /tmp/mino-root-$$/'tmp/shared'"));
     }
 
-    // ---- Dotfile tests ----
-
     #[test]
-    fn script_includes_dotfile_copy_when_set() {
+    fn script_dotfile_copy_present_when_configured() {
         let mut config = test_spawn_config();
         config.dotfile_dir = Some(PathBuf::from("/tmp/mino-dotfiles-12345"));
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("cp -a /tmp/mino-dotfiles-12345/* /tmp/mino-root-$$/home/agent/"));
+        let script = generate_setup_script(&config, &no_limits()).unwrap();
+        assert!(script.contains("cp -a '/tmp/mino-dotfiles-12345'/* /tmp/mino-root-$$/home/agent/"));
     }
 
     #[test]
-    fn script_omits_dotfile_copy_when_none() {
-        let config = test_spawn_config();
-        assert!(config.dotfile_dir.is_none());
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
+    fn script_dotfile_copy_absent_when_none() {
+        let script = script_default();
         assert!(!script.contains("cp -a"));
     }
 
-    // ---- /tmp and /proc mount tests ----
-
-    #[test]
-    fn script_mounts_tmp_as_tmpfs() {
-        let config = test_spawn_config();
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("mount -t tmpfs tmpfs /tmp/mino-root-$$/tmp"));
-    }
-
-    #[test]
-    fn script_mounts_proc() {
-        let config = test_spawn_config();
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("mount -t proc proc /tmp/mino-root-$$/proc"));
-    }
-
-    // ---- Script ordering test ----
-
-    #[test]
-    fn script_pivot_root_comes_before_exec() {
-        let config = test_spawn_config();
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-
-        let pivot_pos = script.find("pivot_root").expect("missing pivot_root");
-        let exec_pos = script.find("exec ").expect("missing exec");
-        assert!(pivot_pos < exec_pos, "pivot_root must come before exec");
-    }
-
-    #[test]
-    fn script_umount_old_root_comes_after_pivot_root() {
-        let config = test_spawn_config();
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-
-        let pivot_pos = script.find("pivot_root").expect("missing pivot_root");
-        let umount_pos = script.find("umount -l /old_root").expect("missing umount");
-        assert!(
-            umount_pos > pivot_pos,
-            "umount -l /old_root must come after pivot_root"
-        );
-    }
-
-    #[test]
-    fn script_home_set_after_pivot_root() {
-        let config = test_spawn_config();
-        let limits = zero_resource_limits();
-        let script = generate_setup_script(&config, &limits).unwrap();
-
-        let pivot_pos = script.find("pivot_root").expect("missing pivot_root");
-        let home_pos = script
-            .find("export HOME=/home/agent")
-            .expect("missing HOME export");
-        assert!(
-            home_pos > pivot_pos,
-            "HOME export must come after pivot_root"
-        );
-    }
-
-    // ---- Full script snapshot test ----
+    // ---- Full script structure snapshot ----
 
     #[test]
     fn script_full_structure() {
@@ -726,10 +623,10 @@ mod tests {
             "/etc/resolv.conf",
             "/dev/null",
             "/dev/shm",
-            "mount --bind /home/user/project",
-            "/opt/tools",
-            "/var/cache",
-            "cp -a /tmp/dotfiles/*",
+            "mount --bind '/home/user/project'",
+            "'/opt/tools'",
+            "'/var/cache'",
+            "cp -a '/tmp/dotfiles'/*",
             "mount -t tmpfs tmpfs /tmp/mino-root-$$/tmp",
             "mount -t proc proc",
             "pivot_root",
