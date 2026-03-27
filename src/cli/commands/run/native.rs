@@ -1,0 +1,525 @@
+//! Native sandbox run flow
+//!
+//! Parallel to the container run flow, but uses kernel-level process isolation
+//! instead of Podman containers. Shares credential gathering and session
+//! management with the container path.
+
+use crate::audit::AuditLog;
+use crate::cli::args::RunArgs;
+use crate::config::Config;
+use crate::error::{MinoError, MinoResult};
+use crate::network::{resolve_network_mode, NetworkResolutionInput};
+use crate::sandbox::config::validate_sandbox_paths;
+use crate::sandbox::dotfiles;
+use crate::sandbox::native::{NativeSandbox, SandboxSpawnConfig};
+use crate::session::{Session, SessionManager, SessionStatus};
+use crate::ui::{self, TaskSpinner, UiContext};
+use console::style;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use tracing::debug;
+
+/// Execute a run command using native sandbox mode
+pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
+    #[cfg(unix)]
+    let _terminal_guard = crate::terminal::TerminalGuard::save();
+
+    let ctx = UiContext::detect();
+    let mut spinner = TaskSpinner::new(&ctx);
+    spinner.start("Initializing native sandbox...");
+
+    // 1. Validate native sandbox prerequisites
+    NativeSandbox::validate_setup().await?;
+
+    // 2. Check for container-only flags
+    validate_native_flags(&args)?;
+
+    // 3. Resolve project directory
+    let project_dir = resolve_project_dir(&args)?;
+    debug!("Project directory: {}", project_dir.display());
+
+    // 4. Resolve network mode (reuse existing logic)
+    let network_mode = resolve_network_mode(&NetworkResolutionInput {
+        cli_network: args.network.as_deref(),
+        cli_allow_rules: &args.network_allow,
+        cli_preset: args.network_preset.as_deref(),
+        config_network: &config.container.network,
+        config_network_allow: &config.container.network_allow,
+        config_preset: config.container.network_preset.as_deref(),
+    })?;
+    debug!("Network mode: {:?}", network_mode);
+
+    // 5. Validate sandbox paths
+    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    validate_sandbox_paths(&config.sandbox, &home_dir)?;
+
+    // 6. Gather credentials
+    spinner.message("Gathering credentials...");
+    let (credentials, active_providers, cred_failures) =
+        super::credentials::gather_credentials(&args, config).await?;
+    if !cred_failures.is_empty() {
+        spinner.stop("Credentials");
+        for (provider, error) in &cred_failures {
+            ui::step_warn(&ctx, &format!("{}: {}", provider, error));
+        }
+        if args.strict_credentials {
+            return Err(MinoError::User(format!(
+                "Credential loading failed for: {}. Remove --strict-credentials to continue anyway.",
+                cred_failures
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        spinner.start("Initializing native sandbox...");
+    }
+
+    // 7. Build environment variables
+    let env = build_sandbox_env(config, &credentials);
+
+    // 8. Prepare dotfiles
+    let dotfile_dir = prepare_dotfiles(config).await?;
+
+    // 9. Create session
+    let session_name = args
+        .name
+        .clone()
+        .unwrap_or_else(super::generate_session_name);
+    let manager = SessionManager::new().await?;
+
+    if config.session.auto_cleanup_hours > 0 {
+        let cleaned = manager.cleanup(config.session.auto_cleanup_hours).await?;
+        if cleaned > 0 {
+            debug!("Cleaned up {} old session(s)", cleaned);
+        }
+    }
+
+    let command = if args.command.is_empty() {
+        vec!["/bin/bash".to_string()]
+    } else {
+        args.command.clone()
+    };
+
+    let mut session = Session::new(
+        session_name.clone(),
+        project_dir.clone(),
+        command.clone(),
+        SessionStatus::Starting,
+    );
+    session.runtime_mode = Some("native".to_string());
+    manager.create(&session).await?;
+
+    let audit = AuditLog::new(config);
+    audit
+        .log(
+            "sandbox.spawn",
+            &serde_json::json!({
+                "session_id": session_name,
+                "runtime_mode": "native",
+                "project_dir": project_dir.display().to_string(),
+                "command": &command,
+                "network_mode": format!("{:?}", network_mode),
+            }),
+        )
+        .await;
+
+    if !active_providers.is_empty() {
+        audit
+            .log(
+                "credentials.injected",
+                &serde_json::json!({
+                    "session_name": &session_name,
+                    "providers": &active_providers,
+                }),
+            )
+            .await;
+    }
+
+    // 10. Spawn sandbox
+    spinner.message("Starting native sandbox...");
+
+    let spawn_config = SandboxSpawnConfig {
+        session_id: session_name.clone(),
+        project_dir: project_dir.clone(),
+        command,
+        env,
+        network_mode,
+        sandbox_config: config.sandbox.clone(),
+        dotfile_dir,
+        interactive: !args.detach,
+    };
+
+    let mut process = match NativeSandbox::spawn(spawn_config).await {
+        Ok(p) => p,
+        Err(e) => {
+            manager
+                .update_status(&session_name, SessionStatus::Failed)
+                .await?;
+            audit
+                .log(
+                    "session.failed",
+                    &serde_json::json!({
+                        "name": session_name,
+                        "error": e.to_string(),
+                    }),
+                )
+                .await;
+            return Err(e);
+        }
+    };
+
+    // Update session with PID
+    if let Some(pid) = process.pid() {
+        if let Some(mut s) = manager.get(&session_name).await? {
+            s.process_id = Some(pid);
+            s.status = SessionStatus::Running;
+            s.save().await?;
+        }
+    }
+
+    spinner.stop(&format!(
+        "Session {} started (native sandbox)",
+        style(&session_name).cyan()
+    ));
+
+    if args.detach {
+        println!("  View logs: mino logs {}", session_name);
+        println!("  Stop with: mino stop {}", session_name);
+        // TODO(Phase 5): Background process management + log capture
+        return Ok(());
+    }
+
+    // Wait for process exit
+    let exit_code = process.wait().await?;
+
+    // Update session status
+    let final_status = if exit_code == 0 {
+        SessionStatus::Stopped
+    } else {
+        SessionStatus::Failed
+    };
+    manager.update_status(&session_name, final_status).await?;
+
+    audit
+        .log(
+            "session.stopped",
+            &serde_json::json!({
+                "name": session_name,
+                "exit_code": exit_code,
+                "runtime_mode": "native",
+            }),
+        )
+        .await;
+
+    // Show update notification on exit
+    if let Some(update) = crate::version::load_cached_update(config).await {
+        let method = crate::version::detect_install_method();
+        let hint = crate::version::update_hint(&method);
+        println!(
+            "\n  {} Mino v{} available (current: v{}). {}",
+            style("\u{2139}").cyan(),
+            update.latest,
+            update.current,
+            hint
+        );
+    }
+
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+
+    Ok(())
+}
+
+/// Validate that no container-only flags are set
+fn validate_native_flags(args: &RunArgs) -> MinoResult<()> {
+    if args.image.is_some() {
+        return Err(MinoError::NativeUnsupported {
+            feature: "custom images (--image)".to_string(),
+        });
+    }
+    if args.read_only {
+        return Err(MinoError::NativeUnsupported {
+            feature: "read-only filesystem (--read-only)".to_string(),
+        });
+    }
+    if args.cache_fresh {
+        return Err(MinoError::NativeUnsupported {
+            feature: "cache management (--cache-fresh)".to_string(),
+        });
+    }
+    if !args.layers.is_empty() {
+        tracing::warn!("--layers ignored in native mode (using host tools)");
+    }
+    Ok(())
+}
+
+/// Build sandbox environment variables
+fn build_sandbox_env(
+    config: &Config,
+    credentials: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+
+    // Basic env vars
+    env.insert("HOME".to_string(), "/home/agent".to_string());
+    env.insert("USER".to_string(), "mino-agent".to_string());
+    env.insert("MINO_SANDBOX".to_string(), "native".to_string());
+
+    // Inherit locale/terminal from host
+    for key in &["LANG", "LC_ALL", "TZ", "TERM"] {
+        if let Ok(val) = std::env::var(key) {
+            env.insert(key.to_string(), val);
+        }
+    }
+
+    // PATH: system paths (toolchain paths added later based on passthrough mounts)
+    env.insert(
+        "PATH".to_string(),
+        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+    );
+
+    // Credential env vars
+    env.extend(credentials.clone());
+
+    // User-specified env vars from config
+    env.extend(config.container.env.clone());
+
+    env
+}
+
+/// Resolve project directory from CLI args or current directory
+fn resolve_project_dir(args: &RunArgs) -> MinoResult<PathBuf> {
+    let dir = match &args.project {
+        Some(p) => p.clone(),
+        None => {
+            std::env::current_dir().map_err(|e| MinoError::io("getting current directory", e))?
+        }
+    };
+    if !dir.is_dir() {
+        return Err(MinoError::PathNotFound(dir));
+    }
+    Ok(dir)
+}
+
+/// Prepare dotfiles for the sandbox by copying and sanitizing them into a temp dir
+async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
+    let home_dir = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Ok(None),
+    };
+
+    let tmp_dir = std::env::temp_dir().join(format!("mino-dotfiles-{}", std::process::id()));
+    tokio::fs::create_dir_all(&tmp_dir)
+        .await
+        .map_err(|e| MinoError::io("creating dotfile temp dir", e))?;
+
+    // Copy default dotfiles (safe ones like .gitconfig)
+    for dotfile in dotfiles::DEFAULT_DOTFILES {
+        let source = home_dir.join(dotfile);
+        if source.exists() {
+            let content = tokio::fs::read_to_string(&source)
+                .await
+                .map_err(|e| MinoError::io(format!("reading {}", dotfile), e))?;
+            let cleaned = dotfiles::prepare_dotfile_content(dotfile, &content);
+
+            let dest = tmp_dir.join(dotfile);
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| MinoError::io("creating dotfile subdir", e))?;
+            }
+            tokio::fs::write(&dest, cleaned)
+                .await
+                .map_err(|e| MinoError::io(format!("writing {}", dotfile), e))?;
+        }
+    }
+
+    // Copy user-configured dotfiles
+    for dotfile in &config.sandbox.dotfiles {
+        if dotfiles::is_risky_dotfile(dotfile) {
+            tracing::warn!(
+                "{} may contain auth tokens. Secrets will be accessible to the agent.",
+                dotfile
+            );
+        }
+        let source = home_dir.join(dotfile);
+        if source.exists() {
+            let content = tokio::fs::read_to_string(&source)
+                .await
+                .map_err(|e| MinoError::io(format!("reading {}", dotfile), e))?;
+            let cleaned = dotfiles::prepare_dotfile_content(dotfile, &content);
+
+            let dest = tmp_dir.join(dotfile);
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| MinoError::io("creating dotfile subdir", e))?;
+            }
+            tokio::fs::write(&dest, cleaned)
+                .await
+                .map_err(|e| MinoError::io(format!("writing {}", dotfile), e))?;
+        }
+    }
+
+    Ok(Some(tmp_dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::args::RunArgs;
+
+    fn test_run_args() -> RunArgs {
+        RunArgs {
+            name: None,
+            project: None,
+            aws: false,
+            gcp: false,
+            azure: false,
+            all_clouds: false,
+            no_ssh_agent: false,
+            no_github: false,
+            strict_credentials: false,
+            image: None,
+            layers: vec![],
+            env: vec![],
+            volume: vec![],
+            detach: false,
+            read_only: false,
+            no_cache: false,
+            no_home: false,
+            cache_fresh: false,
+            network: None,
+            network_allow: vec![],
+            network_preset: None,
+            runtime: None,
+            command: vec![],
+        }
+    }
+
+    // ---- validate_native_flags tests ----
+
+    #[test]
+    fn validate_native_flags_image_returns_error() {
+        let mut args = test_run_args();
+        args.image = Some("custom:latest".to_string());
+        let err = validate_native_flags(&args).unwrap_err();
+        assert!(err.to_string().contains("custom images (--image)"));
+        assert!(err.to_string().contains("not supported in native sandbox"));
+    }
+
+    #[test]
+    fn validate_native_flags_read_only_returns_error() {
+        let mut args = test_run_args();
+        args.read_only = true;
+        let err = validate_native_flags(&args).unwrap_err();
+        assert!(err.to_string().contains("read-only filesystem"));
+    }
+
+    #[test]
+    fn validate_native_flags_cache_fresh_returns_error() {
+        let mut args = test_run_args();
+        args.cache_fresh = true;
+        let err = validate_native_flags(&args).unwrap_err();
+        assert!(err.to_string().contains("cache management"));
+    }
+
+    #[test]
+    fn validate_native_flags_no_flags_is_ok() {
+        let args = test_run_args();
+        assert!(validate_native_flags(&args).is_ok());
+    }
+
+    #[test]
+    fn validate_native_flags_layers_is_ok() {
+        // Layers are warned about but not rejected
+        let mut args = test_run_args();
+        args.layers = vec!["rust".to_string()];
+        assert!(validate_native_flags(&args).is_ok());
+    }
+
+    // ---- build_sandbox_env tests ----
+
+    #[test]
+    fn build_sandbox_env_includes_basic_vars() {
+        let config = Config::default();
+        let credentials = HashMap::new();
+        let env = build_sandbox_env(&config, &credentials);
+
+        assert_eq!(env.get("HOME").unwrap(), "/home/agent");
+        assert_eq!(env.get("USER").unwrap(), "mino-agent");
+        assert_eq!(env.get("MINO_SANDBOX").unwrap(), "native");
+    }
+
+    #[test]
+    fn build_sandbox_env_includes_path() {
+        let config = Config::default();
+        let credentials = HashMap::new();
+        let env = build_sandbox_env(&config, &credentials);
+
+        let path = env.get("PATH").unwrap();
+        assert!(path.contains("/usr/bin"));
+        assert!(path.contains("/bin"));
+    }
+
+    #[test]
+    fn build_sandbox_env_includes_credentials() {
+        let config = Config::default();
+        let mut credentials = HashMap::new();
+        credentials.insert("AWS_ACCESS_KEY_ID".to_string(), "AKIA123".to_string());
+        credentials.insert("AWS_SECRET_ACCESS_KEY".to_string(), "secret123".to_string());
+
+        let env = build_sandbox_env(&config, &credentials);
+        assert_eq!(env.get("AWS_ACCESS_KEY_ID").unwrap(), "AKIA123");
+        assert_eq!(env.get("AWS_SECRET_ACCESS_KEY").unwrap(), "secret123");
+    }
+
+    #[test]
+    fn build_sandbox_env_inherits_term() {
+        // Set TERM temporarily for this test
+        std::env::set_var("TERM", "xterm-256color");
+        let config = Config::default();
+        let credentials = HashMap::new();
+        let env = build_sandbox_env(&config, &credentials);
+        assert_eq!(env.get("TERM").unwrap(), "xterm-256color");
+    }
+
+    #[test]
+    fn build_sandbox_env_includes_config_env() {
+        let mut config = Config::default();
+        config
+            .container
+            .env
+            .insert("CUSTOM_VAR".to_string(), "custom_value".to_string());
+        let credentials = HashMap::new();
+        let env = build_sandbox_env(&config, &credentials);
+        assert_eq!(env.get("CUSTOM_VAR").unwrap(), "custom_value");
+    }
+
+    // ---- resolve_project_dir tests ----
+
+    #[test]
+    fn resolve_project_dir_uses_cwd_when_none() {
+        let args = test_run_args();
+        let dir = resolve_project_dir(&args).unwrap();
+        assert!(dir.is_dir());
+    }
+
+    #[test]
+    fn resolve_project_dir_uses_explicit_path() {
+        let mut args = test_run_args();
+        args.project = Some(PathBuf::from("/tmp"));
+        let dir = resolve_project_dir(&args).unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp"));
+    }
+
+    #[test]
+    fn resolve_project_dir_rejects_nonexistent() {
+        let mut args = test_run_args();
+        args.project = Some(PathBuf::from("/nonexistent/path/abc123"));
+        let err = resolve_project_dir(&args).unwrap_err();
+        assert!(err.to_string().contains("Path not found"));
+    }
+}

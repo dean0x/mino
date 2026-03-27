@@ -5,6 +5,7 @@ mod container;
 mod credentials;
 mod home;
 pub(crate) mod image;
+mod native;
 mod prompts;
 
 use self::cache::{check_cache_size_warning, finalize_caches, setup_caches};
@@ -48,6 +49,15 @@ struct ImageResolution {
 
 /// Execute the run command
 pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
+    // Dispatch to native sandbox if requested
+    let runtime_mode =
+        crate::sandbox::resolve_runtime_mode(args.runtime.as_deref(), &config.general.runtime)?;
+
+    if matches!(runtime_mode, crate::sandbox::RuntimeMode::Native) {
+        return native::execute_native(args, config).await;
+    }
+
+    // Container mode (default) — fall through to existing logic
     #[cfg(unix)]
     let _terminal_guard = crate::terminal::TerminalGuard::save();
 
@@ -623,7 +633,7 @@ fn resolve_project_dir(args: &RunArgs) -> MinoResult<PathBuf> {
     env::current_dir().map_err(|e| MinoError::io("getting current directory", e))
 }
 
-fn generate_session_name() -> String {
+pub(crate) fn generate_session_name() -> String {
     let short_id = &Uuid::new_v4().to_string()[..8];
     format!("session-{}", short_id)
 }
