@@ -108,63 +108,17 @@ async fn exec_in_session(
 
 /// Execute a command inside a native sandbox session.
 ///
-/// On Linux, uses `nsenter` to enter the existing namespaces of the sandboxed process.
-/// On macOS, invokes the sandbox helper to run as the sandbox user with matching ACLs.
+/// Uses the `SandboxPlatform` trait for platform dispatch, removing all
+/// `#[cfg]` blocks from this function.
 async fn exec_native(session: &Session, command: &[String]) -> MinoResult<i32> {
+    let platform = crate::sandbox::native::create_sandbox_platform()?;
     let pid = session
         .process_id
         .ok_or_else(|| MinoError::User("No process ID for this session".to_string()))?;
-
-    #[cfg(target_os = "linux")]
-    {
-        let pid_str = pid.to_string();
-        let status = tokio::process::Command::new("nsenter")
-            .args([
-                "--target", &pid_str, "--user", "--mount", "--pid", "--net", "--",
-            ])
-            .args(command)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .await
-            .map_err(|e| MinoError::command_failed("nsenter", e))?;
-
-        Ok(status.code().unwrap_or(128))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let pid_str = pid.to_string();
-        let sandbox_user = session.sandbox_user.as_deref().unwrap_or("_mino_agent");
-        let status = tokio::process::Command::new("sudo")
-            .arg("mino-sandbox-helper")
-            .arg("exec")
-            .arg("--session-id")
-            .arg(&session.name)
-            .arg("--sandbox-user")
-            .arg(sandbox_user)
-            .arg("--pid")
-            .arg(pid_str)
-            .arg("--")
-            .args(command)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .await
-            .map_err(|e| MinoError::command_failed("mino-sandbox-helper exec", e))?;
-
-        Ok(status.code().unwrap_or(128))
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (session, command, pid);
-        Err(MinoError::UnsupportedPlatform(
-            std::env::consts::OS.to_string(),
-        ))
-    }
+    let sandbox_user = session.sandbox_user.as_deref().unwrap_or("_mino_agent");
+    platform
+        .exec(pid, &session.name, sandbox_user, command)
+        .await
 }
 
 #[cfg(test)]

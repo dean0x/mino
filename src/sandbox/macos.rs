@@ -4,15 +4,75 @@
 //! pf (packet filter) for network isolation. Requires mino-sandbox-helper
 //! installed via `mino setup --native`.
 
-use crate::error::{MinoError, MinoResult};
-use crate::sandbox::helper_protocol::{AclEntry, HelperRequest, HelperResponse, ResourceLimitsDto};
-use crate::sandbox::native::SandboxSpawnConfig;
-use crate::sandbox::process::SandboxProcess;
-use crate::sandbox::resource_limits::ResourceLimits;
-use std::path::PathBuf;
+use async_trait::async_trait;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::debug;
+
+use crate::error::{MinoError, MinoResult};
+use crate::sandbox::helper_protocol::{AclEntry, HelperRequest, HelperResponse, ResourceLimitsDto};
+use crate::sandbox::native::{SandboxPlatform, SandboxSpawnConfig};
+use crate::sandbox::process::SandboxProcess;
+use crate::sandbox::resource_limits::ResourceLimits;
+
+/// macOS sandbox implementation using dedicated user + pf packet filter.
+pub struct MacosSandbox;
+
+#[async_trait]
+impl SandboxPlatform for MacosSandbox {
+    async fn validate_setup(&self) -> MinoResult<()> {
+        validate_macos_setup().await
+    }
+
+    async fn spawn(&self, config: SandboxSpawnConfig) -> MinoResult<SandboxProcess> {
+        spawn_macos_sandbox(config).await
+    }
+
+    async fn exec(
+        &self,
+        pid: u32,
+        session_name: &str,
+        sandbox_user: &str,
+        command: &[String],
+    ) -> MinoResult<i32> {
+        exec_macos(pid, session_name, sandbox_user, command).await
+    }
+
+    async fn cleanup(&self, session_id: &str, project_dir: &Path) -> MinoResult<()> {
+        let sandbox_user = &crate::sandbox::config::SandboxConfig::default().sandbox_user;
+        cleanup_macos_sandbox(session_id, project_dir, sandbox_user).await
+    }
+}
+
+/// Execute a command inside a macOS sandbox via the helper binary.
+async fn exec_macos(
+    pid: u32,
+    session_name: &str,
+    sandbox_user: &str,
+    command: &[String],
+) -> MinoResult<i32> {
+    let pid_str = pid.to_string();
+    let status = Command::new("sudo")
+        .arg(HELPER_BINARY)
+        .arg("exec")
+        .arg("--session-id")
+        .arg(session_name)
+        .arg("--sandbox-user")
+        .arg(sandbox_user)
+        .arg("--pid")
+        .arg(pid_str)
+        .arg("--")
+        .args(command)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .map_err(|e| MinoError::command_failed("mino-sandbox-helper exec", e))?;
+
+    Ok(status.code().unwrap_or(128))
+}
 
 const HELPER_BINARY: &str = "mino-sandbox-helper";
 

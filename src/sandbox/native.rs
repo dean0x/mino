@@ -1,15 +1,20 @@
-//! Native sandbox - cross-platform dispatch
+//! Native sandbox - cross-platform dispatch via SandboxPlatform trait
 //!
-//! Routes to platform-specific implementations based on the target OS.
+//! Defines the `SandboxPlatform` trait and a factory function that returns
+//! the correct platform implementation based on the target OS.
 //! Linux uses user namespaces via `unshare` + `pivot_root`.
 //! macOS uses a dedicated system user + pf packet filter via a privileged helper.
 
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+use crate::error::MinoError;
 use crate::error::MinoResult;
 use crate::network::NetworkMode;
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::process::SandboxProcess;
-use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// Configuration for spawning a native sandbox
 pub struct SandboxSpawnConfig {
@@ -38,47 +43,46 @@ pub struct SandboxSpawnConfig {
     pub interactive: bool,
 }
 
-/// Native sandbox facade — dispatches to platform-specific implementations
-pub struct NativeSandbox;
+/// Platform-specific sandbox operations.
+///
+/// Each supported OS implements this trait to provide validate, spawn, exec,
+/// and cleanup operations using its native isolation mechanisms.
+#[async_trait]
+pub trait SandboxPlatform: Send + Sync {
+    /// Check if native sandbox prerequisites are met for this platform.
+    async fn validate_setup(&self) -> MinoResult<()>;
 
-impl NativeSandbox {
-    /// Check if native sandbox prerequisites are met for this platform
-    pub async fn validate_setup() -> MinoResult<()> {
-        #[cfg(target_os = "linux")]
-        {
-            super::linux::validate_linux_setup().await
-        }
-        #[cfg(target_os = "macos")]
-        {
-            super::macos::validate_macos_setup().await
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            use crate::error::MinoError;
-            Err(MinoError::UnsupportedPlatform(
-                std::env::consts::OS.to_string(),
-            ))
-        }
+    /// Spawn a sandboxed process using platform-specific isolation.
+    async fn spawn(&self, config: SandboxSpawnConfig) -> MinoResult<SandboxProcess>;
+
+    /// Execute a command inside an existing sandbox session.
+    async fn exec(
+        &self,
+        pid: u32,
+        session_name: &str,
+        sandbox_user: &str,
+        command: &[String],
+    ) -> MinoResult<i32>;
+
+    /// Clean up sandbox resources (ACLs, firewall rules, etc.).
+    async fn cleanup(&self, session_id: &str, project_dir: &Path) -> MinoResult<()>;
+}
+
+/// Create the appropriate `SandboxPlatform` for the current OS.
+pub fn create_sandbox_platform() -> MinoResult<Box<dyn SandboxPlatform>> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(super::linux::LinuxSandbox))
     }
-
-    /// Spawn a sandboxed process using platform-specific isolation
-    pub async fn spawn(config: SandboxSpawnConfig) -> MinoResult<SandboxProcess> {
-        #[cfg(target_os = "linux")]
-        {
-            super::linux::spawn_linux_sandbox(config).await
-        }
-        #[cfg(target_os = "macos")]
-        {
-            super::macos::spawn_macos_sandbox(config).await
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            use crate::error::MinoError;
-            let _ = config;
-            Err(MinoError::UnsupportedPlatform(
-                std::env::consts::OS.to_string(),
-            ))
-        }
+    #[cfg(target_os = "macos")]
+    {
+        Ok(Box::new(super::macos::MacosSandbox))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Err(MinoError::UnsupportedPlatform(
+            std::env::consts::OS.to_string(),
+        ))
     }
 }
 
@@ -86,11 +90,20 @@ impl NativeSandbox {
 mod tests {
     use super::*;
 
+    #[test]
+    fn create_sandbox_platform_returns_impl() {
+        // On macOS and Linux, should return Ok. On other platforms, Err.
+        let result = create_sandbox_platform();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(result.is_ok());
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        assert!(result.is_err());
+    }
+
     #[tokio::test]
     async fn validate_setup_returns_error_without_prerequisites() {
-        // On macOS: returns SandboxNotSetup (helper not installed in test env)
-        // On Linux: result depends on kernel namespace support
-        let result = NativeSandbox::validate_setup().await;
+        let platform = create_sandbox_platform().unwrap();
+        let result = platform.validate_setup().await;
 
         #[cfg(target_os = "macos")]
         {
@@ -108,14 +121,12 @@ mod tests {
         // On Linux, the result depends on the system configuration
         #[cfg(target_os = "linux")]
         {
-            // Just verify it doesn't panic — the result depends on the host
             let _ = result;
         }
     }
 
     #[tokio::test]
     async fn spawn_config_has_correct_fields() {
-        // Verify SandboxSpawnConfig construction works and holds all fields
         let config = SandboxSpawnConfig {
             session_id: "test-sess".to_string(),
             project_dir: PathBuf::from("/tmp"),

@@ -48,6 +48,14 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
 
             stop_native_session(pid, args.force)?;
 
+            // Clean up sandbox resources (ACLs, pf rules) even if the helper's
+            // auto-cleanup didn't run (e.g., mino was killed externally)
+            if let Ok(platform) = crate::sandbox::native::create_sandbox_platform() {
+                if let Err(e) = platform.cleanup(&session.name, &session.project_dir).await {
+                    warn!("Sandbox cleanup for session {}: {}", args.session, e);
+                }
+            }
+
             spinner.stop(&format!("Session {} stopped", style(&args.session).cyan()));
         } else {
             ui::step_ok(

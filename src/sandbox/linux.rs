@@ -7,12 +7,64 @@
 //! shell script that runs inside the namespace to set up the isolated
 //! filesystem and apply resource limits before exec'ing the user command.
 
+use async_trait::async_trait;
+use std::path::Path;
+
 use crate::error::{MinoError, MinoResult};
 use crate::network::NetworkMode;
-use crate::sandbox::native::SandboxSpawnConfig;
+use crate::sandbox::native::{SandboxPlatform, SandboxSpawnConfig};
 use crate::sandbox::process::SandboxProcess;
 use crate::sandbox::resource_limits::ResourceLimits;
 use tokio::process::Command;
+
+/// Linux sandbox implementation using user namespaces.
+pub struct LinuxSandbox;
+
+#[async_trait]
+impl SandboxPlatform for LinuxSandbox {
+    async fn validate_setup(&self) -> MinoResult<()> {
+        validate_linux_setup().await
+    }
+
+    async fn spawn(&self, config: SandboxSpawnConfig) -> MinoResult<SandboxProcess> {
+        spawn_linux_sandbox(config).await
+    }
+
+    async fn exec(
+        &self,
+        pid: u32,
+        _session_name: &str,
+        _sandbox_user: &str,
+        command: &[String],
+    ) -> MinoResult<i32> {
+        exec_linux(pid, command).await
+    }
+
+    async fn cleanup(&self, _session_id: &str, _project_dir: &Path) -> MinoResult<()> {
+        // Linux namespaces auto-clean on process exit — nothing to do
+        Ok(())
+    }
+}
+
+/// Execute a command inside a Linux sandbox using nsenter.
+///
+/// Enters the user, mount, PID, and network namespaces of the target process.
+async fn exec_linux(pid: u32, command: &[String]) -> MinoResult<i32> {
+    let pid_str = pid.to_string();
+    let status = Command::new("nsenter")
+        .args([
+            "--target", &pid_str, "--user", "--mount", "--pid", "--net", "--",
+        ])
+        .args(command)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .await
+        .map_err(|e| MinoError::command_failed("nsenter", e))?;
+
+    Ok(status.code().unwrap_or(128))
+}
 
 /// System paths to bind-mount read-only into the sandbox
 const SYSTEM_BIND_MOUNTS: &[&str] = &["/usr", "/lib", "/bin", "/sbin"];

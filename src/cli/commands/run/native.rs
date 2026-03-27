@@ -11,7 +11,7 @@ use crate::error::{MinoError, MinoResult};
 use crate::network::{resolve_network_mode, NetworkMode, NetworkResolutionInput};
 use crate::sandbox::config::validate_sandbox_paths;
 use crate::sandbox::dotfiles;
-use crate::sandbox::native::{NativeSandbox, SandboxSpawnConfig};
+use crate::sandbox::native::{create_sandbox_platform, SandboxSpawnConfig};
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, TaskSpinner, UiContext};
 use console::style;
@@ -29,7 +29,8 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     spinner.start("Initializing native sandbox...");
 
     // 1. Validate native sandbox prerequisites
-    NativeSandbox::validate_setup().await?;
+    let platform = create_sandbox_platform()?;
+    platform.validate_setup().await?;
 
     // 2. Check for container-only flags
     validate_native_flags(&args)?;
@@ -198,7 +199,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         interactive: !args.detach,
     };
 
-    let mut process = match NativeSandbox::spawn(spawn_config).await {
+    let mut process = match platform.spawn(spawn_config).await {
         Ok(p) => p,
         Err(e) => {
             cleanup_dotfile_dir(&dotfile_dir_cleanup).await;
