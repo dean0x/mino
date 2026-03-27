@@ -101,6 +101,7 @@ mod tests {
             network: None,
             network_allow: vec![],
             network_preset: None,
+            runtime: None,
             command: vec![],
         }
     }

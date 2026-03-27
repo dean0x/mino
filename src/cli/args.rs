@@ -96,6 +96,14 @@ pub struct SetupArgs {
     /// Upgrade existing dependencies to latest versions
     #[arg(long)]
     pub upgrade: bool,
+
+    /// Set up native sandbox mode (macOS: create system user + helper; Linux: verify user namespaces)
+    #[arg(long)]
+    pub native: bool,
+
+    /// Uninstall native sandbox components
+    #[arg(long, conflicts_with = "native")]
+    pub uninstall: bool,
 }
 
 /// Arguments for the init command
@@ -197,6 +205,10 @@ pub struct RunArgs {
     /// Network allowlist preset: dev, registries
     #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["dev", "registries"]), conflicts_with = "network_allow")]
     pub network_preset: Option<String>,
+
+    /// Runtime mode: container (default), native
+    #[arg(long)]
+    pub runtime: Option<String>,
 
     /// Command and arguments to run (defaults to shell)
     #[arg(last = true)]
@@ -687,6 +699,64 @@ mod tests {
                 _ => panic!("expected Clear action"),
             },
             _ => panic!("expected Cache command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_runtime_flag() {
+        let cli = Cli::parse_from(["mino", "run", "--runtime", "native", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.runtime.as_deref(), Some("native"));
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_runtime_default_none() {
+        let cli = Cli::parse_from(["mino", "run", "--", "bash"]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(args.runtime.is_none());
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_setup_native() {
+        let cli = Cli::parse_from(["mino", "setup", "--native"]);
+        match cli.command {
+            Commands::Setup(args) => {
+                assert!(args.native);
+                assert!(!args.uninstall);
+            }
+            _ => panic!("expected Setup command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_setup_uninstall() {
+        let cli = Cli::parse_from(["mino", "setup", "--uninstall"]);
+        match cli.command {
+            Commands::Setup(args) => {
+                assert!(!args.native);
+                assert!(args.uninstall);
+            }
+            _ => panic!("expected Setup command"),
+        }
+    }
+
+    #[test]
+    fn cli_setup_native_default_false() {
+        let cli = Cli::parse_from(["mino", "setup"]);
+        match cli.command {
+            Commands::Setup(args) => {
+                assert!(!args.native);
+                assert!(!args.uninstall);
+            }
+            _ => panic!("expected Setup command"),
         }
     }
 
