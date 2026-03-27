@@ -28,6 +28,23 @@ enum StepResult {
 pub async fn execute(args: SetupArgs, config: &Config) -> MinoResult<()> {
     let ctx = UiContext::detect().with_auto_yes(args.yes);
 
+    // Native sandbox setup is a separate flow
+    if args.native {
+        if args.check {
+            ui::intro(&ctx, "Native Sandbox Check");
+        } else {
+            ui::intro(&ctx, "Native Sandbox Setup");
+        }
+
+        return match Platform::detect() {
+            Platform::MacOS => setup_native_macos(&ctx, &args).await,
+            Platform::Linux => setup_native_linux(&ctx, &args).await,
+            Platform::Unsupported => Err(MinoError::UnsupportedPlatform(
+                std::env::consts::OS.to_string(),
+            )),
+        };
+    }
+
     if args.check {
         ui::intro(&ctx, "Mino Setup (check only)");
     } else {
@@ -797,6 +814,452 @@ async fn check_user_namespaces(ctx: &UiContext, args: &SetupArgs) -> StepResult 
             // If we can't read the file, assume it's fine (some distros don't have this)
             ui::step_ok_detail(ctx, "User namespaces", "could not check (assuming enabled)");
             StepResult::AlreadyOk
+        }
+    }
+}
+
+// =============================================================================
+// Native Sandbox Setup (macOS)
+// =============================================================================
+
+async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
+    ui::section(ctx, "Native Sandbox Setup (macOS)");
+
+    let sandbox_user = "_mino_agent";
+
+    // Step 1: Create system user
+    let user_result = setup_sandbox_user(ctx, args, sandbox_user).await;
+
+    // Step 2: Install helper binary
+    let helper_result =
+        if user_result == StepResult::AlreadyOk || user_result == StepResult::Installed {
+            install_helper_binary(ctx, args).await
+        } else {
+            ui::step_blocked(ctx, "Helper Binary", "System User");
+            StepResult::Blocked
+        };
+
+    // Step 3: Configure sudoers
+    let sudoers_result =
+        if helper_result == StepResult::AlreadyOk || helper_result == StepResult::Installed {
+            configure_sudoers(ctx, args).await
+        } else {
+            ui::step_blocked(ctx, "Sudoers", "Helper Binary");
+            StepResult::Blocked
+        };
+
+    // Step 4: Configure pf anchor
+    let pf_result =
+        if sudoers_result == StepResult::AlreadyOk || sudoers_result == StepResult::Installed {
+            configure_pf_anchor(ctx, args, sandbox_user).await
+        } else {
+            ui::step_blocked(ctx, "pf Anchor", "Sudoers");
+            StepResult::Blocked
+        };
+
+    // Summary
+    let issues = [user_result, helper_result, sudoers_result, pf_result]
+        .iter()
+        .filter(|r| matches!(r, StepResult::Failed | StepResult::Skipped | StepResult::Blocked))
+        .count();
+
+    if issues > 0 {
+        ui::outro_warn(ctx, "Native sandbox setup incomplete. See issues above.");
+    } else {
+        ui::outro_success(
+            ctx,
+            "Native sandbox ready! Use: mino run --runtime native -- <command>",
+        );
+    }
+
+    Ok(())
+}
+
+async fn setup_sandbox_user(ctx: &UiContext, args: &SetupArgs, username: &str) -> StepResult {
+    // Check if user exists via dscl
+    let exists = Command::new("dscl")
+        .args([".", "-read", &format!("/Users/{}", username)])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if exists {
+        ui::step_ok_detail(ctx, "Sandbox user exists", username);
+        return StepResult::AlreadyOk;
+    }
+
+    if args.check {
+        ui::step_error_detail(ctx, "Sandbox user not found", username);
+        return StepResult::Failed;
+    }
+
+    ui::remark(ctx, &format!("Creating system user '{}'...", username));
+
+    // Find an available UID in the system range (400-499)
+    let uid = match find_available_system_uid().await {
+        Some(uid) => uid,
+        None => {
+            ui::step_error(ctx, "Failed to find available UID in range 400-499");
+            return StepResult::Failed;
+        }
+    };
+
+    // Create the user record
+    let user_path = format!("/Users/{}", username);
+    let uid_str = uid.to_string();
+
+    let steps: &[(&[&str], &str)] = &[
+        (&[".", "-create", &user_path], "create user record"),
+        (
+            &[".", "-create", &user_path, "UserShell", "/usr/bin/false"],
+            "set shell",
+        ),
+        (
+            &[
+                ".",
+                "-create",
+                &user_path,
+                "RealName",
+                "Mino Sandbox Agent",
+            ],
+            "set real name",
+        ),
+        (
+            &[".", "-create", &user_path, "UniqueID", &uid_str],
+            "set UID",
+        ),
+        (
+            &[".", "-create", &user_path, "PrimaryGroupID", "20"],
+            "set group",
+        ),
+        (
+            &[
+                ".",
+                "-create",
+                &user_path,
+                "NFSHomeDirectory",
+                "/var/empty",
+            ],
+            "set home",
+        ),
+        (
+            &[".", "-create", &user_path, "IsHidden", "1"],
+            "hide from login screen",
+        ),
+    ];
+
+    for (dscl_args, description) in steps {
+        if !run_visible_sudo("dscl", dscl_args).await {
+            ui::step_error_detail(ctx, "Failed to create sandbox user", description);
+            return StepResult::Failed;
+        }
+    }
+
+    ui::step_ok_detail(ctx, "Sandbox user created", &format!("{} (UID {})", username, uid));
+    StepResult::Installed
+}
+
+/// Find an available system UID in the 400-499 range
+async fn find_available_system_uid() -> Option<u32> {
+    for uid in (400..500).rev() {
+        let output = Command::new("dscl")
+            .args([".", "-search", "/Users", "UniqueID", &uid.to_string()])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                // If no user found with this UID, the output is empty
+                if stdout.trim().is_empty() {
+                    return Some(uid);
+                }
+            }
+            _ => {
+                // If dscl fails, assume UID is available
+                return Some(uid);
+            }
+        }
+    }
+
+    None
+}
+
+async fn install_helper_binary(ctx: &UiContext, args: &SetupArgs) -> StepResult {
+    let mino_version = env!("CARGO_PKG_VERSION");
+
+    // Check if helper exists and version matches
+    let current_version = check_installed_helper_version().await;
+
+    if let Some(version) = current_version {
+        if version == mino_version {
+            ui::step_ok_detail(ctx, "Helper binary", &format!("v{}", version));
+            return StepResult::AlreadyOk;
+        }
+        ui::remark(
+            ctx,
+            &format!(
+                "Helper version mismatch (v{} vs v{}), upgrading...",
+                version, mino_version
+            ),
+        );
+    }
+
+    if args.check {
+        ui::step_error(ctx, "Helper binary not installed or outdated");
+        return StepResult::Failed;
+    }
+
+    // Get path to current mino binary, the helper is built alongside it
+    let helper_src = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("mino-sandbox-helper")));
+
+    match helper_src {
+        Some(src) if src.exists() => {
+            let src_str = src.to_string_lossy();
+            let install_success = run_visible_sudo(
+                "cp",
+                &[&src_str, "/usr/local/bin/mino-sandbox-helper"],
+            )
+            .await;
+
+            if install_success {
+                // Ensure correct ownership and permissions
+                let _ = run_visible_sudo("chmod", &["755", "/usr/local/bin/mino-sandbox-helper"]).await;
+                let _ =
+                    run_visible_sudo("chown", &["root:wheel", "/usr/local/bin/mino-sandbox-helper"])
+                        .await;
+
+                ui::step_ok_detail(
+                    ctx,
+                    "Helper binary installed",
+                    &format!("v{}", mino_version),
+                );
+                StepResult::Installed
+            } else {
+                ui::step_error(ctx, "Failed to install helper binary");
+                StepResult::Failed
+            }
+        }
+        _ => {
+            ui::step_error_detail(
+                ctx,
+                "Helper binary not found next to mino executable",
+                "Build with: cargo build --release",
+            );
+            StepResult::Failed
+        }
+    }
+}
+
+/// Check the version of the installed helper binary
+async fn check_installed_helper_version() -> Option<String> {
+    let output = Command::new("mino-sandbox-helper")
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+async fn configure_sudoers(ctx: &UiContext, args: &SetupArgs) -> StepResult {
+    let sudoers_file = "/etc/sudoers.d/mino";
+
+    if std::path::Path::new(sudoers_file).exists() {
+        ui::step_ok(ctx, "Sudoers configured");
+        return StepResult::AlreadyOk;
+    }
+
+    if args.check {
+        ui::step_error(ctx, "Sudoers not configured");
+        return StepResult::Failed;
+    }
+
+    // Get the current user's username
+    let username = std::env::var("USER").unwrap_or_else(|_| {
+        std::env::var("LOGNAME").unwrap_or_else(|_| "unknown".to_string())
+    });
+
+    let sudoers_content = format!(
+        "{} ALL=(root) NOPASSWD: /usr/local/bin/mino-sandbox-helper\n",
+        username
+    );
+
+    // Write to a temp file, then copy via sudo (avoiding sudo tee complexity)
+    let tmp_file = std::env::temp_dir().join("mino-sudoers");
+    if std::fs::write(&tmp_file, &sudoers_content).is_err() {
+        ui::step_error(ctx, "Failed to write temporary sudoers file");
+        return StepResult::Failed;
+    }
+
+    let tmp_str = tmp_file.to_string_lossy();
+    let success = run_visible_sudo("cp", &[&tmp_str, sudoers_file]).await;
+    let _ = std::fs::remove_file(&tmp_file);
+
+    if success {
+        // sudoers files must be mode 0440
+        let _ = run_visible_sudo("chmod", &["0440", sudoers_file]).await;
+        // Validate the sudoers file
+        let valid = Command::new("sudo")
+            .args(["visudo", "-c", "-f", sudoers_file])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if valid {
+            ui::step_ok_detail(ctx, "Sudoers configured", &username);
+            StepResult::Installed
+        } else {
+            // Invalid sudoers file — remove it to avoid locking out sudo
+            let _ = run_visible_sudo("rm", &[sudoers_file]).await;
+            ui::step_error(ctx, "Sudoers validation failed — file removed");
+            StepResult::Failed
+        }
+    } else {
+        ui::step_error(ctx, "Failed to install sudoers file");
+        StepResult::Failed
+    }
+}
+
+async fn configure_pf_anchor(ctx: &UiContext, args: &SetupArgs, sandbox_user: &str) -> StepResult {
+    // Check if anchor exists in pf.conf
+    let pf_check = Command::new("sudo")
+        .args(["pfctl", "-s", "Anchors"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await;
+
+    if let Ok(output) = pf_check {
+        let anchors = String::from_utf8_lossy(&output.stdout);
+        if anchors.lines().any(|l| l.trim() == "mino") {
+            ui::step_ok(ctx, "pf anchor configured");
+            return StepResult::AlreadyOk;
+        }
+    }
+
+    if args.check {
+        ui::step_error(ctx, "pf anchor not configured");
+        return StepResult::Failed;
+    }
+
+    // Generate and write anchor rules
+    let anchor_rules = crate::sandbox::macos::generate_pf_rules(sandbox_user, "default", None);
+    let anchor_file = "/etc/pf.anchors/mino";
+
+    let tmp_file = std::env::temp_dir().join("mino-pf-anchor");
+    if std::fs::write(&tmp_file, &anchor_rules).is_err() {
+        ui::step_error(ctx, "Failed to write temporary anchor file");
+        return StepResult::Failed;
+    }
+
+    let tmp_str = tmp_file.to_string_lossy();
+    let copy_success = run_visible_sudo("cp", &[&tmp_str, anchor_file]).await;
+    let _ = std::fs::remove_file(&tmp_file);
+
+    if !copy_success {
+        ui::step_error(ctx, "Failed to install pf anchor file");
+        return StepResult::Failed;
+    }
+
+    // Load the anchor
+    let load_success = Command::new("sudo")
+        .args(["pfctl", "-a", "mino", "-f", anchor_file])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if load_success {
+        ui::step_ok(ctx, "pf anchor configured and loaded");
+        StepResult::Installed
+    } else {
+        // Anchor file is written but not loaded — might need pf to be enabled
+        ui::step_warn_hint(
+            ctx,
+            "pf anchor file installed but loading failed",
+            "Ensure pf is enabled: sudo pfctl -e",
+        );
+        StepResult::Installed
+    }
+}
+
+// =============================================================================
+// Native Sandbox Setup (Linux)
+// =============================================================================
+
+async fn setup_native_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
+    ui::section(ctx, "Native Sandbox Setup (Linux)");
+
+    let mut issues = 0;
+
+    // Step 1: Verify user namespace support
+    let userns_result = check_user_namespaces(ctx, args).await;
+    if userns_result == StepResult::Failed || userns_result == StepResult::Skipped {
+        issues += 1;
+    }
+
+    // Step 2: Check unshare is available
+    let unshare_result = check_unshare(ctx).await;
+    if unshare_result == StepResult::Failed {
+        issues += 1;
+    }
+
+    // Summary
+    if issues > 0 {
+        ui::outro_warn(
+            ctx,
+            "Native sandbox prerequisites not met. See issues above.",
+        );
+    } else {
+        ui::outro_success(
+            ctx,
+            "Native sandbox ready! Use: mino run --runtime native -- <command>",
+        );
+    }
+
+    Ok(())
+}
+
+async fn check_unshare(ctx: &UiContext) -> StepResult {
+    let output = Command::new("which")
+        .arg("unshare")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let path = String::from_utf8_lossy(&out.stdout);
+            ui::step_ok_detail(ctx, "unshare available", path.trim());
+            StepResult::AlreadyOk
+        }
+        _ => {
+            ui::step_error_detail(
+                ctx,
+                "unshare not found",
+                "Install util-linux for user namespace support",
+            );
+            StepResult::Failed
         }
     }
 }
