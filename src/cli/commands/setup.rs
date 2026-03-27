@@ -1108,6 +1108,24 @@ async fn configure_sudoers(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let username = std::env::var("USER")
         .unwrap_or_else(|_| std::env::var("LOGNAME").unwrap_or_else(|_| "unknown".to_string()));
 
+    // Validate username to prevent injection into sudoers file.
+    // Only allow alphanumeric, underscore, and hyphen; max 32 chars.
+    if username.is_empty()
+        || username.len() > 32
+        || !username
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        ui::step_error(
+            ctx,
+            &format!(
+                "Invalid username '{}' for sudoers (must be 1-32 alphanumeric/underscore/hyphen chars)",
+                username
+            ),
+        );
+        return StepResult::Failed;
+    }
+
     let sudoers_content = format!(
         "{} ALL=(root) NOPASSWD: /usr/local/bin/mino-sandbox-helper\n",
         username
