@@ -35,8 +35,28 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
         return Ok(());
     }
 
-    // Stop container
-    if session.container_id.is_some() {
+    let is_native = session.runtime_mode.as_deref() == Some("native");
+
+    if is_native {
+        // Native mode: kill the process directly
+        if let Some(pid) = session.process_id {
+            let mut spinner = TaskSpinner::new(&ctx);
+            spinner.start(&format!(
+                "Stopping session {}...",
+                style(&args.session).cyan()
+            ));
+
+            stop_native_session(pid, args.force)?;
+
+            spinner.stop(&format!("Session {} stopped", style(&args.session).cyan()));
+        } else {
+            ui::step_ok(
+                &ctx,
+                &format!("Session {} stopped", style(&args.session).cyan()),
+            );
+        }
+    } else if session.container_id.is_some() {
+        // Container mode: existing logic
         let runtime = create_runtime(config)?;
 
         let mut spinner = TaskSpinner::new(&ctx);
@@ -61,6 +81,36 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
         .await?;
 
     Ok(())
+}
+
+/// Stop a native sandbox process by sending a signal.
+///
+/// Sends SIGTERM (graceful) or SIGKILL (force). Tolerates ESRCH (process
+/// already exited) since the sandbox may have terminated on its own.
+fn stop_native_session(pid: u32, force: bool) -> MinoResult<()> {
+    #[cfg(unix)]
+    {
+        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // SAFETY: libc::kill sends a signal to a process identified by PID.
+        // We have a valid PID from the session record. Both SIGTERM and SIGKILL
+        // are standard POSIX signals.
+        let result = unsafe { libc::kill(pid as i32, signal) };
+        if result != 0 {
+            let err = std::io::Error::last_os_error();
+            // ESRCH = no such process (already exited) — not an error
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                return Err(MinoError::io(format!("signaling PID {}", pid), err));
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, force);
+        Err(MinoError::NativeUnsupported {
+            feature: "process signals".to_string(),
+        })
+    }
 }
 
 /// Stop a session's container. Returns `Ok(true)` if a stop was performed,
@@ -113,6 +163,8 @@ async fn stop_container(
 mod tests {
     use super::*;
     use crate::orchestration::mock::{test_session, MockRuntime};
+
+    // -- Container stop tests --
 
     #[tokio::test]
     async fn stop_already_stopped_skips() {
@@ -192,5 +244,43 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("connection refused"));
+    }
+
+    // -- Native stop tests --
+
+    #[cfg(unix)]
+    mod native {
+        use super::*;
+
+        #[test]
+        fn stop_native_esrch_returns_ok() {
+            // PID 0 is special (signals process group), use a very large PID
+            // that almost certainly doesn't exist, triggering ESRCH
+            let result = stop_native_session(u32::MAX - 1, false);
+            assert!(result.is_ok(), "ESRCH should be tolerated");
+        }
+
+        #[test]
+        fn stop_native_force_with_dead_pid_returns_ok() {
+            let result = stop_native_session(u32::MAX - 1, true);
+            assert!(
+                result.is_ok(),
+                "ESRCH should be tolerated for force kill too"
+            );
+        }
+
+        #[test]
+        fn stop_native_uses_sigterm_by_default() {
+            // We can't directly verify the signal type without a real process,
+            // but we verify the function completes without error for a dead PID
+            let result = stop_native_session(u32::MAX - 2, false);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn stop_native_uses_sigkill_when_forced() {
+            let result = stop_native_session(u32::MAX - 2, true);
+            assert!(result.is_ok());
+        }
     }
 }

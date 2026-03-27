@@ -33,14 +33,22 @@ pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<()> {
         args.command
     };
 
-    let runtime = create_runtime(config)?;
-    let tty = std::io::stdin().is_terminal();
-    let exit_code = exec_in_session(&session, &*runtime, &command, tty).await?;
+    let is_native = session.runtime_mode.as_deref() == Some("native");
 
-    debug!(exit_code, "Container exec finished");
-
-    if exit_code != 0 {
-        std::process::exit((exit_code & 0xFF) as i32);
+    if is_native {
+        let exit_code = exec_native(&session, &command).await?;
+        debug!(exit_code, "Native exec finished");
+        if exit_code != 0 {
+            std::process::exit((exit_code & 0xFF) as i32);
+        }
+    } else {
+        let runtime = create_runtime(config)?;
+        let tty = std::io::stdin().is_terminal();
+        let exit_code = exec_in_session(&session, &*runtime, &command, tty).await?;
+        debug!(exit_code, "Container exec finished");
+        if exit_code != 0 {
+            std::process::exit((exit_code & 0xFF) as i32);
+        }
     }
 
     Ok(())
@@ -96,6 +104,64 @@ async fn exec_in_session(
         .ok_or_else(|| MinoError::ContainerNotFound(session.name.clone()))?;
 
     runtime.exec_in_container(container_id, command, tty).await
+}
+
+/// Execute a command inside a native sandbox session.
+///
+/// On Linux, uses `nsenter` to enter the existing namespaces of the sandboxed process.
+/// On macOS, invokes the sandbox helper to run as the sandbox user with matching ACLs.
+async fn exec_native(session: &Session, command: &[String]) -> MinoResult<i32> {
+    let pid = session
+        .process_id
+        .ok_or_else(|| MinoError::User("No process ID for this session".to_string()))?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let pid_str = pid.to_string();
+        let status = tokio::process::Command::new("nsenter")
+            .args([
+                "--target", &pid_str, "--user", "--mount", "--pid", "--net", "--",
+            ])
+            .args(command)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .await
+            .map_err(|e| MinoError::command_failed("nsenter", e))?;
+
+        Ok(status.code().unwrap_or(128))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let pid_str = pid.to_string();
+        let status = tokio::process::Command::new("sudo")
+            .arg("mino-sandbox-helper")
+            .arg("exec")
+            .arg("--session-id")
+            .arg(&session.name)
+            .arg("--pid")
+            .arg(pid_str)
+            .arg("--")
+            .args(command)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .await
+            .map_err(|e| MinoError::command_failed("mino-sandbox-helper exec", e))?;
+
+        Ok(status.code().unwrap_or(128))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (session, command, pid);
+        Err(MinoError::UnsupportedPlatform(
+            std::env::consts::OS.to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +328,17 @@ mod tests {
             .unwrap();
 
         runtime.assert_called_with("exec_in_container", &["cid", "true", "bash"]);
+    }
+
+    // -- exec_native tests --
+
+    #[tokio::test]
+    async fn exec_native_no_pid_errors() {
+        let mut session = test_session("s", SessionStatus::Running, None);
+        session.runtime_mode = Some("native".to_string());
+        // process_id is None
+        let cmd = vec!["bash".to_string()];
+        let err = exec_native(&session, &cmd).await.unwrap_err();
+        assert!(err.to_string().contains("No process ID"));
     }
 }

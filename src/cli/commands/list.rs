@@ -63,9 +63,15 @@ fn format_plain(sessions: &[Session]) -> String {
     sessions.iter().map(|s| format!("{}\n", s.name)).collect()
 }
 
+/// Get display string for runtime mode, defaulting to "container".
+fn runtime_label(session: &Session) -> &str {
+    session.runtime_mode.as_deref().unwrap_or("container")
+}
+
 fn print_table(sessions: &[Session]) {
     const W_NAME: usize = 20;
     const W_STATUS: usize = 12;
+    const W_RUNTIME: usize = 10;
     const W_STARTED: usize = 15;
     const W_PROJECT: usize = 30;
 
@@ -73,7 +79,7 @@ fn print_table(sessions: &[Session]) {
     ui::intro(&ctx, "Sessions");
 
     println!(
-        "{} {} {} {}",
+        "{} {} {} {} {}",
         pad_str(
             &style("NAME").bold().to_string(),
             W_NAME,
@@ -83,6 +89,12 @@ fn print_table(sessions: &[Session]) {
         pad_str(
             &style("STATUS").bold().to_string(),
             W_STATUS,
+            Alignment::Left,
+            None
+        ),
+        pad_str(
+            &style("RUNTIME").bold().to_string(),
+            W_RUNTIME,
             Alignment::Left,
             None
         ),
@@ -101,7 +113,7 @@ fn print_table(sessions: &[Session]) {
     );
     println!(
         "{}",
-        "-".repeat(W_NAME + 1 + W_STATUS + 1 + W_STARTED + 1 + W_PROJECT)
+        "-".repeat(W_NAME + 1 + W_STATUS + 1 + W_RUNTIME + 1 + W_STARTED + 1 + W_PROJECT)
     );
 
     for session in sessions {
@@ -112,6 +124,7 @@ fn print_table(sessions: &[Session]) {
             SessionStatus::Failed => style("failed").red().to_string(),
         };
 
+        let runtime = runtime_label(session);
         let started = session.created_at.format("%Y-%m-%d %H:%M").to_string();
         let project = session
             .project_dir
@@ -120,9 +133,10 @@ fn print_table(sessions: &[Session]) {
             .unwrap_or("unknown");
 
         println!(
-            "{} {} {} {}",
+            "{} {} {} {} {}",
             pad_str(&session.name, W_NAME, Alignment::Left, None),
             pad_str(&status_styled, W_STATUS, Alignment::Left, None),
+            pad_str(runtime, W_RUNTIME, Alignment::Left, None),
             pad_str(&started, W_STARTED, Alignment::Left, None),
             pad_str(project, W_PROJECT, Alignment::Left, None),
         );
@@ -190,6 +204,17 @@ mod tests {
     }
 
     #[test]
+    fn json_output_includes_runtime_mode() {
+        let mut session = test_session("native-session", SessionStatus::Running, None);
+        session.runtime_mode = Some("native".to_string());
+        let sessions = vec![session];
+
+        let json = format_json(&sessions).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["runtime_mode"], "native");
+    }
+
+    #[test]
     fn plain_output_names_only() {
         let sessions = vec![
             test_session("session-a", SessionStatus::Running, Some("c1")),
@@ -201,5 +226,20 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], "session-a");
         assert_eq!(lines[1], "session-b");
+    }
+
+    // -- runtime_label tests --
+
+    #[test]
+    fn runtime_label_defaults_to_container() {
+        let session = test_session("s", SessionStatus::Running, Some("cid"));
+        assert_eq!(runtime_label(&session), "container");
+    }
+
+    #[test]
+    fn runtime_label_shows_native() {
+        let mut session = test_session("s", SessionStatus::Running, None);
+        session.runtime_mode = Some("native".to_string());
+        assert_eq!(runtime_label(&session), "native");
     }
 }

@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::error::MinoResult;
 use crate::orchestration::{create_runtime, OrbStack, Platform};
+use crate::session::{Session, SessionStatus};
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -40,6 +41,10 @@ pub async fn execute(config: &Config) -> MinoResult<()> {
             all_ok = false;
         }
     }
+
+    // Check native sandbox
+    ui::section(&ctx, "Native Sandbox");
+    check_native_sandbox_status(&ctx, &platform).await;
 
     // Check cloud CLIs
     ui::section(&ctx, "Cloud CLIs");
@@ -241,5 +246,207 @@ async fn check_ssh_agent(ctx: &UiContext) {
                 "SSH_AUTH_SOCK not set. Start ssh-agent.",
             );
         }
+    }
+}
+
+/// Check native sandbox prerequisites and stale sessions.
+async fn check_native_sandbox_status(ctx: &UiContext, platform: &Platform) {
+    match platform {
+        Platform::MacOS => check_native_sandbox_macos(ctx).await,
+        Platform::Linux => check_native_sandbox_linux(ctx).await,
+        Platform::Unsupported => {}
+    }
+
+    check_stale_native_sessions(ctx).await;
+}
+
+async fn check_native_sandbox_macos(ctx: &UiContext) {
+    // Check _mino_agent user exists
+    let user_exists = Command::new("dscl")
+        .args([".", "-read", "/Users/_mino_agent"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if user_exists {
+        ui::step_ok(ctx, "Sandbox user (_mino_agent)");
+    } else {
+        ui::step_info(
+            ctx,
+            "Sandbox user not configured (run: mino setup --native)",
+        );
+    }
+
+    // Check helper binary
+    let helper_exists = Command::new("which")
+        .arg("mino-sandbox-helper")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if helper_exists {
+        ui::step_ok(ctx, "Helper binary installed");
+    } else {
+        ui::step_info(
+            ctx,
+            "Helper binary not installed (run: mino setup --native)",
+        );
+    }
+
+    // Check sudoers
+    let sudoers_exists = std::path::Path::new("/etc/sudoers.d/mino").exists();
+    if sudoers_exists {
+        ui::step_ok(ctx, "Sudoers configured");
+    } else {
+        ui::step_info(ctx, "Sudoers not configured (run: mino setup --native)");
+    }
+}
+
+async fn check_native_sandbox_linux(ctx: &UiContext) {
+    // Check user namespaces
+    let userns_output = Command::new("cat")
+        .arg("/proc/sys/user/max_user_namespaces")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await;
+
+    match userns_output {
+        Ok(output) if output.status.success() => {
+            let val: u32 = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0);
+            if val > 0 {
+                ui::step_ok_detail(ctx, "User namespaces enabled", &format!("max: {}", val));
+            } else {
+                ui::step_warn(ctx, "User namespaces disabled");
+            }
+        }
+        _ => {
+            ui::step_ok(ctx, "User namespaces (could not check, assuming enabled)");
+        }
+    }
+
+    // Check unshare binary
+    let unshare_exists = Command::new("which")
+        .arg("unshare")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if unshare_exists {
+        ui::step_ok(ctx, "unshare binary available");
+    } else {
+        ui::step_warn(ctx, "unshare not found (install util-linux)");
+    }
+}
+
+/// Check for stale native sessions where the PID is no longer alive.
+async fn check_stale_native_sessions(ctx: &UiContext) {
+    if let Ok(sessions) = Session::list_all().await {
+        let stale_count = count_stale_native_sessions(&sessions);
+        if stale_count > 0 {
+            ui::step_warn(
+                ctx,
+                &format!(
+                    "{} stale native session(s) detected. Clean up with: mino list --all",
+                    stale_count
+                ),
+            );
+        }
+    }
+}
+
+/// Count native sessions that appear active but whose PID is no longer alive.
+fn count_stale_native_sessions(sessions: &[Session]) -> usize {
+    sessions
+        .iter()
+        .filter(|s| {
+            s.runtime_mode.as_deref() == Some("native")
+                && matches!(s.status, SessionStatus::Running | SessionStatus::Starting)
+                && !is_pid_alive(s.process_id)
+        })
+        .count()
+}
+
+/// Check if a process with the given PID is still alive.
+fn is_pid_alive(pid: Option<u32>) -> bool {
+    #[cfg(unix)]
+    match pid {
+        // SAFETY: libc::kill with signal 0 does not send any signal — it only
+        // checks whether the process exists and we have permission to signal it.
+        Some(p) => unsafe { libc::kill(p as i32, 0) == 0 },
+        None => false,
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orchestration::mock::test_session;
+
+    #[test]
+    fn is_pid_alive_none_returns_false() {
+        assert!(!is_pid_alive(None));
+    }
+
+    #[test]
+    fn is_pid_alive_dead_pid_returns_false() {
+        // Use a very large PID unlikely to exist
+        assert!(!is_pid_alive(Some(u32::MAX - 1)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_pid_alive_own_pid_returns_true() {
+        assert!(is_pid_alive(Some(std::process::id())));
+    }
+
+    #[test]
+    fn count_stale_no_native_sessions() {
+        let sessions = vec![
+            test_session("s1", SessionStatus::Running, Some("c1")),
+            test_session("s2", SessionStatus::Stopped, Some("c2")),
+        ];
+        assert_eq!(count_stale_native_sessions(&sessions), 0);
+    }
+
+    #[test]
+    fn count_stale_native_running_dead_pid() {
+        let mut session = test_session("s1", SessionStatus::Running, None);
+        session.runtime_mode = Some("native".to_string());
+        session.process_id = Some(u32::MAX - 1); // dead PID
+        assert_eq!(count_stale_native_sessions(&[session]), 1);
+    }
+
+    #[test]
+    fn count_stale_native_stopped_ignored() {
+        let mut session = test_session("s1", SessionStatus::Stopped, None);
+        session.runtime_mode = Some("native".to_string());
+        session.process_id = Some(u32::MAX - 1);
+        assert_eq!(count_stale_native_sessions(&[session]), 0);
+    }
+
+    #[test]
+    fn count_stale_native_no_pid_is_stale() {
+        let mut session = test_session("s1", SessionStatus::Running, None);
+        session.runtime_mode = Some("native".to_string());
+        // process_id is None — is_pid_alive(None) returns false → stale
+        assert_eq!(count_stale_native_sessions(&[session]), 1);
     }
 }

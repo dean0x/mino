@@ -199,17 +199,48 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         }
     }
 
+    if args.detach {
+        // Set up log file for detached mode
+        let log_dir = crate::config::ConfigManager::state_dir().join("logs");
+        tokio::fs::create_dir_all(&log_dir)
+            .await
+            .map_err(|e| MinoError::io("creating log directory", e))?;
+        let log_path = log_dir.join(format!("{}.log", session_name));
+
+        // Update session with log file path
+        if let Some(mut s) = manager.get(&session_name).await? {
+            s.log_file = Some(log_path.clone());
+            s.save().await?;
+        }
+
+        spinner.stop(&format!(
+            "Session {} started (native sandbox, detached)",
+            style(&session_name).cyan()
+        ));
+        println!("  View logs: mino logs {}", session_name);
+        println!("  Stop with: mino stop {}", session_name);
+
+        // Spawn background task to monitor process exit and update session status
+        let bg_session_name = session_name.clone();
+        tokio::spawn(async move {
+            let exit_code = process.wait().await.unwrap_or(1);
+            let status = if exit_code == 0 {
+                SessionStatus::Stopped
+            } else {
+                SessionStatus::Failed
+            };
+            if let Ok(manager) = SessionManager::new().await {
+                let _ = manager.update_status(&bg_session_name, status).await;
+            }
+        });
+
+        return Ok(());
+    }
+
     spinner.stop(&format!(
         "Session {} started (native sandbox)",
         style(&session_name).cyan()
     ));
-
-    if args.detach {
-        println!("  View logs: mino logs {}", session_name);
-        println!("  Stop with: mino stop {}", session_name);
-        // TODO(Phase 5): Background process management + log capture
-        return Ok(());
-    }
 
     // Wait for process exit
     let exit_code = process.wait().await?;
