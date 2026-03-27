@@ -11,13 +11,27 @@ use crate::error::{MinoError, MinoResult};
 use crate::network::{resolve_network_mode, NetworkMode, NetworkResolutionInput};
 use crate::sandbox::config::validate_sandbox_paths;
 use crate::sandbox::dotfiles;
-use crate::sandbox::native::{create_sandbox_platform, SandboxSpawnConfig};
+use crate::sandbox::native::{create_sandbox_platform, SandboxPlatform, SandboxSpawnConfig};
+use crate::sandbox::process::SandboxProcess;
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, TaskSpinner, UiContext};
 use console::style;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::debug;
+
+/// Result of credential gathering, bundled for passing between phases.
+struct CredentialResult {
+    env: HashMap<String, String>,
+    providers: Vec<String>,
+}
+
+/// Session context created during session setup.
+struct SessionContext {
+    session_name: String,
+    manager: SessionManager,
+    audit: AuditLog,
+}
 
 /// Execute a run command using native sandbox mode
 pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
@@ -28,18 +42,73 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     let mut spinner = TaskSpinner::new(&ctx);
     spinner.start("Initializing native sandbox...");
 
-    // 1. Validate native sandbox prerequisites
+    // Phase 1: Validate prerequisites and resolve configuration
     let platform = create_sandbox_platform()?;
+    let (project_dir, network_mode) =
+        validate_and_resolve(&args, config, &*platform, &mut spinner).await?;
+
+    // Phase 2: Gather credentials and build environment
+    let cred_result =
+        gather_credentials_and_env(&args, config, &ctx, &mut spinner, &project_dir).await?;
+
+    // Phase 3: Start proxy (if needed), prepare dotfiles, create session
+    let mut env = cred_result.env;
+    let (_proxy_handle, _denial_task) =
+        start_proxy_if_needed(&network_mode, &mut env, config, &mut spinner).await?;
+    let dotfile_dir = prepare_dotfiles(config).await?;
+    let command = if args.command.is_empty() {
+        vec!["/bin/bash".to_string()]
+    } else {
+        args.command.clone()
+    };
+    let session_ctx = create_session_and_audit(
+        &args,
+        config,
+        &project_dir,
+        &command,
+        &cred_result.providers,
+        &network_mode,
+    )
+    .await?;
+
+    // Phase 4: Spawn sandbox and monitor
+    let spawn_config = SandboxSpawnConfig {
+        session_id: session_ctx.session_name.clone(),
+        project_dir: project_dir.clone(),
+        command,
+        env,
+        network_mode,
+        sandbox_config: config.sandbox.clone(),
+        dotfile_dir: dotfile_dir.clone(),
+        interactive: !args.detach,
+    };
+
+    spawn_and_monitor(
+        &*platform,
+        spawn_config,
+        session_ctx,
+        dotfile_dir,
+        args.detach,
+        config,
+        &ctx,
+        &mut spinner,
+    )
+    .await
+}
+
+/// Validate native sandbox prerequisites and resolve project dir + network mode.
+async fn validate_and_resolve(
+    args: &RunArgs,
+    config: &Config,
+    platform: &dyn SandboxPlatform,
+    spinner: &mut TaskSpinner,
+) -> MinoResult<(PathBuf, NetworkMode)> {
     platform.validate_setup().await?;
+    validate_native_flags(args)?;
 
-    // 2. Check for container-only flags
-    validate_native_flags(&args)?;
-
-    // 3. Resolve project directory
-    let project_dir = resolve_project_dir(&args)?;
+    let project_dir = resolve_project_dir(args)?;
     debug!("Project directory: {}", project_dir.display());
 
-    // 4. Resolve network mode (reuse existing logic)
     let network_mode = resolve_network_mode(&NetworkResolutionInput {
         cli_network: args.network.as_deref(),
         cli_allow_rules: &args.network_allow,
@@ -50,18 +119,29 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     })?;
     debug!("Network mode: {:?}", network_mode);
 
-    // 5. Validate sandbox paths
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     validate_sandbox_paths(&config.sandbox, &home_dir)?;
 
-    // 6. Gather credentials
+    let _ = spinner; // silence unused warning — spinner is held for lifetime
+    Ok((project_dir, network_mode))
+}
+
+/// Gather cloud credentials and build the sandbox environment variables.
+async fn gather_credentials_and_env(
+    args: &RunArgs,
+    config: &Config,
+    ctx: &UiContext,
+    spinner: &mut TaskSpinner,
+    _project_dir: &PathBuf,
+) -> MinoResult<CredentialResult> {
     spinner.message("Gathering credentials...");
     let (credentials, active_providers, cred_failures) =
-        super::credentials::gather_credentials(&args, config).await?;
+        super::credentials::gather_credentials(args, config).await?;
+
     if !cred_failures.is_empty() {
         spinner.stop("Credentials");
         for (provider, error) in &cred_failures {
-            ui::step_warn(&ctx, &format!("{}: {}", provider, error));
+            ui::step_warn(ctx, &format!("{}: {}", provider, error));
         }
         if args.strict_credentials {
             return Err(MinoError::User(format!(
@@ -76,18 +156,30 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         spinner.start("Initializing native sandbox...");
     }
 
-    // 7. Build environment variables
-    let mut env = build_sandbox_env(config, &credentials);
+    let env = build_sandbox_env(config, &credentials);
 
-    // 7b. Start filtering proxy for NetworkMode::Allow
-    //     The proxy runs in the main process and filters outbound connections.
-    //     The handle must outlive the sandbox process (Drop shuts it down).
-    //     Denials are reported through a channel for audit logging.
-    let (_proxy_handle, _denial_task) = if let NetworkMode::Allow(ref rules) = network_mode {
+    Ok(CredentialResult {
+        env,
+        providers: active_providers,
+    })
+}
+
+/// Start the filtering proxy if network mode is Allow.
+///
+/// Returns the proxy handle (must outlive the sandbox) and the denial log task.
+async fn start_proxy_if_needed(
+    network_mode: &NetworkMode,
+    env: &mut HashMap<String, String>,
+    config: &Config,
+    spinner: &mut TaskSpinner,
+) -> MinoResult<(
+    Option<crate::sandbox::proxy::ProxyHandle>,
+    Option<tokio::task::JoinHandle<()>>,
+)> {
+    if let NetworkMode::Allow(ref rules) = network_mode {
         spinner.message("Starting network proxy...");
 
         let (denial_tx, mut denial_rx) = tokio::sync::mpsc::unbounded_channel::<(String, u16)>();
-
         let handle = crate::sandbox::proxy::start_proxy(rules.clone(), Some(denial_tx)).await?;
         debug!("Network proxy started on {}", handle.addr);
 
@@ -95,31 +187,33 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
             env.insert(key, value);
         }
 
-        // Spawn background task to write denials to audit log
         let denial_audit = AuditLog::new(config);
         let denial_task = tokio::spawn(async move {
             while let Some((host, port)) = denial_rx.recv().await {
                 denial_audit
                     .log(
                         "sandbox.network_denied",
-                        &serde_json::json!({
-                            "host": host,
-                            "port": port,
-                        }),
+                        &serde_json::json!({ "host": host, "port": port }),
                     )
                     .await;
             }
         });
 
-        (Some(handle), Some(denial_task))
+        Ok((Some(handle), Some(denial_task)))
     } else {
-        (None, None)
-    };
+        Ok((None, None))
+    }
+}
 
-    // 8. Prepare dotfiles
-    let dotfile_dir = prepare_dotfiles(config).await?;
-
-    // 9. Create session
+/// Create the session, write audit logs, and return the session context.
+async fn create_session_and_audit(
+    args: &RunArgs,
+    config: &Config,
+    project_dir: &Path,
+    command: &[String],
+    active_providers: &[String],
+    network_mode: &NetworkMode,
+) -> MinoResult<SessionContext> {
     let session_name = args
         .name
         .clone()
@@ -133,23 +227,16 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         }
     }
 
-    // Clean up stale native sessions (PID dead but status active)
     match crate::cli::commands::status::cleanup_stale_native_sessions().await {
         Ok(n) if n > 0 => debug!("Cleaned up {} stale native session(s)", n),
         Err(e) => debug!("Stale session cleanup failed (non-fatal): {}", e),
         _ => {}
     }
 
-    let command = if args.command.is_empty() {
-        vec!["/bin/bash".to_string()]
-    } else {
-        args.command.clone()
-    };
-
     let mut session = Session::new(
         session_name.clone(),
-        project_dir.clone(),
-        command.clone(),
+        project_dir.to_path_buf(),
+        command.to_vec(),
         SessionStatus::Starting,
     );
     session.runtime_mode = Some("native".to_string());
@@ -164,7 +251,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
                 "session_id": session_name,
                 "runtime_mode": "native",
                 "project_dir": project_dir.display().to_string(),
-                "command": &command,
+                "command": command,
                 "network_mode": format!("{:?}", network_mode),
             }),
         )
@@ -176,28 +263,39 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
                 "credentials.injected",
                 &serde_json::json!({
                     "session_name": &session_name,
-                    "providers": &active_providers,
+                    "providers": active_providers,
                 }),
             )
             .await;
     }
 
-    // 10. Spawn sandbox
+    Ok(SessionContext {
+        session_name,
+        manager,
+        audit,
+    })
+}
+
+/// Spawn the sandbox process and monitor it (blocking for foreground, background for detach).
+#[allow(clippy::too_many_arguments)]
+async fn spawn_and_monitor(
+    platform: &dyn SandboxPlatform,
+    spawn_config: SandboxSpawnConfig,
+    ctx: SessionContext,
+    dotfile_dir: Option<PathBuf>,
+    detach: bool,
+    config: &Config,
+    ui_ctx: &UiContext,
+    spinner: &mut TaskSpinner,
+) -> MinoResult<()> {
+    let SessionContext {
+        session_name,
+        manager,
+        audit,
+    } = ctx;
+
     spinner.message("Starting native sandbox...");
-
-    // Keep a copy for cleanup after the sandbox exits
     let dotfile_dir_cleanup = dotfile_dir.clone();
-
-    let spawn_config = SandboxSpawnConfig {
-        session_id: session_name.clone(),
-        project_dir: project_dir.clone(),
-        command,
-        env,
-        network_mode,
-        sandbox_config: config.sandbox.clone(),
-        dotfile_dir,
-        interactive: !args.detach,
-    };
 
     let mut process = match platform.spawn(spawn_config).await {
         Ok(p) => p,
@@ -228,42 +326,8 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         }
     }
 
-    if args.detach {
-        // Set up log file for detached mode
-        let log_dir = crate::config::ConfigManager::state_dir().join("logs");
-        tokio::fs::create_dir_all(&log_dir)
-            .await
-            .map_err(|e| MinoError::io("creating log directory", e))?;
-        let log_path = log_dir.join(format!("{}.log", session_name));
-
-        // Update session with log file path
-        if let Some(mut s) = manager.get(&session_name).await? {
-            s.log_file = Some(log_path.clone());
-            s.save().await?;
-        }
-
-        spinner.stop(&format!(
-            "Session {} started (native sandbox, detached)",
-            style(&session_name).cyan()
-        ));
-        println!("  View logs: mino logs {}", session_name);
-        println!("  Stop with: mino stop {}", session_name);
-
-        // Spawn background task to monitor process exit and update session status
-        let bg_session_name = session_name.clone();
-        tokio::spawn(async move {
-            let exit_code = process.wait().await.unwrap_or(1);
-            let status = if exit_code == 0 {
-                SessionStatus::Stopped
-            } else {
-                SessionStatus::Failed
-            };
-            if let Ok(manager) = SessionManager::new().await {
-                let _ = manager.update_status(&bg_session_name, status).await;
-            }
-        });
-
-        return Ok(());
+    if detach {
+        return handle_detach(process, &session_name, &manager, spinner, ui_ctx).await;
     }
 
     spinner.stop(&format!(
@@ -271,15 +335,9 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         style(&session_name).cyan()
     ));
 
-    // Wait for process exit with signal forwarding.
-    // In interactive mode, forward SIGINT/SIGTERM to the sandboxed process
-    // so that Ctrl-C and kill signals reach the sandbox.
     let exit_code = wait_with_signal_forwarding(&mut process).await?;
-
-    // Clean up dotfile temp directory (may contain sanitized but still sensitive data)
     cleanup_dotfile_dir(&dotfile_dir_cleanup).await;
 
-    // Update session status
     let final_status = if exit_code == 0 {
         SessionStatus::Stopped
     } else {
@@ -298,7 +356,6 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         )
         .await;
 
-    // Show update notification on exit
     if let Some(update) = crate::version::load_cached_update(config).await {
         let method = crate::version::detect_install_method();
         let hint = crate::version::update_hint(&method);
@@ -314,6 +371,48 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
+
+    Ok(())
+}
+
+/// Handle detached mode: set up log file, spawn background monitor, return.
+async fn handle_detach(
+    mut process: SandboxProcess,
+    session_name: &str,
+    manager: &SessionManager,
+    spinner: &mut TaskSpinner,
+    _ui_ctx: &UiContext,
+) -> MinoResult<()> {
+    let log_dir = crate::config::ConfigManager::state_dir().join("logs");
+    tokio::fs::create_dir_all(&log_dir)
+        .await
+        .map_err(|e| MinoError::io("creating log directory", e))?;
+    let log_path = log_dir.join(format!("{}.log", session_name));
+
+    if let Some(mut s) = manager.get(session_name).await? {
+        s.log_file = Some(log_path.clone());
+        s.save().await?;
+    }
+
+    spinner.stop(&format!(
+        "Session {} started (native sandbox, detached)",
+        style(session_name).cyan()
+    ));
+    println!("  View logs: mino logs {}", session_name);
+    println!("  Stop with: mino stop {}", session_name);
+
+    let bg_session_name = session_name.to_string();
+    tokio::spawn(async move {
+        let exit_code = process.wait().await.unwrap_or(1);
+        let status = if exit_code == 0 {
+            SessionStatus::Stopped
+        } else {
+            SessionStatus::Failed
+        };
+        if let Ok(manager) = SessionManager::new().await {
+            let _ = manager.update_status(&bg_session_name, status).await;
+        }
+    });
 
     Ok(())
 }
