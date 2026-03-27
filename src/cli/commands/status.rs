@@ -371,18 +371,75 @@ async fn check_stale_native_sessions(ctx: &UiContext) {
 fn count_stale_native_sessions(sessions: &[Session]) -> usize {
     sessions
         .iter()
-        .filter(|s| {
-            s.runtime_mode.as_deref() == Some("native")
-                && matches!(s.status, SessionStatus::Running | SessionStatus::Starting)
-                && !is_pid_alive(s.process_id)
-        })
+        .filter(|s| is_stale_native_session(s))
         .count()
 }
 
+/// Check if a native session is stale (PID dead but status active).
+pub(crate) fn is_stale_native_session(session: &Session) -> bool {
+    session.runtime_mode.as_deref() == Some("native")
+        && matches!(
+            session.status,
+            SessionStatus::Running | SessionStatus::Starting
+        )
+        && !is_pid_alive(session.process_id)
+}
+
+/// Clean up stale native sessions — mark them as Failed.
+///
+/// Returns the number of sessions cleaned up. On macOS, also attempts
+/// to remove ACLs and pf rules for the stale session.
+pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> {
+    let sessions = Session::list_all().await?;
+    let mut cleaned = 0;
+
+    for session in &sessions {
+        if !is_stale_native_session(session) {
+            continue;
+        }
+
+        tracing::debug!(
+            "Cleaning up stale native session: {} (pid: {:?})",
+            session.name,
+            session.process_id
+        );
+
+        // On macOS, attempt to clean up ACLs and pf rules via the helper
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(e) =
+                crate::sandbox::macos::cleanup_macos_sandbox(&session.name, &session.project_dir)
+                    .await
+            {
+                tracing::warn!(
+                    "Failed to clean up macOS sandbox for session {}: {}",
+                    session.name,
+                    e
+                );
+                // Continue anyway — mark session as Failed regardless
+            }
+        }
+
+        // Update session status to Failed
+        let manager = crate::session::SessionManager::new().await?;
+        manager
+            .update_status(&session.name, SessionStatus::Failed)
+            .await?;
+        cleaned += 1;
+    }
+
+    Ok(cleaned)
+}
+
 /// Check if a process with the given PID is still alive.
-fn is_pid_alive(pid: Option<u32>) -> bool {
+pub(crate) fn is_pid_alive(pid: Option<u32>) -> bool {
     #[cfg(unix)]
     match pid {
+        Some(0) => {
+            // PID 0 is the kernel scheduler process — never signal it.
+            // A session with PID 0 is definitely stale.
+            false
+        }
         // SAFETY: libc::kill with signal 0 does not send any signal — it only
         // checks whether the process exists and we have permission to signal it.
         Some(p) => unsafe { libc::kill(p as i32, 0) == 0 },
@@ -418,6 +475,13 @@ mod tests {
     }
 
     #[test]
+    fn is_pid_alive_pid_zero_returns_false() {
+        // PID 0 is the kernel scheduler — should never be considered alive
+        // for sandbox session purposes
+        assert!(!is_pid_alive(Some(0)));
+    }
+
+    #[test]
     fn count_stale_no_native_sessions() {
         let sessions = vec![
             test_session("s1", SessionStatus::Running, Some("c1")),
@@ -446,7 +510,41 @@ mod tests {
     fn count_stale_native_no_pid_is_stale() {
         let mut session = test_session("s1", SessionStatus::Running, None);
         session.runtime_mode = Some("native".to_string());
-        // process_id is None — is_pid_alive(None) returns false → stale
+        // process_id is None — is_pid_alive(None) returns false -> stale
         assert_eq!(count_stale_native_sessions(&[session]), 1);
+    }
+
+    // ---- is_stale_native_session tests ----
+
+    #[test]
+    fn is_stale_container_session_returns_false() {
+        let session = test_session("s1", SessionStatus::Running, Some("c1"));
+        // Container sessions are not native, so never stale in native sense
+        assert!(!is_stale_native_session(&session));
+    }
+
+    #[test]
+    fn is_stale_native_starting_dead_pid() {
+        let mut session = test_session("s1", SessionStatus::Starting, None);
+        session.runtime_mode = Some("native".to_string());
+        session.process_id = Some(u32::MAX - 1);
+        assert!(is_stale_native_session(&session));
+    }
+
+    #[test]
+    fn is_stale_native_failed_is_not_stale() {
+        let mut session = test_session("s1", SessionStatus::Failed, None);
+        session.runtime_mode = Some("native".to_string());
+        session.process_id = Some(u32::MAX - 1);
+        assert!(!is_stale_native_session(&session));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_stale_native_running_live_pid_is_not_stale() {
+        let mut session = test_session("s1", SessionStatus::Running, None);
+        session.runtime_mode = Some("native".to_string());
+        session.process_id = Some(std::process::id()); // our own PID is alive
+        assert!(!is_stale_native_session(&session));
     }
 }

@@ -123,17 +123,38 @@ pub async fn spawn_linux_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
     Ok(SandboxProcess::new(child, config.session_id))
 }
 
+/// Shell-escape a path for use in the setup script.
+///
+/// Rejects paths containing null bytes or newlines, which could enable
+/// injection attacks in the generated shell script. Returns the path
+/// wrapped in POSIX single quotes.
+fn escape_path(path: &std::path::Path) -> MinoResult<String> {
+    let s = path.to_str().ok_or_else(|| MinoError::PathInvalid {
+        path: path.to_path_buf(),
+        reason: "non-UTF8 path".to_string(),
+    })?;
+    if s.contains('\0') || s.contains('\n') {
+        return Err(MinoError::PathInvalid {
+            path: path.to_path_buf(),
+            reason: "contains null byte or newline".to_string(),
+        });
+    }
+    Ok(shell_quote(s))
+}
+
+/// Shell-escape a string path for use in the setup script.
+///
+/// Like `escape_path` but accepts a `&str` directly (for passthrough/writable paths).
+fn escape_path_str(s: &str) -> MinoResult<String> {
+    escape_path(std::path::Path::new(s))
+}
+
 /// Single-quote a string for safe inclusion in shell scripts.
 ///
 /// Wraps the value in single quotes after escaping embedded single quotes
 /// using the POSIX `'\''` idiom (end quote, escaped quote, restart quote).
 fn shell_quote(s: &str) -> String {
     format!("'{}'", crate::network::shell_escape(s))
-}
-
-/// Single-quote a filesystem path for safe shell interpolation.
-fn shell_quote_path(p: &std::path::Path) -> String {
-    shell_quote(&p.display().to_string())
 }
 
 /// Generate the setup script that runs inside the namespace.
@@ -200,41 +221,45 @@ pub(crate) fn generate_setup_script(
     // /dev/shm as tmpfs
     script.push_str(&format!("mount -t tmpfs tmpfs {root}/dev/shm\n"));
 
-    // 6. Bind-mount project dir read-write
-    let project_dir = shell_quote_path(&config.project_dir);
-    script.push_str(&format!("mount --bind {project_dir} {root}/workspace\n"));
+    // 6. Bind-mount project dir read-write (with nosuid,nodev)
+    let project_dir = escape_path(&config.project_dir)?;
+    script.push_str(&format!(
+        "mount --bind {project_dir} {root}/workspace && mount -o remount,nosuid,nodev,bind {root}/workspace\n"
+    ));
 
-    // 7. Bind-mount passthrough paths read-only
+    // 7. Bind-mount passthrough paths read-only (with nosuid,nodev)
     for path_str in &config.sandbox_config.passthrough_paths {
         let mount_point = path_str.trim_start_matches('/');
-        let quoted = shell_quote(path_str);
-        let quoted_mount = shell_quote(mount_point);
+        let quoted = escape_path_str(path_str)?;
+        let quoted_mount = escape_path_str(mount_point)?;
         script.push_str(&format!(
-            "[ -d {quoted} ] && mkdir -p {root}/{quoted_mount} && mount --bind {quoted} {root}/{quoted_mount} && mount -o remount,ro,bind {root}/{quoted_mount}\n"
+            "[ -d {quoted} ] && mkdir -p {root}/{quoted_mount} && mount --bind {quoted} {root}/{quoted_mount} && mount -o remount,ro,nosuid,nodev,bind {root}/{quoted_mount}\n"
         ));
     }
 
-    // 8. Bind-mount writable paths
+    // 8. Bind-mount writable paths (with nosuid,nodev)
     for path_str in &config.sandbox_config.writable_paths {
         let mount_point = path_str.trim_start_matches('/');
-        let quoted = shell_quote(path_str);
-        let quoted_mount = shell_quote(mount_point);
+        let quoted = escape_path_str(path_str)?;
+        let quoted_mount = escape_path_str(mount_point)?;
         script.push_str(&format!(
-            "[ -d {quoted} ] && mkdir -p {root}/{quoted_mount} && mount --bind {quoted} {root}/{quoted_mount}\n"
+            "[ -d {quoted} ] && mkdir -p {root}/{quoted_mount} && mount --bind {quoted} {root}/{quoted_mount} && mount -o remount,nosuid,nodev,bind {root}/{quoted_mount}\n"
         ));
     }
 
     // 9. Copy dotfiles to sandbox HOME
     if let Some(dotfile_dir) = &config.dotfile_dir {
-        let quoted = shell_quote_path(dotfile_dir);
+        let quoted = escape_path(dotfile_dir)?;
         script.push_str(&format!(
             "cp -a {quoted}/* {root}/home/agent/ 2>/dev/null || true\n"
         ));
     }
 
-    // 10. Mount tmpfs at /tmp and proc
-    script.push_str(&format!("mount -t tmpfs tmpfs {root}/tmp\n"));
-    script.push_str(&format!("mount -t proc proc {root}/proc\n"));
+    // 10. Mount tmpfs at /tmp and proc (hidepid=2 hides other users' processes)
+    script.push_str(&format!(
+        "mount -t tmpfs -o nosuid,nodev tmpfs {root}/tmp\n"
+    ));
+    script.push_str(&format!("mount -t proc -o hidepid=2 proc {root}/proc\n"));
 
     // 11. pivot_root — this is the critical security step
     script.push_str(&format!("mkdir -p {root}/old_root\n"));
@@ -264,14 +289,20 @@ pub(crate) fn generate_setup_script(
         script.push_str(&format!("ulimit -f {blocks}\n"));
     }
 
-    // 14. exec the user command with proper quoting
+    // 14. Prevent privilege escalation (defense-in-depth)
+    //     setpriv --no-new-privs sets PR_SET_NO_NEW_PRIVS so that the sandboxed
+    //     process cannot gain privileges via setuid binaries or capabilities.
     let escaped_cmd = config
         .command
         .iter()
         .map(|arg| format!("'{}'", crate::network::shell_escape(arg)))
         .collect::<Vec<_>>()
         .join(" ");
-    script.push_str(&format!("exec {escaped_cmd}\n"));
+    script.push_str("if command -v setpriv >/dev/null 2>&1; then\n");
+    script.push_str(&format!("  exec setpriv --no-new-privs {escaped_cmd}\n"));
+    script.push_str("else\n");
+    script.push_str(&format!("  exec {escaped_cmd}\n"));
+    script.push_str("fi\n");
 
     Ok(script)
 }
@@ -401,8 +432,9 @@ mod tests {
     fn script_mounts_project_dir_and_filesystems() {
         let script = script_default();
         assert!(script.contains("mount --bind '/home/user/project' /tmp/mino-root-$$/workspace"));
-        assert!(script.contains("mount -t tmpfs tmpfs /tmp/mino-root-$$/tmp"));
-        assert!(script.contains("mount -t proc proc /tmp/mino-root-$$/proc"));
+        assert!(script.contains("remount,nosuid,nodev,bind /tmp/mino-root-$$/workspace"));
+        assert!(script.contains("mount -t tmpfs -o nosuid,nodev tmpfs /tmp/mino-root-$$/tmp"));
+        assert!(script.contains("mount -t proc -o hidepid=2 proc /tmp/mino-root-$$/proc"));
     }
 
     // ---- pivot_root, cleanup, and environment ----
@@ -492,7 +524,10 @@ mod tests {
     #[test]
     fn script_exec_with_properly_escaped_command() {
         let script = script_default();
-        assert!(script.contains("exec 'echo' 'hello'"));
+        // When setpriv is available, wraps with --no-new-privs
+        assert!(script.contains("exec setpriv --no-new-privs 'echo' 'hello'"));
+        // Falls back to plain exec without setpriv
+        assert!(script.contains("exec 'echo' 'hello'\n"));
     }
 
     #[test]
@@ -501,7 +536,7 @@ mod tests {
         config.command = vec!["echo".to_string(), "it's alive".to_string()];
         let limits = no_limits();
         let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("exec 'echo' 'it'\\''s alive'"));
+        assert!(script.contains("exec setpriv --no-new-privs 'echo' 'it'\\''s alive'"));
     }
 
     #[test]
@@ -510,7 +545,16 @@ mod tests {
         config.command = vec!["/bin/bash".to_string()];
         let limits = no_limits();
         let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("exec '/bin/bash'\n"));
+        assert!(script.contains("exec setpriv --no-new-privs '/bin/bash'\n"));
+    }
+
+    #[test]
+    fn script_setpriv_conditional() {
+        let script = script_default();
+        // Verify the setpriv conditional structure
+        assert!(script.contains("if command -v setpriv >/dev/null 2>&1; then"));
+        assert!(script.contains("else\n"));
+        assert!(script.contains("fi\n"));
     }
 
     // ---- Shell injection safety tests ----
@@ -561,9 +605,11 @@ mod tests {
         let script = generate_setup_script(&config, &no_limits()).unwrap();
 
         assert!(script.contains("mount --bind '/opt/toolchain' /tmp/mino-root-$$/'opt/toolchain'"));
-        assert!(script.contains("mount -o remount,ro,bind /tmp/mino-root-$$/'opt/toolchain'"));
+        assert!(script
+            .contains("mount -o remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'opt/toolchain'"));
         assert!(script.contains("mount --bind '/usr/local/go' /tmp/mino-root-$$/'usr/local/go'"));
-        assert!(script.contains("mount -o remount,ro,bind /tmp/mino-root-$$/'usr/local/go'"));
+        assert!(script
+            .contains("mount -o remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'usr/local/go'"));
     }
 
     #[test]
@@ -573,7 +619,9 @@ mod tests {
         let script = generate_setup_script(&config, &no_limits()).unwrap();
 
         assert!(script.contains("mount --bind '/tmp/shared' /tmp/mino-root-$$/'tmp/shared'"));
-        assert!(!script.contains("remount,ro,bind /tmp/mino-root-$$/'tmp/shared'"));
+        // Writable paths get nosuid,nodev but NOT read-only
+        assert!(script.contains("remount,nosuid,nodev,bind /tmp/mino-root-$$/'tmp/shared'"));
+        assert!(!script.contains("remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'tmp/shared'"));
     }
 
     #[test]
@@ -624,11 +672,14 @@ mod tests {
             "/dev/null",
             "/dev/shm",
             "mount --bind '/home/user/project'",
+            "nosuid,nodev,bind /tmp/mino-root-$$/workspace",
             "'/opt/tools'",
+            "ro,nosuid,nodev,bind",
             "'/var/cache'",
+            "nosuid,nodev,bind",
             "cp -a '/tmp/dotfiles'/*",
-            "mount -t tmpfs tmpfs /tmp/mino-root-$$/tmp",
-            "mount -t proc proc",
+            "mount -t tmpfs -o nosuid,nodev tmpfs /tmp/mino-root-$$/tmp",
+            "mount -t proc -o hidepid=2 proc",
             "pivot_root",
             "umount -l /old_root",
             "rmdir /old_root",
@@ -638,7 +689,7 @@ mod tests {
             "ulimit -u 128",
             "ulimit -t 1800",
             "ulimit -f",
-            "exec '/bin/bash' '-c' 'ls -la'",
+            "setpriv --no-new-privs '/bin/bash' '-c' 'ls -la'",
         ];
 
         let mut last_pos = 0;
@@ -648,5 +699,125 @@ mod tests {
                 .unwrap_or_else(|| panic!("Missing section: {}", section));
             last_pos += pos;
         }
+    }
+
+    // ---- escape_path validation tests ----
+
+    #[test]
+    fn escape_path_normal_path() {
+        let result = escape_path(std::path::Path::new("/home/user/project"));
+        assert_eq!(result.unwrap(), "'/home/user/project'");
+    }
+
+    #[test]
+    fn escape_path_with_spaces() {
+        let result = escape_path(std::path::Path::new("/home/user/my project"));
+        assert_eq!(result.unwrap(), "'/home/user/my project'");
+    }
+
+    #[test]
+    fn escape_path_with_single_quotes() {
+        let result = escape_path(std::path::Path::new("/home/user/it's"));
+        assert_eq!(result.unwrap(), "'/home/user/it'\\''s'");
+    }
+
+    #[test]
+    fn escape_path_with_dollar_sign() {
+        let result = escape_path(std::path::Path::new("/tmp/$(whoami)"));
+        assert_eq!(result.unwrap(), "'/tmp/$(whoami)'");
+    }
+
+    #[test]
+    fn escape_path_with_unicode() {
+        let result = escape_path(std::path::Path::new("/home/user/cafe\u{0301}"));
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("cafe\u{0301}"));
+    }
+
+    #[test]
+    fn escape_path_rejects_null_bytes() {
+        let path = std::path::Path::new("/tmp/bad\0path");
+        let result = escape_path(path);
+        // On most systems, Path::to_str() will fail on null bytes, but our
+        // explicit check handles the case too. Either way, it must be Err.
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn escape_path_rejects_newlines() {
+        let result = escape_path(std::path::Path::new("/tmp/bad\npath"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("null byte or newline"));
+    }
+
+    #[test]
+    fn escape_path_str_rejects_newlines() {
+        let result = escape_path_str("/opt/bad\npath");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn escape_path_str_normal() {
+        let result = escape_path_str("/opt/tools");
+        assert_eq!(result.unwrap(), "'/opt/tools'");
+    }
+
+    // ---- Script rejects paths with injection characters ----
+
+    #[test]
+    fn script_rejects_project_dir_with_newline() {
+        let mut config = test_spawn_config();
+        config.project_dir = PathBuf::from("/home/user/bad\npath");
+        let result = generate_setup_script(&config, &no_limits());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("null byte or newline"));
+    }
+
+    #[test]
+    fn script_rejects_passthrough_path_with_newline() {
+        let mut config = test_spawn_config();
+        config.sandbox_config.passthrough_paths = vec!["/opt/bad\npath".to_string()];
+        let result = generate_setup_script(&config, &no_limits());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn script_rejects_writable_path_with_newline() {
+        let mut config = test_spawn_config();
+        config.sandbox_config.writable_paths = vec!["/tmp/bad\npath".to_string()];
+        let result = generate_setup_script(&config, &no_limits());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn script_rejects_dotfile_dir_with_newline() {
+        let mut config = test_spawn_config();
+        config.dotfile_dir = Some(PathBuf::from("/tmp/dots\nbad"));
+        let result = generate_setup_script(&config, &no_limits());
+        assert!(result.is_err());
+    }
+
+    // ---- Hardening feature tests ----
+
+    #[test]
+    fn script_mounts_proc_with_hidepid() {
+        let script = script_default();
+        assert!(script.contains("mount -t proc -o hidepid=2 proc"));
+    }
+
+    #[test]
+    fn script_mounts_tmp_with_nosuid_nodev() {
+        let script = script_default();
+        assert!(script.contains("mount -t tmpfs -o nosuid,nodev tmpfs"));
+    }
+
+    #[test]
+    fn script_project_dir_has_nosuid_nodev() {
+        let script = script_default();
+        assert!(script.contains("remount,nosuid,nodev,bind /tmp/mino-root-$$/workspace"));
     }
 }

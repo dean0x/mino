@@ -425,4 +425,35 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Failed to parse helper response"));
     }
+
+    // ---- pf_rules injection safety tests ----
+
+    #[test]
+    fn pf_rules_user_with_spaces_in_name() {
+        // Verify that a username with spaces doesn't break pf rule syntax
+        // (in practice, macOS usernames can't have spaces, but defense-in-depth)
+        let rules = generate_pf_rules("bad user", "sess-1", None);
+        // The username should appear as-is — pf will reject invalid names
+        assert!(rules.contains("user bad user"));
+    }
+
+    #[test]
+    fn pf_rules_session_id_not_in_output() {
+        // Session ID is currently unused in rule generation (_session_id param)
+        // to avoid injection. Verify it doesn't leak into rules.
+        let rules = generate_pf_rules("_mino_agent", "'; DROP TABLE users;--", None);
+        assert!(!rules.contains("DROP TABLE"));
+        assert!(!rules.contains("';"));
+    }
+
+    #[test]
+    fn pf_rules_proxy_port_boundary_values() {
+        // Port 0
+        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(0));
+        assert!(rules.contains("port 0 user _mino_agent"));
+
+        // Port max
+        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(65535));
+        assert!(rules.contains("port 65535 user _mino_agent"));
+    }
 }

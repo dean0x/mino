@@ -12,9 +12,23 @@ use crate::error::{MinoError, MinoResult};
 use crate::network::NetworkRule;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tracing::{debug, warn};
+
+/// Maximum size for HTTP request headers (defense against memory exhaustion)
+const MAX_REQUEST_SIZE: usize = 8192;
+
+/// Maximum number of concurrent proxy connections
+const MAX_CONCURRENT_CONNECTIONS: usize = 256;
+
+/// Timeout for reading the initial request from a client
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Timeout for connecting to the upstream target
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Handle to a running proxy instance.
 ///
@@ -86,22 +100,36 @@ pub async fn start_proxy(rules: Vec<NetworkRule>) -> MinoResult<ProxyHandle> {
     Ok(ProxyHandle { addr, shutdown_tx })
 }
 
-/// Accept loop — runs until the shutdown signal fires
+/// Accept loop — runs until the shutdown signal fires.
+///
+/// Uses a semaphore to limit concurrent connections, preventing resource
+/// exhaustion from a misbehaving sandbox process.
 async fn accept_loop(
     listener: TcpListener,
     rules: Arc<Vec<NetworkRule>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
     loop {
         tokio::select! {
             result = listener.accept() => {
                 match result {
                     Ok((stream, peer_addr)) => {
+                        let permit = match semaphore.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                debug!("Proxy connection limit reached, dropping connection from {}", peer_addr);
+                                drop(stream);
+                                continue;
+                            }
+                        };
                         let rules = Arc::clone(&rules);
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(stream, peer_addr, &rules).await {
                                 debug!("Proxy connection error from {}: {}", peer_addr, e);
                             }
+                            drop(permit);
                         });
                     }
                     Err(e) => {
@@ -120,21 +148,50 @@ async fn accept_loop(
 }
 
 /// Route a connection to the appropriate protocol handler based on the first byte.
+///
+/// Applies a read timeout to the initial peek to prevent idle connections
+/// from holding resources indefinitely.
 async fn handle_connection(
     stream: TcpStream,
     _peer_addr: SocketAddr,
     rules: &[NetworkRule],
 ) -> MinoResult<()> {
     let mut peek_buf = [0u8; 1];
-    stream
-        .peek(&mut peek_buf)
-        .await
-        .map_err(|e| MinoError::NetworkProxy(format!("Peek error: {e}")))?;
+
+    let peek_result = tokio::time::timeout(REQUEST_READ_TIMEOUT, stream.peek(&mut peek_buf)).await;
+
+    match peek_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            return Err(MinoError::NetworkProxy(format!("Peek error: {e}")));
+        }
+        Err(_) => {
+            return Err(MinoError::NetworkProxy(
+                "Request read timed out".to_string(),
+            ));
+        }
+    }
 
     match peek_buf[0] {
         0x05 => handle_socks5(stream, rules).await,
         _ => handle_http_connect(stream, rules).await,
     }
+}
+
+/// Validate that a hostname contains no null bytes or control characters.
+///
+/// These could indicate injection attempts or malformed requests.
+fn validate_hostname(host: &str) -> MinoResult<()> {
+    if host.is_empty() {
+        return Err(MinoError::NetworkProxy("Empty hostname".to_string()));
+    }
+    if host.bytes().any(|b| b == 0 || b < 0x20) {
+        return Err(MinoError::NetworkProxy(format!(
+            "Hostname contains null or control characters: {:?}",
+            host
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +238,7 @@ async fn handle_socks5(mut stream: TcpStream, rules: &[NetworkRule]) -> MinoResu
     }
 
     let (host, port) = parse_socks5_address(&buf[..n])?;
+    validate_hostname(&host)?;
 
     // --- Policy check ---
     if !is_allowed(&host, port, rules) {
@@ -193,19 +251,27 @@ async fn handle_socks5(mut stream: TcpStream, rules: &[NetworkRule]) -> MinoResu
         return Ok(());
     }
 
-    // --- Connect to target ---
+    // --- Connect to target (with timeout) ---
     let target_addr = format!("{host}:{port}");
-    match TcpStream::connect(&target_addr).await {
-        Ok(target) => {
+    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&target_addr)).await {
+        Ok(Ok(target)) => {
             let reply = build_socks5_success_reply(&target);
             stream.write_all(&reply).await.ok();
             relay(stream, target).await;
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             debug!("SOCKS5 connect failed to {}: {}", target_addr, e);
             // Connection refused (0x05)
             stream
                 .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await
+                .ok();
+        }
+        Err(_) => {
+            debug!("SOCKS5 connect timed out to {}", target_addr);
+            // TTL expired (0x06)
+            stream
+                .write_all(&[0x05, 0x06, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                 .await
                 .ok();
         }
@@ -303,15 +369,35 @@ fn build_socks5_success_reply(target: &TcpStream) -> Vec<u8> {
 ///
 /// Reads the first line to extract host:port, checks the allowlist,
 /// and if permitted establishes a bidirectional relay.
+///
+/// Enforces `MAX_REQUEST_SIZE` to prevent memory exhaustion from
+/// oversized HTTP request headers.
 async fn handle_http_connect(mut stream: TcpStream, rules: &[NetworkRule]) -> MinoResult<()> {
-    let mut buf = vec![0u8; 4096];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| MinoError::NetworkProxy(format!("HTTP read error: {e}")))?;
+    let mut buf = vec![0u8; MAX_REQUEST_SIZE];
+
+    let read_result = tokio::time::timeout(REQUEST_READ_TIMEOUT, stream.read(&mut buf)).await;
+
+    let n = match read_result {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => {
+            return Err(MinoError::NetworkProxy(format!("HTTP read error: {e}")));
+        }
+        Err(_) => {
+            let response = "HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n";
+            stream.write_all(response.as_bytes()).await.ok();
+            return Err(MinoError::NetworkProxy(
+                "HTTP request read timed out".to_string(),
+            ));
+        }
+    };
+
+    if n == 0 {
+        return Err(MinoError::NetworkProxy("Empty HTTP request".to_string()));
+    }
 
     let request = String::from_utf8_lossy(&buf[..n]);
     let (host, port) = parse_connect_request(&request)?;
+    validate_hostname(&host)?;
 
     if !is_allowed(&host, port, rules) {
         debug!("HTTP CONNECT denied: {}:{}", host, port);
@@ -321,15 +407,20 @@ async fn handle_http_connect(mut stream: TcpStream, rules: &[NetworkRule]) -> Mi
     }
 
     let target_addr = format!("{host}:{port}");
-    match TcpStream::connect(&target_addr).await {
-        Ok(target) => {
+    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&target_addr)).await {
+        Ok(Ok(target)) => {
             let response = "HTTP/1.1 200 Connection Established\r\n\r\n";
             stream.write_all(response.as_bytes()).await.ok();
             relay(stream, target).await;
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             debug!("HTTP CONNECT failed to {}: {}", target_addr, e);
             let response = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n";
+            stream.write_all(response.as_bytes()).await.ok();
+        }
+        Err(_) => {
+            debug!("HTTP CONNECT timed out to {}", target_addr);
+            let response = "HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n";
             stream.write_all(response.as_bytes()).await.ok();
         }
     }
@@ -836,5 +927,74 @@ mod tests {
         assert_eq!(reply.len(), 10);
 
         drop(server);
+    }
+
+    // ---- validate_hostname tests ----
+
+    #[test]
+    fn validate_hostname_normal() {
+        assert!(validate_hostname("github.com").is_ok());
+    }
+
+    #[test]
+    fn validate_hostname_ip_address() {
+        assert!(validate_hostname("192.168.1.1").is_ok());
+    }
+
+    #[test]
+    fn validate_hostname_rejects_empty() {
+        let err = validate_hostname("").unwrap_err();
+        assert!(err.to_string().contains("Empty hostname"));
+    }
+
+    #[test]
+    fn validate_hostname_rejects_null_byte() {
+        let err = validate_hostname("evil\0.com").unwrap_err();
+        assert!(err.to_string().contains("null or control"));
+    }
+
+    #[test]
+    fn validate_hostname_rejects_control_chars() {
+        let err = validate_hostname("evil\x01.com").unwrap_err();
+        assert!(err.to_string().contains("null or control"));
+    }
+
+    #[test]
+    fn validate_hostname_rejects_newline() {
+        let err = validate_hostname("evil\n.com").unwrap_err();
+        assert!(err.to_string().contains("null or control"));
+    }
+
+    #[test]
+    fn validate_hostname_rejects_carriage_return() {
+        let err = validate_hostname("evil\r.com").unwrap_err();
+        assert!(err.to_string().contains("null or control"));
+    }
+
+    #[test]
+    fn validate_hostname_allows_hyphen_and_dots() {
+        assert!(validate_hostname("my-host.example.com").is_ok());
+    }
+
+    // ---- Constants tests ----
+
+    #[test]
+    fn max_request_size_is_reasonable() {
+        assert!(MAX_REQUEST_SIZE >= 1024);
+        assert!(MAX_REQUEST_SIZE <= 65536);
+    }
+
+    #[test]
+    fn max_concurrent_connections_is_reasonable() {
+        assert!(MAX_CONCURRENT_CONNECTIONS >= 16);
+        assert!(MAX_CONCURRENT_CONNECTIONS <= 4096);
+    }
+
+    #[test]
+    fn timeouts_are_reasonable() {
+        assert!(REQUEST_READ_TIMEOUT.as_secs() >= 1);
+        assert!(REQUEST_READ_TIMEOUT.as_secs() <= 60);
+        assert!(CONNECT_TIMEOUT.as_secs() >= 5);
+        assert!(CONNECT_TIMEOUT.as_secs() <= 120);
     }
 }

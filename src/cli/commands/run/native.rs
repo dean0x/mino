@@ -112,6 +112,13 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         }
     }
 
+    // Clean up stale native sessions (PID dead but status active)
+    match crate::cli::commands::status::cleanup_stale_native_sessions().await {
+        Ok(n) if n > 0 => debug!("Cleaned up {} stale native session(s)", n),
+        Err(e) => debug!("Stale session cleanup failed (non-fatal): {}", e),
+        _ => {}
+    }
+
     let command = if args.command.is_empty() {
         vec!["/bin/bash".to_string()]
     } else {
@@ -242,8 +249,10 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         style(&session_name).cyan()
     ));
 
-    // Wait for process exit
-    let exit_code = process.wait().await?;
+    // Wait for process exit with signal forwarding.
+    // In interactive mode, forward SIGINT/SIGTERM to the sandboxed process
+    // so that Ctrl-C and kill signals reach the sandbox.
+    let exit_code = wait_with_signal_forwarding(&mut process).await?;
 
     // Clean up dotfile temp directory (may contain sanitized but still sensitive data)
     cleanup_dotfile_dir(&dotfile_dir_cleanup).await;
@@ -368,6 +377,48 @@ async fn cleanup_dotfile_dir(dir: &Option<PathBuf>) {
             }
         }
     }
+}
+
+/// Wait for the sandboxed process to exit, forwarding signals on Unix.
+///
+/// On Unix, SIGINT and SIGTERM are caught and forwarded to the sandboxed
+/// process via `terminate()`. This ensures that Ctrl-C properly stops
+/// the sandbox rather than killing only the mino wrapper.
+#[cfg(unix)]
+async fn wait_with_signal_forwarding(
+    process: &mut crate::sandbox::process::SandboxProcess,
+) -> MinoResult<i32> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigint = signal(SignalKind::interrupt())
+        .map_err(|e| MinoError::io("setting up SIGINT handler", e))?;
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| MinoError::io("setting up SIGTERM handler", e))?;
+
+    tokio::select! {
+        exit_code = process.wait() => {
+            exit_code
+        }
+        _ = sigint.recv() => {
+            debug!("Received SIGINT, forwarding to sandbox process");
+            process.terminate().await.ok();
+            // Wait for the process to exit after receiving the signal
+            process.wait().await
+        }
+        _ = sigterm.recv() => {
+            debug!("Received SIGTERM, forwarding to sandbox process");
+            process.terminate().await.ok();
+            process.wait().await
+        }
+    }
+}
+
+/// Non-Unix fallback: just wait for the process.
+#[cfg(not(unix))]
+async fn wait_with_signal_forwarding(
+    process: &mut crate::sandbox::process::SandboxProcess,
+) -> MinoResult<i32> {
+    process.wait().await
 }
 
 /// Prepare dotfiles for the sandbox by copying and sanitizing them into a temp dir
@@ -561,5 +612,20 @@ mod tests {
         args.project = Some(PathBuf::from("/nonexistent/path/abc123"));
         let err = resolve_project_dir(&args).unwrap_err();
         assert!(err.to_string().contains("Path not found"));
+    }
+
+    #[test]
+    fn validate_native_flags_volume_is_ok() {
+        // --volume is allowed in native mode (maps to passthrough/writable paths)
+        let mut args = test_run_args();
+        args.volume = vec!["/host/path:/container/path".to_string()];
+        assert!(validate_native_flags(&args).is_ok());
+    }
+
+    #[test]
+    fn validate_native_flags_detach_is_ok() {
+        let mut args = test_run_args();
+        args.detach = true;
+        assert!(validate_native_flags(&args).is_ok());
     }
 }
