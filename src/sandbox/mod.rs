@@ -5,7 +5,9 @@
 
 pub mod config;
 pub mod dotfiles;
+pub mod helper_protocol;
 pub mod linux;
+pub mod macos;
 pub mod native;
 pub mod process;
 pub mod proxy;

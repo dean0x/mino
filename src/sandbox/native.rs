@@ -2,8 +2,9 @@
 //!
 //! Routes to platform-specific implementations based on the target OS.
 //! Linux uses user namespaces via `unshare` + `pivot_root`.
-//! macOS support is planned for a future phase.
+//! macOS uses a dedicated system user + pf packet filter via a privileged helper.
 
+#[allow(unused_imports)]
 use crate::error::{MinoError, MinoResult};
 use crate::network::NetworkMode;
 use crate::sandbox::config::SandboxConfig;
@@ -50,10 +51,7 @@ impl NativeSandbox {
         }
         #[cfg(target_os = "macos")]
         {
-            // TODO(Phase 4): macOS validation via dedicated user + pf firewall
-            Err(MinoError::NativeUnsupported {
-                feature: "native sandbox on macOS".to_string(),
-            })
+            super::macos::validate_macos_setup().await
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
@@ -71,10 +69,7 @@ impl NativeSandbox {
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = config;
-            Err(MinoError::NativeUnsupported {
-                feature: "native sandbox on macOS".to_string(),
-            })
+            super::macos::spawn_macos_sandbox(config).await
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
@@ -91,16 +86,22 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn validate_setup_returns_unsupported_on_macos() {
-        // On macOS (where tests typically run), this should return NativeUnsupported
-        // On Linux, this may succeed or fail depending on namespace support
+    async fn validate_setup_returns_error_without_prerequisites() {
+        // On macOS: returns SandboxNotSetup (helper not installed in test env)
+        // On Linux: result depends on kernel namespace support
         let result = NativeSandbox::validate_setup().await;
 
         #[cfg(target_os = "macos")]
         {
+            // In test environment, the helper binary won't be installed
             assert!(result.is_err());
             let err = result.unwrap_err();
-            assert!(err.to_string().contains("not supported in native sandbox"));
+            assert!(
+                err.to_string().contains("Native sandbox not set up")
+                    || err.to_string().contains("Sandbox helper error"),
+                "unexpected error: {}",
+                err
+            );
         }
 
         // On Linux, the result depends on the system configuration
@@ -112,25 +113,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_returns_unsupported_on_macos() {
+    async fn spawn_config_has_correct_fields() {
+        // Verify SandboxSpawnConfig construction works and holds all fields
         let config = SandboxSpawnConfig {
-            session_id: "test".to_string(),
+            session_id: "test-sess".to_string(),
             project_dir: PathBuf::from("/tmp"),
             command: vec!["true".to_string()],
-            env: HashMap::new(),
+            env: HashMap::from([("KEY".to_string(), "val".to_string())]),
             network_mode: NetworkMode::Bridge,
             sandbox_config: SandboxConfig::default(),
-            dotfile_dir: None,
-            interactive: false,
+            dotfile_dir: Some(PathBuf::from("/tmp/dots")),
+            interactive: true,
         };
 
-        let result = NativeSandbox::spawn(config).await;
-
-        #[cfg(target_os = "macos")]
-        {
-            assert!(result.is_err());
-            let err = result.unwrap_err();
-            assert!(err.to_string().contains("not supported in native sandbox"));
-        }
+        assert_eq!(config.session_id, "test-sess");
+        assert_eq!(config.project_dir, PathBuf::from("/tmp"));
+        assert_eq!(config.command, vec!["true"]);
+        assert_eq!(config.env.get("KEY").unwrap(), "val");
+        assert!(config.interactive);
+        assert_eq!(config.dotfile_dir, Some(PathBuf::from("/tmp/dots")));
     }
 }
