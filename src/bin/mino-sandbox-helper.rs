@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use mino::sandbox::helper_protocol::*;
 
@@ -276,6 +277,16 @@ fn handle_exec(args: &[String]) {
             process::exit(1);
         }
     };
+
+    // Validate session_id: must be alphanumeric plus hyphen/underscore.
+    // Same validation as handle_cleanup to prevent path injection.
+    if !session_id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        print_error(&format!("Invalid session_id: {:?}", session_id));
+        process::exit(1);
+    }
 
     let command: &[String] = match command_start {
         Some(idx) if idx < args.len() => &args[idx..],
@@ -570,6 +581,8 @@ fn get_user_gid(username: &str) -> Option<u32> {
 /// # Safety
 /// Calls libc::setrlimit which is an FFI call. Safe when called with
 /// valid rlimit values. Zero values are treated as "no limit" and skipped.
+/// Failures are logged to stderr but are non-fatal — the sandbox still
+/// runs with default OS limits for the failed resource.
 #[cfg(unix)]
 unsafe fn apply_resource_limits(limits: &ResourceLimitsDto) {
     if limits.max_memory_bytes > 0 {
@@ -577,28 +590,48 @@ unsafe fn apply_resource_limits(limits: &ResourceLimitsDto) {
             rlim_cur: limits.max_memory_bytes,
             rlim_max: limits.max_memory_bytes,
         };
-        libc::setrlimit(libc::RLIMIT_AS, &rlim);
+        if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
+            eprintln!(
+                "[mino-helper] setrlimit RLIMIT_AS failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
     if limits.max_processes > 0 {
         let rlim = libc::rlimit {
             rlim_cur: u64::from(limits.max_processes),
             rlim_max: u64::from(limits.max_processes),
         };
-        libc::setrlimit(libc::RLIMIT_NPROC, &rlim);
+        if libc::setrlimit(libc::RLIMIT_NPROC, &rlim) != 0 {
+            eprintln!(
+                "[mino-helper] setrlimit RLIMIT_NPROC failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
     if limits.max_cpu_seconds > 0 {
         let rlim = libc::rlimit {
             rlim_cur: limits.max_cpu_seconds,
             rlim_max: limits.max_cpu_seconds,
         };
-        libc::setrlimit(libc::RLIMIT_CPU, &rlim);
+        if libc::setrlimit(libc::RLIMIT_CPU, &rlim) != 0 {
+            eprintln!(
+                "[mino-helper] setrlimit RLIMIT_CPU failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
     if limits.max_file_size_bytes > 0 {
         let rlim = libc::rlimit {
             rlim_cur: limits.max_file_size_bytes,
             rlim_max: limits.max_file_size_bytes,
         };
-        libc::setrlimit(libc::RLIMIT_FSIZE, &rlim);
+        if libc::setrlimit(libc::RLIMIT_FSIZE, &rlim) != 0 {
+            eprintln!(
+                "[mino-helper] setrlimit RLIMIT_FSIZE failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
 }
 
@@ -613,33 +646,35 @@ fn exec_command(command: &[String]) -> std::io::Error {
 /// Set up signal forwarding to child process
 ///
 /// # Safety
-/// Writes to static CHILD_PID and installs C-style signal handlers.
+/// Installs C-style signal handlers via libc::signal.
 /// Must be called only once, from the parent process after fork().
 #[cfg(unix)]
 unsafe fn setup_signal_forwarding(child_pid: i32) {
-    CHILD_PID = child_pid;
+    CHILD_PID.store(child_pid, Ordering::SeqCst);
     libc::signal(libc::SIGINT, forward_signal as *const () as usize);
     libc::signal(libc::SIGTERM, forward_signal as *const () as usize);
 }
 
 /// Global child PID for signal forwarding
 ///
-/// # Safety
+/// Stored as an atomic to avoid `static mut` unsoundness.
 /// Written once in parent_process() before signal handlers fire,
 /// read only in the signal handler. Single-threaded binary.
 #[cfg(unix)]
-static mut CHILD_PID: i32 = 0;
+static CHILD_PID: AtomicI32 = AtomicI32::new(0);
 
 /// C-compatible signal handler that forwards signals to the child
 ///
 /// # Safety
 /// This is a signal handler. It only calls async-signal-safe functions
-/// (libc::kill). Reads CHILD_PID which was set before handler installation.
+/// (libc::kill). Reads CHILD_PID atomically; the value was stored before
+/// handler installation.
 #[cfg(unix)]
 extern "C" fn forward_signal(sig: libc::c_int) {
-    unsafe {
-        if CHILD_PID > 0 {
-            libc::kill(CHILD_PID, sig);
+    let pid = CHILD_PID.load(Ordering::SeqCst);
+    if pid > 0 {
+        unsafe {
+            libc::kill(pid, sig);
         }
     }
 }
@@ -651,7 +686,29 @@ fn copy_dotfiles(src: &Path, dest: &Path) {
             let file_name = entry.file_name();
             let dest_path = dest.join(&file_name);
 
-            if src_path.is_dir() {
+            // Skip symlinks to prevent data exfiltration when running as root.
+            // symlink_metadata() does NOT follow symlinks, unlike metadata().
+            let metadata = match std::fs::symlink_metadata(&src_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!(
+                        "[mino-helper] skipping dotfile (metadata error): {}: {}",
+                        src_path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            if metadata.file_type().is_symlink() {
+                eprintln!(
+                    "[mino-helper] skipping symlink in dotfiles: {}",
+                    src_path.display()
+                );
+                continue;
+            }
+
+            if metadata.is_dir() {
                 let _ = std::fs::create_dir_all(&dest_path);
                 copy_dotfiles(&src_path, &dest_path);
             } else {
