@@ -129,6 +129,25 @@ pub enum MinoError {
     #[error("Network policy conflict: {0}")]
     NetworkPolicy(String),
 
+    // Sandbox errors
+    #[error("Native sandbox not set up. Run: mino setup --native")]
+    SandboxNotSetup,
+
+    #[error("Sandbox helper error: {0}")]
+    SandboxHelper(String),
+
+    #[error("Namespace setup failed: {0}")]
+    NamespaceSetup(String),
+
+    #[error("Resource limit error: {0}")]
+    ResourceLimit(String),
+
+    #[error("Network proxy error: {0}")]
+    NetworkProxy(String),
+
+    #[error("Feature '{feature}' is not supported in native sandbox mode")]
+    NativeUnsupported { feature: String },
+
     // IO errors
     #[error("IO error: {context}")]
     Io {
@@ -228,6 +247,9 @@ impl MinoError {
             Self::PodmanRootlessSetup { .. } => Some("Run: mino setup"),
             Self::NoActiveSessions => Some("Start a session with: mino run"),
             Self::NetworkPolicy(_) => Some("Use --network bridge with --network-allow, or --network none without --network-allow."),
+            Self::SandboxNotSetup => Some("Run: mino setup --native"),
+            Self::SandboxHelper(_) => Some("Check helper status: mino status"),
+            Self::NamespaceSetup(_) => Some("Check kernel config: sysctl kernel.unprivileged_userns_clone"),
             _ => None,
         }
     }
@@ -253,5 +275,65 @@ mod tests {
     fn error_retryable() {
         assert!(MinoError::OrbStackNotRunning.is_retryable());
         assert!(!MinoError::OrbStackNotFound.is_retryable());
+    }
+
+    #[test]
+    fn sandbox_not_setup_display() {
+        let err = MinoError::SandboxNotSetup;
+        assert!(err.to_string().contains("Native sandbox not set up"));
+    }
+
+    #[test]
+    fn sandbox_not_setup_hint() {
+        let err = MinoError::SandboxNotSetup;
+        assert_eq!(err.hint(), Some("Run: mino setup --native"));
+    }
+
+    #[test]
+    fn sandbox_helper_display() {
+        let err = MinoError::SandboxHelper("pfctl failed".to_string());
+        assert!(err.to_string().contains("pfctl failed"));
+    }
+
+    #[test]
+    fn sandbox_helper_hint() {
+        let err = MinoError::SandboxHelper("failed".to_string());
+        assert_eq!(err.hint(), Some("Check helper status: mino status"));
+    }
+
+    #[test]
+    fn namespace_setup_display() {
+        let err = MinoError::NamespaceSetup("user namespace denied".to_string());
+        assert!(err.to_string().contains("user namespace denied"));
+    }
+
+    #[test]
+    fn namespace_setup_hint() {
+        let err = MinoError::NamespaceSetup("denied".to_string());
+        assert_eq!(
+            err.hint(),
+            Some("Check kernel config: sysctl kernel.unprivileged_userns_clone")
+        );
+    }
+
+    #[test]
+    fn resource_limit_display() {
+        let err = MinoError::ResourceLimit("RLIMIT_AS failed".to_string());
+        assert!(err.to_string().contains("RLIMIT_AS failed"));
+    }
+
+    #[test]
+    fn network_proxy_display() {
+        let err = MinoError::NetworkProxy("bind failed".to_string());
+        assert!(err.to_string().contains("bind failed"));
+    }
+
+    #[test]
+    fn native_unsupported_display() {
+        let err = MinoError::NativeUnsupported {
+            feature: "SSH agent forwarding".to_string(),
+        };
+        assert!(err.to_string().contains("SSH agent forwarding"));
+        assert!(err.to_string().contains("not supported in native sandbox"));
     }
 }

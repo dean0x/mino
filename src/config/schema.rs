@@ -2,6 +2,7 @@
 //!
 //! Configuration is stored at `~/.config/mino/config.toml`
 
+use crate::sandbox::config::SandboxConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -29,6 +30,9 @@ pub struct Config {
 
     /// Home volume settings
     pub home: HomeConfig,
+
+    /// Native sandbox settings
+    pub sandbox: SandboxConfig,
 }
 
 /// General application settings
@@ -46,6 +50,9 @@ pub struct GeneralConfig {
 
     /// Enable periodic update checks (default: true)
     pub update_check: bool,
+
+    /// Runtime mode: "container", "native", or "auto"
+    pub runtime: String,
 }
 
 impl Default for GeneralConfig {
@@ -55,6 +62,7 @@ impl Default for GeneralConfig {
             log_format: "text".to_string(),
             audit_log: true,
             update_check: true,
+            runtime: "container".to_string(),
         }
     }
 }
@@ -350,6 +358,49 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.home.enabled);
+    }
+
+    #[test]
+    fn config_runtime_defaults_to_container() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.general.runtime, "container");
+    }
+
+    #[test]
+    fn config_deserializes_runtime() {
+        let toml = r#"
+            [general]
+            runtime = "native"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.general.runtime, "native");
+    }
+
+    #[test]
+    fn config_sandbox_appears_in_serialized() {
+        let config = Config::default();
+        let toml = toml::to_string_pretty(&config).unwrap();
+        assert!(toml.contains("[sandbox]"));
+        assert!(toml.contains("max_memory_mb"));
+    }
+
+    #[test]
+    fn config_deserializes_sandbox_section() {
+        let toml = r#"
+            [sandbox]
+            max_memory_mb = 8192
+            sandbox_user = "test-user"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.sandbox.max_memory_mb, 8192);
+        assert_eq!(config.sandbox.sandbox_user, "test-user");
+    }
+
+    #[test]
+    fn config_sandbox_defaults() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.sandbox.max_memory_mb, 4096);
+        assert_eq!(config.sandbox.sandbox_user, "mino-sandbox");
     }
 
     #[test]
