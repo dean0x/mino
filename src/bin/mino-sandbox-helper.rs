@@ -5,6 +5,7 @@
 //!
 //! Operations:
 //! - spawn: Set ACLs, create pf sub-anchor, fork+setuid to _mino_agent, exec command
+//! - exec: Drop privileges to _mino_agent and exec a command (no ACL setup, no fork)
 //! - cleanup: Remove ACLs, remove pf sub-anchor
 //! - health-check: Return version
 
@@ -109,6 +110,9 @@ fn main() {
                     });
                 }
             }
+        }
+        "exec" => {
+            handle_exec(&args[2..]);
         }
         "health-check" => {
             print_response(&HelperResponse::Healthy {
@@ -231,6 +235,114 @@ fn handle_spawn(params: SpawnParams) {
         print_error("Spawn is only supported on Unix");
         process::exit(1);
     }
+}
+
+/// Execute a command as `_mino_agent` inside an existing session.
+///
+/// Unlike `spawn`, this does not set up ACLs or fork — it simply drops
+/// privileges to the sandbox user and execs the command directly.
+/// ACLs from the original `spawn` are still active on the session's paths.
+///
+/// Usage: mino-sandbox-helper exec --session-id <id> [--pid <pid>] -- <command...>
+fn handle_exec(args: &[String]) {
+    let mut session_id: Option<&str> = None;
+    let mut command_start: Option<usize> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--session-id" => {
+                session_id = args.get(i + 1).map(|s| s.as_str());
+                i += 2;
+            }
+            "--pid" => {
+                // Accepted for logging but not used for exec
+                i += 2;
+            }
+            "--" => {
+                command_start = Some(i + 1);
+                break;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    let session_id = match session_id {
+        Some(id) if !id.is_empty() => id,
+        _ => {
+            print_error("Missing --session-id argument");
+            process::exit(1);
+        }
+    };
+
+    let command: &[String] = match command_start {
+        Some(idx) if idx < args.len() => &args[idx..],
+        _ => {
+            print_error("Missing command after '--'");
+            process::exit(1);
+        }
+    };
+
+    if command.is_empty() {
+        print_error("Empty command");
+        process::exit(1);
+    }
+
+    eprintln!(
+        "[mino-helper] exec session={} command={:?}",
+        session_id, &command[0]
+    );
+
+    let sandbox_user = "_mino_agent";
+    let uid = match get_user_uid(sandbox_user) {
+        Some(uid) => uid,
+        None => {
+            print_error(&format!("User '{}' not found", sandbox_user));
+            process::exit(1);
+        }
+    };
+    let gid = match get_user_gid(sandbox_user) {
+        Some(gid) => gid,
+        None => {
+            print_error(&format!("GID for user '{}' not found", sandbox_user));
+            process::exit(1);
+        }
+    };
+
+    #[cfg(unix)]
+    unsafe {
+        // Drop supplementary groups
+        if libc::setgroups(0, std::ptr::null()) != 0 {
+            eprintln!("setgroups failed");
+            process::exit(1);
+        }
+
+        // setgid before setuid (after setuid we can't change GID)
+        if libc::setgid(gid) != 0 {
+            eprintln!("setgid failed");
+            process::exit(1);
+        }
+
+        // setuid to _mino_agent (drops root)
+        if libc::setuid(uid) != 0 {
+            eprintln!("setuid failed");
+            process::exit(1);
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (uid, gid, session_id);
+        print_error("Exec is only supported on Unix");
+        process::exit(1);
+    }
+
+    // exec the command — this replaces the current process
+    let err = exec_command(command);
+    eprintln!("exec failed: {}", err);
+    process::exit(1);
 }
 
 /// Child process: drop privileges and exec command

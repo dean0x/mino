@@ -77,11 +77,24 @@ impl Drop for ProxyHandle {
     }
 }
 
+/// Sender for reporting denied connection attempts to the caller.
+///
+/// Each denied connection sends `(host, port)` through this channel.
+/// The caller (e.g., `execute_native`) can spawn a task that reads
+/// from the receiver and writes to the audit log.
+pub type DenialSender = tokio::sync::mpsc::UnboundedSender<(String, u16)>;
+
 /// Start the filtering proxy on a random port.
 ///
 /// Returns a `ProxyHandle` with the listening address and shutdown control.
 /// The proxy runs as background tokio tasks; dropping the handle shuts it down.
-pub async fn start_proxy(rules: Vec<NetworkRule>) -> MinoResult<ProxyHandle> {
+///
+/// If `denial_log` is provided, denied connections will be reported through
+/// the channel for audit logging.
+pub async fn start_proxy(
+    rules: Vec<NetworkRule>,
+    denial_log: Option<DenialSender>,
+) -> MinoResult<ProxyHandle> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| MinoError::NetworkProxy(format!("Failed to bind proxy: {e}")))?;
@@ -92,8 +105,9 @@ pub async fn start_proxy(rules: Vec<NetworkRule>) -> MinoResult<ProxyHandle> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let rules = Arc::new(rules);
+    let denial_log = denial_log.map(Arc::new);
 
-    tokio::spawn(accept_loop(listener, rules, shutdown_rx));
+    tokio::spawn(accept_loop(listener, rules, denial_log, shutdown_rx));
 
     debug!("Proxy started on {}", addr);
 
@@ -107,6 +121,7 @@ pub async fn start_proxy(rules: Vec<NetworkRule>) -> MinoResult<ProxyHandle> {
 async fn accept_loop(
     listener: TcpListener,
     rules: Arc<Vec<NetworkRule>>,
+    denial_log: Option<Arc<DenialSender>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
@@ -125,8 +140,9 @@ async fn accept_loop(
                             }
                         };
                         let rules = Arc::clone(&rules);
+                        let denial_log = denial_log.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, peer_addr, &rules).await {
+                            if let Err(e) = handle_connection(stream, peer_addr, &rules, denial_log.as_deref()).await {
                                 debug!("Proxy connection error from {}: {}", peer_addr, e);
                             }
                             drop(permit);
@@ -155,6 +171,7 @@ async fn handle_connection(
     stream: TcpStream,
     _peer_addr: SocketAddr,
     rules: &[NetworkRule],
+    denial_log: Option<&DenialSender>,
 ) -> MinoResult<()> {
     let mut peek_buf = [0u8; 1];
 
@@ -173,8 +190,8 @@ async fn handle_connection(
     }
 
     match peek_buf[0] {
-        0x05 => handle_socks5(stream, rules).await,
-        _ => handle_http_connect(stream, rules).await,
+        0x05 => handle_socks5(stream, rules, denial_log).await,
+        _ => handle_http_connect(stream, rules, denial_log).await,
     }
 }
 
@@ -202,7 +219,11 @@ fn validate_hostname(host: &str) -> MinoResult<()> {
 ///
 /// Implements just enough of RFC 1928 for CONNECT (command 0x01) with
 /// no-auth (method 0x00). Supports IPv4, IPv6, and domain address types.
-async fn handle_socks5(mut stream: TcpStream, rules: &[NetworkRule]) -> MinoResult<()> {
+async fn handle_socks5(
+    mut stream: TcpStream,
+    rules: &[NetworkRule],
+    denial_log: Option<&DenialSender>,
+) -> MinoResult<()> {
     // --- Greeting phase ---
     let mut buf = [0u8; 258];
     let n = stream
@@ -243,6 +264,9 @@ async fn handle_socks5(mut stream: TcpStream, rules: &[NetworkRule]) -> MinoResu
     // --- Policy check ---
     if !is_allowed(&host, port, rules) {
         debug!("SOCKS5 denied: {}:{}", host, port);
+        if let Some(tx) = denial_log {
+            let _ = tx.send((host.clone(), port));
+        }
         // General SOCKS server failure (0x02)
         stream
             .write_all(&[0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
@@ -372,7 +396,11 @@ fn build_socks5_success_reply(target: &TcpStream) -> Vec<u8> {
 ///
 /// Enforces `MAX_REQUEST_SIZE` to prevent memory exhaustion from
 /// oversized HTTP request headers.
-async fn handle_http_connect(mut stream: TcpStream, rules: &[NetworkRule]) -> MinoResult<()> {
+async fn handle_http_connect(
+    mut stream: TcpStream,
+    rules: &[NetworkRule],
+    denial_log: Option<&DenialSender>,
+) -> MinoResult<()> {
     let mut buf = vec![0u8; MAX_REQUEST_SIZE];
 
     let read_result = tokio::time::timeout(REQUEST_READ_TIMEOUT, stream.read(&mut buf)).await;
@@ -401,6 +429,9 @@ async fn handle_http_connect(mut stream: TcpStream, rules: &[NetworkRule]) -> Mi
 
     if !is_allowed(&host, port, rules) {
         debug!("HTTP CONNECT denied: {}:{}", host, port);
+        if let Some(tx) = denial_log {
+            let _ = tx.send((host.clone(), port));
+        }
         let response = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
         stream.write_all(response.as_bytes()).await.ok();
         return Ok(());
@@ -704,7 +735,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_proxy_binds_random_port() {
-        let handle = start_proxy(vec![]).await.unwrap();
+        let handle = start_proxy(vec![], None).await.unwrap();
         assert!(handle.port() > 0);
         assert_eq!(handle.addr.ip(), std::net::Ipv4Addr::LOCALHOST);
         handle.shutdown();
@@ -712,7 +743,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_proxy_shutdown_is_idempotent() {
-        let handle = start_proxy(vec![]).await.unwrap();
+        let handle = start_proxy(vec![], None).await.unwrap();
         handle.shutdown();
         handle.shutdown(); // Should not panic
     }
@@ -720,7 +751,7 @@ mod tests {
     #[tokio::test]
     async fn proxy_http_connect_denied_returns_403() {
         // Start proxy with no rules (deny all)
-        let handle = start_proxy(vec![]).await.unwrap();
+        let handle = start_proxy(vec![], None).await.unwrap();
         let port = handle.port();
 
         // Connect and send HTTP CONNECT request
@@ -752,7 +783,7 @@ mod tests {
 
         // Start proxy with rule allowing our target
         let rules = vec![rule("127.0.0.1", target_port)];
-        let handle = start_proxy(rules).await.unwrap();
+        let handle = start_proxy(rules, None).await.unwrap();
         let proxy_port = handle.port();
 
         // Accept on target in background
@@ -796,7 +827,7 @@ mod tests {
     #[tokio::test]
     async fn proxy_socks5_denied_returns_failure() {
         // Start proxy with no rules (deny all)
-        let handle = start_proxy(vec![]).await.unwrap();
+        let handle = start_proxy(vec![], None).await.unwrap();
         let port = handle.port();
 
         let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
@@ -835,7 +866,7 @@ mod tests {
         let target_port = target_listener.local_addr().unwrap().port();
 
         let rules = vec![rule("127.0.0.1", target_port)];
-        let handle = start_proxy(rules).await.unwrap();
+        let handle = start_proxy(rules, None).await.unwrap();
         let proxy_port = handle.port();
 
         // Accept on target in background
@@ -890,7 +921,7 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_drop_shuts_down() {
-        let handle = start_proxy(vec![]).await.unwrap();
+        let handle = start_proxy(vec![], None).await.unwrap();
         let _port = handle.port();
         drop(handle);
 
@@ -996,5 +1027,76 @@ mod tests {
         assert!(REQUEST_READ_TIMEOUT.as_secs() <= 60);
         assert!(CONNECT_TIMEOUT.as_secs() >= 5);
         assert!(CONNECT_TIMEOUT.as_secs() <= 120);
+    }
+
+    // ---- denial channel tests ----
+
+    #[tokio::test]
+    async fn proxy_http_denial_sends_to_channel() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = start_proxy(vec![], Some(tx)).await.unwrap();
+        let port = handle.port();
+
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+
+        let request = "CONNECT evil.com:443 HTTP/1.1\r\nHost: evil.com\r\n\r\n";
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        // Read the 403 response
+        let mut response = vec![0u8; 1024];
+        let _ = stream.read(&mut response).await.unwrap();
+
+        // Check that the denial was sent through the channel
+        let (host, denied_port) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timeout waiting for denial")
+            .expect("channel closed");
+
+        assert_eq!(host, "evil.com");
+        assert_eq!(denied_port, 443);
+
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn proxy_socks5_denial_sends_to_channel() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = start_proxy(vec![], Some(tx)).await.unwrap();
+        let port = handle.port();
+
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+
+        // SOCKS5 greeting
+        stream.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+        let mut reply = [0u8; 2];
+        stream.read_exact(&mut reply).await.unwrap();
+
+        // CONNECT to blocked.com:443
+        let mut request = vec![0x05, 0x01, 0x00, 0x03];
+        let domain = b"blocked.com";
+        request.push(domain.len() as u8);
+        request.extend_from_slice(domain);
+        request.extend_from_slice(&443u16.to_be_bytes());
+        stream.write_all(&request).await.unwrap();
+
+        // Read SOCKS5 denial reply
+        let mut connect_reply = [0u8; 10];
+        stream.read_exact(&mut connect_reply).await.unwrap();
+        assert_eq!(connect_reply[1], 0x02); // General failure
+
+        // Check the denial channel
+        let (host, denied_port) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timeout waiting for denial")
+            .expect("channel closed");
+
+        assert_eq!(host, "blocked.com");
+        assert_eq!(denied_port, 443);
+
+        handle.shutdown();
     }
 }

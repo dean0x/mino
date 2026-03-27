@@ -81,18 +81,38 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     // 7b. Start filtering proxy for NetworkMode::Allow
     //     The proxy runs in the main process and filters outbound connections.
     //     The handle must outlive the sandbox process (Drop shuts it down).
-    let _proxy_handle = if let NetworkMode::Allow(ref rules) = network_mode {
+    //     Denials are reported through a channel for audit logging.
+    let (_proxy_handle, _denial_task) = if let NetworkMode::Allow(ref rules) = network_mode {
         spinner.message("Starting network proxy...");
-        let handle = crate::sandbox::proxy::start_proxy(rules.clone()).await?;
+
+        let (denial_tx, mut denial_rx) = tokio::sync::mpsc::unbounded_channel::<(String, u16)>();
+
+        let handle = crate::sandbox::proxy::start_proxy(rules.clone(), Some(denial_tx)).await?;
         debug!("Network proxy started on {}", handle.addr);
 
         for (key, value) in handle.proxy_env_vars() {
             env.insert(key, value);
         }
 
-        Some(handle)
+        // Spawn background task to write denials to audit log
+        let denial_audit = AuditLog::new(config);
+        let denial_task = tokio::spawn(async move {
+            while let Some((host, port)) = denial_rx.recv().await {
+                denial_audit
+                    .log(
+                        "sandbox.network_denied",
+                        &serde_json::json!({
+                            "host": host,
+                            "port": port,
+                        }),
+                    )
+                    .await;
+            }
+        });
+
+        (Some(handle), Some(denial_task))
     } else {
-        None
+        (None, None)
     };
 
     // 8. Prepare dotfiles

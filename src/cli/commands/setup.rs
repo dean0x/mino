@@ -28,6 +28,25 @@ enum StepResult {
 pub async fn execute(args: SetupArgs, config: &Config) -> MinoResult<()> {
     let ctx = UiContext::detect().with_auto_yes(args.yes);
 
+    // Handle --uninstall: remove all native sandbox artifacts
+    if args.uninstall {
+        ui::intro(&ctx, "Native Sandbox Uninstall");
+        return match Platform::detect() {
+            Platform::MacOS => uninstall_native_macos(&ctx).await,
+            Platform::Linux => {
+                ui::remark(
+                    &ctx,
+                    "Native sandbox on Linux uses user namespaces (no persistent artifacts). Nothing to uninstall.",
+                );
+                ui::outro_success(&ctx, "Nothing to clean up.");
+                Ok(())
+            }
+            Platform::Unsupported => Err(MinoError::UnsupportedPlatform(
+                std::env::consts::OS.to_string(),
+            )),
+        };
+    }
+
     // Native sandbox setup is a separate flow
     if args.native {
         if args.check {
@@ -1196,6 +1215,118 @@ async fn configure_pf_anchor(ctx: &UiContext, args: &SetupArgs, sandbox_user: &s
         );
         StepResult::Installed
     }
+}
+
+// =============================================================================
+// Native Sandbox Uninstall (macOS)
+// =============================================================================
+
+/// Remove all native sandbox artifacts on macOS.
+///
+/// Steps (all require sudo):
+/// 1. Kill any running `_mino_agent` processes
+/// 2. Flush pf anchor rules
+/// 3. Remove pf anchor file
+/// 4. Remove sudoers entry
+/// 5. Remove helper binary
+/// 6. Delete `_mino_agent` system user
+async fn uninstall_native_macos(ctx: &UiContext) -> MinoResult<()> {
+    ui::section(ctx, "Removing native sandbox components...");
+
+    let sandbox_user = "_mino_agent";
+
+    // 1. Kill any running processes owned by _mino_agent
+    let kill_output = Command::new("sudo")
+        .args(["pkill", "-u", sandbox_user])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    match kill_output {
+        Ok(status) if status.success() => {
+            ui::step_ok(ctx, "Killed running _mino_agent processes");
+        }
+        _ => {
+            // pkill exits non-zero if no processes found — that's fine
+            ui::step_ok(ctx, "No running _mino_agent processes");
+        }
+    }
+
+    // 2. Flush pf anchor rules
+    let _ = Command::new("sudo")
+        .args(["pfctl", "-a", "mino", "-F", "rules"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    ui::step_ok(ctx, "Flushed pf anchor rules");
+
+    // 3. Remove pf anchor file
+    let pf_anchor = "/etc/pf.anchors/mino";
+    if std::path::Path::new(pf_anchor).exists() {
+        if run_visible_sudo("rm", &[pf_anchor]).await {
+            ui::step_ok(ctx, "Removed pf anchor file");
+        } else {
+            ui::step_warn(ctx, "Failed to remove pf anchor file");
+        }
+    } else {
+        ui::step_ok(ctx, "pf anchor file already removed");
+    }
+
+    // 4. Remove sudoers entry
+    let sudoers_file = "/etc/sudoers.d/mino";
+    if std::path::Path::new(sudoers_file).exists() {
+        if run_visible_sudo("rm", &[sudoers_file]).await {
+            ui::step_ok(ctx, "Removed sudoers entry");
+        } else {
+            ui::step_warn(ctx, "Failed to remove sudoers entry");
+        }
+    } else {
+        ui::step_ok(ctx, "Sudoers entry already removed");
+    }
+
+    // 5. Remove helper binary
+    let helper_path = "/usr/local/bin/mino-sandbox-helper";
+    if std::path::Path::new(helper_path).exists() {
+        if run_visible_sudo("rm", &[helper_path]).await {
+            ui::step_ok(ctx, "Removed helper binary");
+        } else {
+            ui::step_warn(ctx, "Failed to remove helper binary");
+        }
+    } else {
+        ui::step_ok(ctx, "Helper binary already removed");
+    }
+
+    // 6. Delete _mino_agent system user
+    let user_exists = Command::new("dscl")
+        .args([".", "-read", &format!("/Users/{}", sandbox_user)])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if user_exists {
+        if run_visible_sudo(
+            "dscl",
+            &[".", "-delete", &format!("/Users/{}", sandbox_user)],
+        )
+        .await
+        {
+            ui::step_ok_detail(ctx, "Deleted system user", sandbox_user);
+        } else {
+            ui::step_warn(
+                ctx,
+                &format!("Failed to delete system user '{}'", sandbox_user),
+            );
+        }
+    } else {
+        ui::step_ok(ctx, "System user already removed");
+    }
+
+    ui::outro_success(ctx, "Native sandbox uninstalled.");
+    Ok(())
 }
 
 // =============================================================================
