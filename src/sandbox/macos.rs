@@ -224,13 +224,34 @@ pub fn parse_helper_response(stdout: &[u8]) -> MinoResult<HelperResponse> {
     })
 }
 
+/// Validate that a username is safe for embedding in pf rules.
+///
+/// pf usernames must be alphanumeric plus underscore/hyphen. Rejects any
+/// characters that could inject additional pf directives (spaces, newlines,
+/// braces, etc.).
+fn validate_pf_username(username: &str) -> bool {
+    !username.is_empty()
+        && username
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// Generate pf anchor rules for the sandbox
 ///
 /// Returns pf rule text that should be loaded into the "mino" anchor.
 /// Rules block all outbound traffic from the sandbox user except:
 /// - DNS resolution (port 53)
 /// - Loopback proxy connection (if proxy_port is specified)
+///
+/// Panics if `sandbox_user` contains characters that could inject pf rules.
+/// This is a programming error since the username comes from validated config.
 pub fn generate_pf_rules(sandbox_user: &str, _session_id: &str, proxy_port: Option<u16>) -> String {
+    assert!(
+        validate_pf_username(sandbox_user),
+        "sandbox_user contains invalid characters for pf rules: {:?}",
+        sandbox_user
+    );
+
     let mut rules = String::new();
 
     // Block all outbound TCP/UDP from the sandbox user
@@ -429,12 +450,43 @@ mod tests {
     // ---- pf_rules injection safety tests ----
 
     #[test]
-    fn pf_rules_user_with_spaces_in_name() {
-        // Verify that a username with spaces doesn't break pf rule syntax
-        // (in practice, macOS usernames can't have spaces, but defense-in-depth)
-        let rules = generate_pf_rules("bad user", "sess-1", None);
-        // The username should appear as-is — pf will reject invalid names
-        assert!(rules.contains("user bad user"));
+    #[should_panic(expected = "invalid characters for pf rules")]
+    fn pf_rules_user_with_spaces_panics() {
+        // A username with spaces would break pf rule syntax — must be rejected
+        generate_pf_rules("bad user", "sess-1", None);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid characters for pf rules")]
+    fn pf_rules_user_with_newline_panics() {
+        // A username with newline could inject additional pf rules
+        generate_pf_rules("_mino\npass out quick", "sess-1", None);
+    }
+
+    #[test]
+    fn pf_rules_valid_usernames_accepted() {
+        // Standard macOS system usernames with underscores and hyphens
+        let rules = generate_pf_rules("_mino_agent", "sess-1", None);
+        assert!(rules.contains("user _mino_agent"));
+
+        let rules = generate_pf_rules("sandbox-user", "sess-1", None);
+        assert!(rules.contains("user sandbox-user"));
+    }
+
+    #[test]
+    fn validate_pf_username_accepts_valid() {
+        assert!(validate_pf_username("_mino_agent"));
+        assert!(validate_pf_username("sandbox-user"));
+        assert!(validate_pf_username("user123"));
+    }
+
+    #[test]
+    fn validate_pf_username_rejects_invalid() {
+        assert!(!validate_pf_username(""));
+        assert!(!validate_pf_username("bad user"));
+        assert!(!validate_pf_username("user\n"));
+        assert!(!validate_pf_username("user;drop"));
+        assert!(!validate_pf_username("user{tcp}"));
     }
 
     #[test]

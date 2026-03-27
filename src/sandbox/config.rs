@@ -100,7 +100,7 @@ pub fn validate_path_not_sensitive(
     Ok(())
 }
 
-/// Validate all paths in the sandbox config
+/// Validate all paths and settings in the sandbox config
 pub fn validate_sandbox_paths(config: &SandboxConfig, home_dir: &Path) -> MinoResult<()> {
     for path_str in config
         .passthrough_paths
@@ -118,7 +118,31 @@ pub fn validate_sandbox_paths(config: &SandboxConfig, home_dir: &Path) -> MinoRe
     }
 
     validate_cache_mode(&config.cache_mode)?;
+    validate_sandbox_user(&config.sandbox_user)?;
 
+    Ok(())
+}
+
+/// Validate that the sandbox username contains only safe characters.
+///
+/// Prevents injection in pf rules and shell commands. Accepts alphanumeric,
+/// underscore, and hyphen — matching macOS system username constraints.
+pub fn validate_sandbox_user(username: &str) -> MinoResult<()> {
+    if username.is_empty() {
+        return Err(MinoError::User(
+            "sandbox_user must not be empty".to_string(),
+        ));
+    }
+    if !username
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(MinoError::User(format!(
+            "sandbox_user '{}' contains invalid characters. \
+             Only alphanumeric, underscore, and hyphen are allowed.",
+            username
+        )));
+    }
     Ok(())
 }
 
@@ -306,5 +330,50 @@ mod tests {
         };
         let err = validate_sandbox_paths(&config, &home).unwrap_err();
         assert!(err.to_string().contains("must be absolute"));
+    }
+
+    // ---- sandbox_user validation tests ----
+
+    #[test]
+    fn validate_sandbox_user_accepts_standard_names() {
+        assert!(validate_sandbox_user("_mino_agent").is_ok());
+        assert!(validate_sandbox_user("sandbox-user").is_ok());
+        assert!(validate_sandbox_user("user123").is_ok());
+    }
+
+    #[test]
+    fn validate_sandbox_user_rejects_empty() {
+        let err = validate_sandbox_user("").unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn validate_sandbox_user_rejects_spaces() {
+        let err = validate_sandbox_user("bad user").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_sandbox_user_rejects_newlines() {
+        let err = validate_sandbox_user("user\ninjection").unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_sandbox_user_rejects_special_chars() {
+        assert!(validate_sandbox_user("user;drop").is_err());
+        assert!(validate_sandbox_user("user{tcp}").is_err());
+        assert!(validate_sandbox_user("user/path").is_err());
+    }
+
+    #[test]
+    fn validate_sandbox_paths_rejects_invalid_sandbox_user() {
+        let home = PathBuf::from("/home/user");
+        let config = SandboxConfig {
+            sandbox_user: "bad user".to_string(),
+            ..Default::default()
+        };
+        let err = validate_sandbox_paths(&config, &home).unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
     }
 }

@@ -171,7 +171,7 @@ fn handle_spawn(params: SpawnParams) {
         process::exit(1);
     }
 
-    // 4. Look up _mino_agent UID
+    // 4. Look up _mino_agent UID and GID
     let sandbox_user = "_mino_agent";
     let uid = match get_user_uid(sandbox_user) {
         Some(uid) => uid,
@@ -185,8 +185,20 @@ fn handle_spawn(params: SpawnParams) {
             process::exit(1);
         }
     };
+    let gid = match get_user_gid(sandbox_user) {
+        Some(gid) => gid,
+        None => {
+            print_error(&format!("GID for user '{}' not found", sandbox_user));
+            // Clean up
+            for acl in &acl_paths {
+                let _ = remove_acl(&acl.path);
+            }
+            let _ = remove_acl(&home_dir);
+            process::exit(1);
+        }
+    };
 
-    // 5. Fork + setuid + exec
+    // 5. Fork + setgid + setuid + exec
     // The parent stays alive to relay signals and report exit code
     #[cfg(unix)]
     unsafe {
@@ -200,6 +212,7 @@ fn handle_spawn(params: SpawnParams) {
             // Child process
             child_process(
                 uid,
+                gid,
                 &resource_limits,
                 &env,
                 &home_dir,
@@ -214,31 +227,47 @@ fn handle_spawn(params: SpawnParams) {
 
     #[cfg(not(unix))]
     {
-        let _ = (session_id, env, command, resource_limits, uid);
+        let _ = (session_id, env, command, resource_limits, uid, gid);
         print_error("Spawn is only supported on Unix");
         process::exit(1);
     }
 }
 
-/// Child process: setuid, set env, exec command
+/// Child process: drop privileges and exec command
 ///
 /// # Safety
 /// Called after fork() in the child process. Uses libc functions for
-/// setuid and resource limits. The child process never returns from
-/// this function — it either execs into the command or exits.
+/// setgid, setuid, and resource limits. The child process never returns
+/// from this function — it either execs into the command or exits.
+///
+/// Privilege drop order: setgid MUST come before setuid, because once
+/// we drop root UID we lose the ability to change our GID.
 #[cfg(unix)]
 unsafe fn child_process(
     uid: u32,
+    gid: u32,
     resource_limits: &ResourceLimitsDto,
     env: &HashMap<String, String>,
     home_dir: &Path,
     project_dir: &Path,
     command: &[String],
 ) -> ! {
-    // Set resource limits
+    // Set resource limits (must happen before dropping root)
     apply_resource_limits(resource_limits);
 
-    // setuid to _mino_agent
+    // Drop supplementary groups first
+    if libc::setgroups(0, std::ptr::null()) != 0 {
+        eprintln!("setgroups failed");
+        process::exit(1);
+    }
+
+    // setgid MUST come before setuid — after setuid we can't change GID
+    if libc::setgid(gid) != 0 {
+        eprintln!("setgid failed");
+        process::exit(1);
+    }
+
+    // setuid to _mino_agent (drops root)
     if libc::setuid(uid) != 0 {
         eprintln!("setuid failed");
         process::exit(1);
@@ -318,6 +347,18 @@ unsafe fn parent_process(
 }
 
 fn handle_cleanup(session_id: &str, project_dir: &Path) {
+    // Validate session_id to prevent anchor path injection.
+    // Must be alphanumeric plus hyphen/underscore — no slashes, spaces, or
+    // special characters that could reference arbitrary pf anchors.
+    if session_id.is_empty()
+        || !session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        print_error(&format!("Invalid session_id: {:?}", session_id));
+        process::exit(1);
+    }
+
     // Remove ACLs on project dir
     let _ = remove_acl(project_dir);
 
@@ -389,6 +430,26 @@ fn get_user_uid(username: &str) -> Option<u32> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Output format: "UniqueID: 502"
+    stdout.split_whitespace().last()?.parse().ok()
+}
+
+fn get_user_gid(username: &str) -> Option<u32> {
+    let output = std::process::Command::new("dscl")
+        .args([
+            ".",
+            "-read",
+            &format!("/Users/{}", username),
+            "PrimaryGroupID",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Output format: "PrimaryGroupID: 20"
     stdout.split_whitespace().last()?.parse().ok()
 }
 
