@@ -198,7 +198,14 @@ fn handle_spawn(params: SpawnParams) {
 
         if pid == 0 {
             // Child process
-            child_process(uid, &resource_limits, &env, &home_dir, &project_dir, &command);
+            child_process(
+                uid,
+                &resource_limits,
+                &env,
+                &home_dir,
+                &project_dir,
+                &command,
+            );
         } else {
             // Parent process — wait for child, relay signals
             parent_process(pid, &acl_paths, &home_dir, &session_id);
@@ -316,12 +323,7 @@ fn handle_cleanup(session_id: &str, project_dir: &Path) {
 
     // Remove pf sub-anchor
     let _ = std::process::Command::new("pfctl")
-        .args([
-            "-a",
-            &format!("mino/session-{}", session_id),
-            "-F",
-            "rules",
-        ])
+        .args(["-a", &format!("mino/session-{}", session_id), "-F", "rules"])
         .output();
 
     print_response(&HelperResponse::Cleaned);
@@ -334,7 +336,9 @@ fn set_acl(path: &Path, writable: bool) -> Result<(), String> {
         "allow read,execute,file_inherit,directory_inherit"
     };
 
-    let path_str = path.to_str().ok_or_else(|| "Invalid UTF-8 in path".to_string())?;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| "Invalid UTF-8 in path".to_string())?;
 
     let output = std::process::Command::new("chmod")
         .args(["+a", &format!("_mino_agent {}", perms), path_str])

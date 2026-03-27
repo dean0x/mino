@@ -860,7 +860,12 @@ async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()>
     // Summary
     let issues = [user_result, helper_result, sudoers_result, pf_result]
         .iter()
-        .filter(|r| matches!(r, StepResult::Failed | StepResult::Skipped | StepResult::Blocked))
+        .filter(|r| {
+            matches!(
+                r,
+                StepResult::Failed | StepResult::Skipped | StepResult::Blocked
+            )
+        })
         .count();
 
     if issues > 0 {
@@ -918,13 +923,7 @@ async fn setup_sandbox_user(ctx: &UiContext, args: &SetupArgs, username: &str) -
             "set shell",
         ),
         (
-            &[
-                ".",
-                "-create",
-                &user_path,
-                "RealName",
-                "Mino Sandbox Agent",
-            ],
+            &[".", "-create", &user_path, "RealName", "Mino Sandbox Agent"],
             "set real name",
         ),
         (
@@ -936,13 +935,7 @@ async fn setup_sandbox_user(ctx: &UiContext, args: &SetupArgs, username: &str) -
             "set group",
         ),
         (
-            &[
-                ".",
-                "-create",
-                &user_path,
-                "NFSHomeDirectory",
-                "/var/empty",
-            ],
+            &[".", "-create", &user_path, "NFSHomeDirectory", "/var/empty"],
             "set home",
         ),
         (
@@ -958,7 +951,11 @@ async fn setup_sandbox_user(ctx: &UiContext, args: &SetupArgs, username: &str) -
         }
     }
 
-    ui::step_ok_detail(ctx, "Sandbox user created", &format!("{} (UID {})", username, uid));
+    ui::step_ok_detail(
+        ctx,
+        "Sandbox user created",
+        &format!("{} (UID {})", username, uid),
+    );
     StepResult::Installed
 }
 
@@ -1023,18 +1020,18 @@ async fn install_helper_binary(ctx: &UiContext, args: &SetupArgs) -> StepResult 
     match helper_src {
         Some(src) if src.exists() => {
             let src_str = src.to_string_lossy();
-            let install_success = run_visible_sudo(
-                "cp",
-                &[&src_str, "/usr/local/bin/mino-sandbox-helper"],
-            )
-            .await;
+            let install_success =
+                run_visible_sudo("cp", &[&src_str, "/usr/local/bin/mino-sandbox-helper"]).await;
 
             if install_success {
                 // Ensure correct ownership and permissions
-                let _ = run_visible_sudo("chmod", &["755", "/usr/local/bin/mino-sandbox-helper"]).await;
                 let _ =
-                    run_visible_sudo("chown", &["root:wheel", "/usr/local/bin/mino-sandbox-helper"])
-                        .await;
+                    run_visible_sudo("chmod", &["755", "/usr/local/bin/mino-sandbox-helper"]).await;
+                let _ = run_visible_sudo(
+                    "chown",
+                    &["root:wheel", "/usr/local/bin/mino-sandbox-helper"],
+                )
+                .await;
 
                 ui::step_ok_detail(
                     ctx,
@@ -1089,9 +1086,8 @@ async fn configure_sudoers(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     }
 
     // Get the current user's username
-    let username = std::env::var("USER").unwrap_or_else(|_| {
-        std::env::var("LOGNAME").unwrap_or_else(|_| "unknown".to_string())
-    });
+    let username = std::env::var("USER")
+        .unwrap_or_else(|_| std::env::var("LOGNAME").unwrap_or_else(|_| "unknown".to_string()));
 
     let sudoers_content = format!(
         "{} ALL=(root) NOPASSWD: /usr/local/bin/mino-sandbox-helper\n",
