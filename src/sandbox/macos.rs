@@ -125,20 +125,33 @@ pub async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
         home_dir,
     };
 
-    // Write request to temp file
+    // Write request to temp file with restricted permissions from the start
+    // to avoid TOCTOU race where the file is world-readable before chmod.
     let request_file = std::env::temp_dir().join(format!("mino-helper-{}.json", config.session_id));
     let request_json = serde_json::to_string(&request)?;
-    tokio::fs::write(&request_file, &request_json)
-        .await
-        .map_err(|e| MinoError::io("writing helper request", e))?;
-
-    // Set file permissions to 0600
-    #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&request_file, std::fs::Permissions::from_mode(0o600))
-            .await
-            .map_err(|e| MinoError::io("setting request file permissions", e))?;
+        use std::fs::OpenOptions;
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut opts = OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+
+        let result = tokio::task::spawn_blocking({
+            let request_file = request_file.clone();
+            let request_json = request_json.clone();
+            move || -> std::io::Result<()> {
+                use std::io::Write;
+                let mut f = opts.open(&request_file)?;
+                f.write_all(request_json.as_bytes())?;
+                Ok(())
+            }
+        })
+        .await
+        .map_err(|e| MinoError::io("spawning request file writer", e.into()))?;
+        result.map_err(|e| MinoError::io("writing helper request", e))?;
     }
 
     // Call helper via sudo
@@ -184,9 +197,30 @@ pub async fn cleanup_macos_sandbox(
 
     let request_file = std::env::temp_dir().join(format!("mino-cleanup-{}.json", session_id));
     let request_json = serde_json::to_string(&request)?;
-    tokio::fs::write(&request_file, &request_json)
+    {
+        use std::fs::OpenOptions;
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut opts = OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+
+        let result = tokio::task::spawn_blocking({
+            let request_file = request_file.clone();
+            let request_json = request_json.clone();
+            move || -> std::io::Result<()> {
+                use std::io::Write;
+                let mut f = opts.open(&request_file)?;
+                f.write_all(request_json.as_bytes())?;
+                Ok(())
+            }
+        })
         .await
-        .map_err(|e| MinoError::io("writing cleanup request", e))?;
+        .map_err(|e| MinoError::io("spawning cleanup file writer", e.into()))?;
+        result.map_err(|e| MinoError::io("writing cleanup request", e))?;
+    }
 
     let output = Command::new("sudo")
         .arg(HELPER_BINARY)
@@ -213,7 +247,6 @@ pub async fn cleanup_macos_sandbox(
 }
 
 /// Parse JSON response from helper stdout
-#[allow(dead_code)]
 pub fn parse_helper_response(stdout: &[u8]) -> MinoResult<HelperResponse> {
     let text = String::from_utf8_lossy(stdout);
     serde_json::from_str(text.trim()).map_err(|e| {

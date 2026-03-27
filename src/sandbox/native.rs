@@ -4,8 +4,7 @@
 //! Linux uses user namespaces via `unshare` + `pivot_root`.
 //! macOS uses a dedicated system user + pf packet filter via a privileged helper.
 
-#[allow(unused_imports)]
-use crate::error::{MinoError, MinoResult};
+use crate::error::MinoResult;
 use crate::network::NetworkMode;
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::process::SandboxProcess;
@@ -55,6 +54,7 @@ impl NativeSandbox {
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
+            use crate::error::MinoError;
             Err(MinoError::UnsupportedPlatform(
                 std::env::consts::OS.to_string(),
             ))
@@ -73,6 +73,7 @@ impl NativeSandbox {
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
+            use crate::error::MinoError;
             let _ = config;
             Err(MinoError::UnsupportedPlatform(
                 std::env::consts::OS.to_string(),
