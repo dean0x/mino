@@ -277,7 +277,7 @@ fn append_bind_mount(
          mkdir -p {root}/{quoted_mount} && mount --bind \"$REAL\" {root}/{quoted_mount} && \
          mount -o remount,{ro_flag}nosuid,nodev,bind {root}/{quoted_mount}"
     )
-    .unwrap();
+    .map_err(|e| MinoError::Internal(format!("failed to write bind mount script: {e}")))?;
     Ok(())
 }
 
