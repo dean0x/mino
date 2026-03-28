@@ -95,6 +95,12 @@ pub async fn start_proxy(
     rules: Vec<NetworkRule>,
     denial_log: Option<DenialSender>,
 ) -> MinoResult<ProxyHandle> {
+    // Security note: The proxy binds to localhost (127.0.0.1) with an OS-assigned port.
+    // Other local processes could theoretically connect and use the allowlist rules.
+    // This is an accepted limitation: switching to Unix domain sockets would break
+    // standard HTTP_PROXY/SOCKS5 client compatibility. The risk is limited to
+    // localhost-only access, the port is randomized, and the proxy only allows
+    // the configured rules (not arbitrary connections).
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| MinoError::NetworkProxy(format!("Failed to bind proxy: {e}")))?;
@@ -285,13 +291,13 @@ async fn handle_socks5(
 
     // --- Connect to target (with timeout) ---
     let target_addr = format!("{host}:{port}");
-    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&target_addr)).await {
-        Ok(Ok(target)) => {
+    match try_connect(&target_addr).await {
+        ConnectResult::Connected(target) => {
             let reply = build_socks5_success_reply(&target);
             stream.write_all(&reply).await.ok();
             relay(stream, target).await;
         }
-        Ok(Err(e)) => {
+        ConnectResult::Failed(e) => {
             debug!("SOCKS5 connect failed to {}: {}", target_addr, e);
             // Connection refused (0x05)
             stream
@@ -299,7 +305,7 @@ async fn handle_socks5(
                 .await
                 .ok();
         }
-        Err(_) => {
+        ConnectResult::TimedOut => {
             debug!("SOCKS5 connect timed out to {}", target_addr);
             // TTL expired (0x06)
             stream
@@ -376,9 +382,10 @@ fn parse_socks5_address(buf: &[u8]) -> MinoResult<(String, u16)> {
 
 /// Build the SOCKS5 success reply using the target's local address.
 fn build_socks5_success_reply(target: &TcpStream) -> Vec<u8> {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     let local = target
         .local_addr()
-        .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+        .unwrap_or_else(|_| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0));
     let mut reply = vec![0x05, 0x00, 0x00, 0x01];
     match local.ip() {
         std::net::IpAddr::V4(ip) => {
@@ -446,18 +453,18 @@ async fn handle_http_connect(
     }
 
     let target_addr = format!("{host}:{port}");
-    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&target_addr)).await {
-        Ok(Ok(target)) => {
+    match try_connect(&target_addr).await {
+        ConnectResult::Connected(target) => {
             let response = "HTTP/1.1 200 Connection Established\r\n\r\n";
             stream.write_all(response.as_bytes()).await.ok();
             relay(stream, target).await;
         }
-        Ok(Err(e)) => {
+        ConnectResult::Failed(e) => {
             debug!("HTTP CONNECT failed to {}: {}", target_addr, e);
             let response = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n";
             stream.write_all(response.as_bytes()).await.ok();
         }
-        Err(_) => {
+        ConnectResult::TimedOut => {
             debug!("HTTP CONNECT timed out to {}", target_addr);
             let response = "HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n";
             stream.write_all(response.as_bytes()).await.ok();
@@ -500,6 +507,25 @@ fn parse_connect_request(request: &str) -> MinoResult<(String, u16)> {
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+/// Result of attempting to connect to a target address.
+enum ConnectResult {
+    Connected(TcpStream),
+    Failed(std::io::Error),
+    TimedOut,
+}
+
+/// Attempt to connect to a target address with a timeout.
+///
+/// Used by both SOCKS5 and HTTP CONNECT handlers to eliminate
+/// duplicated timeout+connect+3-arm match logic.
+async fn try_connect(target_addr: &str) -> ConnectResult {
+    match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(target_addr)).await {
+        Ok(Ok(stream)) => ConnectResult::Connected(stream),
+        Ok(Err(e)) => ConnectResult::Failed(e),
+        Err(_) => ConnectResult::TimedOut,
+    }
+}
 
 /// Check whether a host:port pair is allowed by the rule set.
 ///
@@ -953,15 +979,17 @@ mod tests {
     #[tokio::test]
     async fn proxy_drop_shuts_down() {
         let handle = start_proxy(vec![], None).await.unwrap();
-        let _port = handle.port();
+        let addr = handle.addr;
         drop(handle);
 
-        // Give the accept loop a moment to process the shutdown signal
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Connection should fail or be refused since the listener is dropped
-        // (The proxy tasks may still be winding down, so we just verify
-        // the shutdown signal was sent — the accept loop exits)
+        // After drop, the proxy should refuse new connections
+        let result = tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr)).await;
+        match result {
+            Ok(Ok(_)) => panic!("should refuse connections after drop"),
+            Ok(Err(_)) | Err(_) => {} // Connection refused or timed out — expected
+        }
     }
 
     // ---- build_socks5_success_reply test ----
