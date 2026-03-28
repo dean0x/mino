@@ -103,13 +103,18 @@ pub fn validate_path_not_sensitive(
         return Ok(());
     }
 
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
     for sensitive in SENSITIVE_PATHS {
         let sensitive_path = home_dir.join(sensitive);
-        if path == sensitive_path || path.starts_with(&sensitive_path) {
+        let resolved_sensitive =
+            std::fs::canonicalize(&sensitive_path).unwrap_or_else(|_| sensitive_path.clone());
+        if resolved == resolved_sensitive || resolved.starts_with(&resolved_sensitive) {
             return Err(MinoError::User(format!(
-                "Path '{}' is a sensitive credential store and is blocked by default. \
+                "Path '{}' resolves to sensitive credential store '{}' and is blocked by default. \
                  Set allow_sensitive = true in [sandbox] config to override.",
-                path.display()
+                path.display(),
+                resolved_sensitive.display()
             )));
         }
     }
@@ -257,6 +262,36 @@ mod tests {
         let home = PathBuf::from("/home/user");
         let path = PathBuf::from("/home/user/.ssh");
         assert!(validate_path_not_sensitive(&path, &home, true).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sensitive_path_symlink_detected() {
+        use std::os::unix::fs::symlink;
+        let tmp = std::env::temp_dir().join("mino-test-symlink-check");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let home = tmp.join("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+
+        // Create a symlink that points to .ssh
+        let link_path = tmp.join("sneaky-link");
+        symlink(home.join(".ssh"), &link_path).unwrap();
+
+        let err = validate_path_not_sensitive(&link_path, &home, false).unwrap_err();
+        assert!(err.to_string().contains("sensitive credential store"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn non_existent_path_uses_literal_match() {
+        // When canonicalize fails (path doesn't exist), falls back to literal comparison
+        let home = PathBuf::from("/nonexistent-home-dir");
+        let path = PathBuf::from("/nonexistent-home-dir/.ssh");
+        let err = validate_path_not_sensitive(&path, &home, false).unwrap_err();
+        assert!(err.to_string().contains("sensitive credential store"));
     }
 
     #[test]

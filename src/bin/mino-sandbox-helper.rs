@@ -361,7 +361,8 @@ fn handle_exec(args: &[String]) -> Result<i32, String> {
 
     // Build minimal env for exec (don't inherit root's environment)
     let home_dir = PathBuf::from(format!("/tmp/mino-home-{}", session_id));
-    let exec_env = helper::build_exec_env(&home_dir, sandbox_user);
+    let exec_env = helper::build_exec_env(&home_dir, sandbox_user)
+        .map_err(|e| format!("Failed to build exec env: {}", e))?;
 
     // exec the command — this replaces the current process
     let err = exec_command(command, Some(&exec_env));
@@ -401,7 +402,13 @@ unsafe fn child_process(args: ChildArgs<'_>) -> ! {
     }
 
     // Build final environment using the library helper
-    let final_env = helper::build_child_env(args.env, args.home_dir, args.sandbox_user);
+    let final_env = match helper::build_child_env(args.env, args.home_dir, args.sandbox_user) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[mino-helper] Failed to build child env: {}", e);
+            process::exit(1);
+        }
+    };
 
     // Change to project dir
     if std::env::set_current_dir(args.project_dir).is_err() {

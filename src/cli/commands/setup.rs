@@ -1178,7 +1178,14 @@ async fn configure_pf_anchor(ctx: &UiContext, args: &SetupArgs, sandbox_user: &s
     }
 
     // Generate and write anchor rules
-    let anchor_rules = crate::sandbox::macos::generate_pf_rules(sandbox_user, "default", None);
+    let anchor_rules = match crate::sandbox::macos::generate_pf_rules(sandbox_user, "default", None)
+    {
+        Ok(rules) => rules,
+        Err(e) => {
+            ui::step_error(ctx, &format!("Failed to generate pf rules: {}", e));
+            return StepResult::Failed;
+        }
+    };
     let anchor_file = "/etc/pf.anchors/mino";
 
     let tmp_file = std::env::temp_dir().join("mino-pf-anchor");

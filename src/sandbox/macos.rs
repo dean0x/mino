@@ -81,10 +81,16 @@ const HELPER_BINARY: &str = "/usr/local/bin/mino-sandbox-helper";
 
 /// Validate macOS prerequisites for native sandbox
 pub async fn validate_macos_setup() -> MinoResult<()> {
-    check_helper_installed().await?;
+    let default_config = crate::sandbox::config::SandboxConfig::default();
+    // Run independent checks in parallel (installed + user exists)
+    let (installed, user) = tokio::join!(
+        check_helper_installed(),
+        check_sandbox_user_exists(&default_config.sandbox_user),
+    );
+    installed?;
+    // Version check depends on helper being installed, so run sequentially
     check_helper_version().await?;
-    check_sandbox_user_exists(&crate::sandbox::config::SandboxConfig::default().sandbox_user)
-        .await?;
+    user?;
     Ok(())
 }
 
@@ -293,14 +299,18 @@ fn validate_pf_username(username: &str) -> bool {
 /// - DNS resolution (port 53)
 /// - Loopback proxy connection (if proxy_port is specified)
 ///
-/// Panics if `sandbox_user` contains characters that could inject pf rules.
-/// This is a programming error since the username comes from validated config.
-pub fn generate_pf_rules(sandbox_user: &str, _session_id: &str, proxy_port: Option<u16>) -> String {
-    assert!(
-        validate_pf_username(sandbox_user),
-        "sandbox_user contains invalid characters for pf rules: {:?}",
-        sandbox_user
-    );
+/// Returns an error if `sandbox_user` contains characters that could inject pf rules.
+pub fn generate_pf_rules(
+    sandbox_user: &str,
+    _session_id: &str,
+    proxy_port: Option<u16>,
+) -> MinoResult<String> {
+    if !validate_pf_username(sandbox_user) {
+        return Err(MinoError::Internal(format!(
+            "sandbox_user '{}' contains invalid characters for pf rules",
+            sandbox_user
+        )));
+    }
 
     let mut rules = String::new();
 
@@ -332,7 +342,7 @@ pub fn generate_pf_rules(sandbox_user: &str, _session_id: &str, proxy_port: Opti
         sandbox_user
     ));
 
-    rules
+    Ok(rules)
 }
 
 /// Write content to a file with mode 0o600 from creation, avoiding TOCTOU races.
@@ -376,7 +386,7 @@ mod tests {
 
     #[test]
     fn pf_rules_without_proxy_blocks_all_allows_dns() {
-        let rules = generate_pf_rules("_mino_agent", "sess-1", None);
+        let rules = generate_pf_rules("_mino_agent", "sess-1", None).unwrap();
 
         // Should block all TCP/UDP
         assert!(rules.contains("block out quick proto { tcp udp } user _mino_agent"));
@@ -389,7 +399,7 @@ mod tests {
 
     #[test]
     fn pf_rules_with_proxy_allows_localhost_port() {
-        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(8080));
+        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(8080)).unwrap();
 
         // Should have the block rule
         assert!(rules.contains("block out quick proto { tcp udp } user _mino_agent"));
@@ -401,7 +411,7 @@ mod tests {
 
     #[test]
     fn pf_rules_uses_correct_user_name() {
-        let rules = generate_pf_rules("custom_sandbox_user", "sess-1", None);
+        let rules = generate_pf_rules("custom_sandbox_user", "sess-1", None).unwrap();
 
         assert!(rules.contains("user custom_sandbox_user"));
         assert!(!rules.contains("_mino_agent"));
@@ -537,26 +547,26 @@ mod tests {
     // ---- pf_rules injection safety tests ----
 
     #[test]
-    #[should_panic(expected = "invalid characters for pf rules")]
-    fn pf_rules_user_with_spaces_panics() {
+    fn pf_rules_user_with_spaces_returns_error() {
         // A username with spaces would break pf rule syntax — must be rejected
-        generate_pf_rules("bad user", "sess-1", None);
+        let err = generate_pf_rules("bad user", "sess-1", None).unwrap_err();
+        assert!(err.to_string().contains("invalid characters for pf rules"));
     }
 
     #[test]
-    #[should_panic(expected = "invalid characters for pf rules")]
-    fn pf_rules_user_with_newline_panics() {
+    fn pf_rules_user_with_newline_returns_error() {
         // A username with newline could inject additional pf rules
-        generate_pf_rules("_mino\npass out quick", "sess-1", None);
+        let err = generate_pf_rules("_mino\npass out quick", "sess-1", None).unwrap_err();
+        assert!(err.to_string().contains("invalid characters for pf rules"));
     }
 
     #[test]
     fn pf_rules_valid_usernames_accepted() {
         // Standard macOS system usernames with underscores and hyphens
-        let rules = generate_pf_rules("_mino_agent", "sess-1", None);
+        let rules = generate_pf_rules("_mino_agent", "sess-1", None).unwrap();
         assert!(rules.contains("user _mino_agent"));
 
-        let rules = generate_pf_rules("sandbox-user", "sess-1", None);
+        let rules = generate_pf_rules("sandbox-user", "sess-1", None).unwrap();
         assert!(rules.contains("user sandbox-user"));
     }
 
@@ -580,7 +590,7 @@ mod tests {
     fn pf_rules_session_id_not_in_output() {
         // Session ID is currently unused in rule generation (_session_id param)
         // to avoid injection. Verify it doesn't leak into rules.
-        let rules = generate_pf_rules("_mino_agent", "'; DROP TABLE users;--", None);
+        let rules = generate_pf_rules("_mino_agent", "'; DROP TABLE users;--", None).unwrap();
         assert!(!rules.contains("DROP TABLE"));
         assert!(!rules.contains("';"));
     }
@@ -588,11 +598,11 @@ mod tests {
     #[test]
     fn pf_rules_proxy_port_boundary_values() {
         // Port 0
-        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(0));
+        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(0)).unwrap();
         assert!(rules.contains("port 0 user _mino_agent"));
 
         // Port max
-        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(65535));
+        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(65535)).unwrap();
         assert!(rules.contains("port 65535 user _mino_agent"));
     }
 
@@ -600,7 +610,7 @@ mod tests {
     fn pf_rules_pass_rules_before_block_rule() {
         // pf evaluates rules in order; `quick` stops on first match.
         // Pass rules MUST come before the block rule or they are unreachable.
-        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(8080));
+        let rules = generate_pf_rules("_mino_agent", "sess-1", Some(8080)).unwrap();
         let block_pos = rules.find("block out quick").expect("missing block rule");
         let dns_pos = rules
             .find("pass out quick proto udp to any port 53")

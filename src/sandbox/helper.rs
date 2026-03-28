@@ -62,14 +62,14 @@ pub fn build_child_env(
     base_env: &HashMap<String, String>,
     home_dir: &Path,
     sandbox_user: &str,
-) -> HashMap<String, String> {
+) -> Result<HashMap<String, String>, String> {
+    let home = home_dir
+        .to_str()
+        .ok_or_else(|| format!("Home directory path contains invalid UTF-8: {:?}", home_dir))?;
     let mut env = base_env.clone();
-    env.insert(
-        "HOME".to_string(),
-        home_dir.to_str().unwrap_or("/tmp").to_string(),
-    );
+    env.insert("HOME".to_string(), home.to_string());
     env.insert("USER".to_string(), sandbox_user.to_string());
-    env
+    Ok(env)
 }
 
 /// Parse UID and GID from combined dscl output.
@@ -112,12 +112,12 @@ pub fn parse_dscl_ids(output: &str) -> Result<(u32, u32), String> {
 /// Unlike `build_child_env`, this does not inherit the original request env.
 /// Instead it provides only the essentials: HOME, USER, PATH, and TERM
 /// (from the host process if available).
-pub fn build_exec_env(home_dir: &Path, sandbox_user: &str) -> HashMap<String, String> {
+pub fn build_exec_env(home_dir: &Path, sandbox_user: &str) -> Result<HashMap<String, String>, String> {
+    let home = home_dir
+        .to_str()
+        .ok_or_else(|| format!("Home directory path contains invalid UTF-8: {:?}", home_dir))?;
     let mut env = HashMap::new();
-    env.insert(
-        "HOME".to_string(),
-        home_dir.to_str().unwrap_or("/tmp").to_string(),
-    );
+    env.insert("HOME".to_string(), home.to_string());
     env.insert("USER".to_string(), sandbox_user.to_string());
     env.insert(
         "PATH".to_string(),
@@ -126,7 +126,7 @@ pub fn build_exec_env(home_dir: &Path, sandbox_user: &str) -> HashMap<String, St
     if let Ok(term) = std::env::var("TERM") {
         env.insert("TERM".to_string(), term);
     }
-    env
+    Ok(env)
 }
 
 #[cfg(test)]
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn child_env_sets_home_and_user() {
         let base = HashMap::from([("KEY".to_string(), "val".to_string())]);
-        let env = build_child_env(&base, Path::new("/home/sandbox"), "_mino_agent");
+        let env = build_child_env(&base, Path::new("/home/sandbox"), "_mino_agent").unwrap();
         assert_eq!(env.get("HOME").unwrap(), "/home/sandbox");
         assert_eq!(env.get("USER").unwrap(), "_mino_agent");
     }
@@ -219,13 +219,13 @@ mod tests {
     #[test]
     fn child_env_preserves_base() {
         let base = HashMap::from([("CUSTOM".to_string(), "value".to_string())]);
-        let env = build_child_env(&base, Path::new("/tmp"), "agent");
+        let env = build_child_env(&base, Path::new("/tmp"), "agent").unwrap();
         assert_eq!(env.get("CUSTOM").unwrap(), "value");
     }
 
     #[test]
     fn child_env_sandbox_user_in_user() {
-        let env = build_child_env(&HashMap::new(), Path::new("/tmp"), "my-user");
+        let env = build_child_env(&HashMap::new(), Path::new("/tmp"), "my-user").unwrap();
         assert_eq!(env.get("USER").unwrap(), "my-user");
     }
 
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn exec_env_has_home_user_path() {
-        let env = build_exec_env(&PathBuf::from("/home/agent"), "_mino_agent");
+        let env = build_exec_env(&PathBuf::from("/home/agent"), "_mino_agent").unwrap();
         assert_eq!(env.get("HOME").unwrap(), "/home/agent");
         assert_eq!(env.get("USER").unwrap(), "_mino_agent");
         assert!(env.get("PATH").unwrap().contains("/usr/bin"));
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn exec_env_minimal_keys() {
-        let env = build_exec_env(&PathBuf::from("/tmp"), "agent");
+        let env = build_exec_env(&PathBuf::from("/tmp"), "agent").unwrap();
         // Should have HOME, USER, PATH, and optionally TERM
         assert!(env.contains_key("HOME"));
         assert!(env.contains_key("USER"));
