@@ -49,7 +49,14 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
             // Clean up sandbox resources (ACLs, pf rules) even if the helper's
             // auto-cleanup didn't run (e.g., mino was killed externally)
             if let Ok(platform) = crate::sandbox::native::create_sandbox_platform() {
-                if let Err(e) = platform.cleanup(&session.name, &session.project_dir).await {
+                let sandbox_user = session
+                    .sandbox_user
+                    .as_deref()
+                    .unwrap_or("_mino_agent");
+                if let Err(e) = platform
+                    .cleanup(&session.name, &session.project_dir, sandbox_user)
+                    .await
+                {
                     warn!("Sandbox cleanup for session {}: {}", args.session, e);
                 }
             }

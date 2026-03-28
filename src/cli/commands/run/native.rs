@@ -449,9 +449,10 @@ fn build_sandbox_env(
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
-    // Basic env vars
+    // Basic env vars — derive USER from the configured sandbox user so that
+    // tools checking USER against /etc/passwd see a consistent value.
     env.insert("HOME".to_string(), "/home/agent".to_string());
-    env.insert("USER".to_string(), "mino-agent".to_string());
+    env.insert("USER".to_string(), config.sandbox.sandbox_user.clone());
     env.insert("MINO_SANDBOX".to_string(), "native".to_string());
 
     // Inherit locale/terminal from host
@@ -672,7 +673,7 @@ mod tests {
         let env = build_sandbox_env(&Config::default(), &HashMap::new());
 
         assert_eq!(env.get("HOME").unwrap(), "/home/agent");
-        assert_eq!(env.get("USER").unwrap(), "mino-agent");
+        assert_eq!(env.get("USER").unwrap(), "_mino_agent");
         assert_eq!(env.get("MINO_SANDBOX").unwrap(), "native");
         let path = env.get("PATH").unwrap();
         assert!(path.contains("/usr/bin"));

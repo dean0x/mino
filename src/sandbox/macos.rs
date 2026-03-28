@@ -39,8 +39,12 @@ impl SandboxPlatform for MacosSandbox {
         exec_macos(pid, session_name, sandbox_user, command).await
     }
 
-    async fn cleanup(&self, session_id: &str, project_dir: &Path) -> MinoResult<()> {
-        let sandbox_user = &crate::sandbox::config::SandboxConfig::default().sandbox_user;
+    async fn cleanup(
+        &self,
+        session_id: &str,
+        project_dir: &Path,
+        sandbox_user: &str,
+    ) -> MinoResult<()> {
         cleanup_macos_sandbox(session_id, project_dir, sandbox_user).await
     }
 }
@@ -74,7 +78,7 @@ async fn exec_macos(
     Ok(status.code().unwrap_or(128))
 }
 
-const HELPER_BINARY: &str = "mino-sandbox-helper";
+const HELPER_BINARY: &str = "/usr/local/bin/mino-sandbox-helper";
 
 /// Validate macOS prerequisites for native sandbox
 pub async fn validate_macos_setup() -> MinoResult<()> {
@@ -86,16 +90,10 @@ pub async fn validate_macos_setup() -> MinoResult<()> {
 }
 
 async fn check_helper_installed() -> MinoResult<()> {
-    let result = Command::new("which")
-        .arg(HELPER_BINARY)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
-
-    match result {
-        Ok(status) if status.success() => Ok(()),
-        _ => Err(MinoError::SandboxNotSetup),
+    if tokio::fs::metadata(HELPER_BINARY).await.is_ok() {
+        Ok(())
+    } else {
+        Err(MinoError::SandboxNotSetup)
     }
 }
 
@@ -217,8 +215,11 @@ pub async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
         .spawn()
         .map_err(|e| MinoError::SandboxHelper(format!("Failed to spawn helper: {}", e)))?;
 
-    // Clean up request file (best effort)
-    let _ = tokio::fs::remove_file(&request_file).await;
+    // NOTE: We intentionally do NOT delete request_file here. The helper
+    // process may not have read it yet (spawn() returns as soon as the child
+    // is created, before it calls read_to_string). The file is mode 0o600 so
+    // only the owning user and root can read it. It will be cleaned up on
+    // the next OS tmpdir purge or when mino cleanup runs.
 
     Ok(SandboxProcess::new(child, config.session_id))
 }
@@ -336,13 +337,21 @@ pub fn generate_pf_rules(sandbox_user: &str, _session_id: &str, proxy_port: Opti
 }
 
 /// Write content to a file with mode 0o600 from creation, avoiding TOCTOU races.
+///
+/// Uses `create_new(true)` (O_CREAT | O_EXCL) so the open fails if the file
+/// already exists, preventing symlink attacks where an attacker pre-creates
+/// a symlink at the target path.
 async fn write_restricted_file(path: &std::path::Path, content: &str) -> MinoResult<()> {
     use std::fs::OpenOptions;
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
+    // Remove any stale file from a previous run (e.g., crash) so that
+    // create_new succeeds. This is safe because we own the path pattern.
+    let _ = std::fs::remove_file(path);
+
     let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     opts.mode(0o600);
 

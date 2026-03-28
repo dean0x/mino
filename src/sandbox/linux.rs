@@ -40,7 +40,12 @@ impl SandboxPlatform for LinuxSandbox {
         exec_linux(pid, command).await
     }
 
-    async fn cleanup(&self, _session_id: &str, _project_dir: &Path) -> MinoResult<()> {
+    async fn cleanup(
+        &self,
+        _session_id: &str,
+        _project_dir: &Path,
+        _sandbox_user: &str,
+    ) -> MinoResult<()> {
         // Linux namespaces auto-clean on process exit — nothing to do
         Ok(())
     }
@@ -49,7 +54,12 @@ impl SandboxPlatform for LinuxSandbox {
 /// Execute a command inside a Linux sandbox using nsenter.
 ///
 /// Enters the user, mount, PID, and network namespaces of the target process.
+/// Verifies that the target PID is owned by the current user before entering
+/// its namespaces, preventing namespace entry into other users' processes if
+/// the session file is tampered with.
 async fn exec_linux(pid: u32, command: &[String]) -> MinoResult<i32> {
+    verify_pid_ownership(pid).await?;
+
     let pid_str = pid.to_string();
     let status = Command::new("nsenter")
         .args([
@@ -64,6 +74,50 @@ async fn exec_linux(pid: u32, command: &[String]) -> MinoResult<i32> {
         .map_err(|e| MinoError::command_failed("nsenter", e))?;
 
     Ok(status.code().unwrap_or(128))
+}
+
+/// Verify that a PID belongs to the current user by reading /proc/{pid}/status.
+///
+/// Checks the Uid line in the process status file and compares the real UID
+/// against the current user's UID. This prevents entering namespaces of
+/// processes owned by other users.
+async fn verify_pid_ownership(pid: u32) -> MinoResult<()> {
+    let status_path = format!("/proc/{}/status", pid);
+    let content = tokio::fs::read_to_string(&status_path)
+        .await
+        .map_err(|e| MinoError::io(format!("reading /proc/{}/status", pid), e))?;
+
+    let expected_uid = unsafe { libc::getuid() };
+
+    for line in content.lines() {
+        if let Some(uid_str) = line.strip_prefix("Uid:") {
+            // Format: "Uid:\treal\teffective\tsaved\tfs"
+            let real_uid: u32 = uid_str
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| {
+                    MinoError::Internal(format!(
+                        "Failed to parse UID from /proc/{}/status",
+                        pid
+                    ))
+                })?;
+
+            if real_uid != expected_uid {
+                return Err(MinoError::User(format!(
+                    "PID {} is owned by UID {} but current user is UID {}. \
+                     Refusing to enter namespaces of another user's process.",
+                    pid, real_uid, expected_uid
+                )));
+            }
+            return Ok(());
+        }
+    }
+
+    Err(MinoError::Internal(format!(
+        "No Uid line found in /proc/{}/status",
+        pid
+    )))
 }
 
 /// System paths to bind-mount read-only into the sandbox

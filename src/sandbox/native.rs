@@ -65,7 +65,12 @@ pub trait SandboxPlatform: Send + Sync {
     ) -> MinoResult<i32>;
 
     /// Clean up sandbox resources (ACLs, firewall rules, etc.).
-    async fn cleanup(&self, session_id: &str, project_dir: &Path) -> MinoResult<()>;
+    async fn cleanup(
+        &self,
+        session_id: &str,
+        project_dir: &Path,
+        sandbox_user: &str,
+    ) -> MinoResult<()>;
 }
 
 /// Create the appropriate `SandboxPlatform` for the current OS.
