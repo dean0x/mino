@@ -880,6 +880,11 @@ async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()>
 }
 
 async fn setup_sandbox_user(ctx: &UiContext, args: &SetupArgs, username: &str) -> StepResult {
+    if let Err(e) = crate::sandbox::config::validate_sandbox_user(username) {
+        ui::step_error(ctx, &e.to_string());
+        return StepResult::Failed;
+    }
+
     // Check if user exists via dscl
     let exists = Command::new("dscl")
         .args([".", "-read", &format!("/Users/{}", username)])

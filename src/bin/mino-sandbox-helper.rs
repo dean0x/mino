@@ -163,17 +163,8 @@ fn prepare_spawn(
     acl_paths: &[AclEntry],
     home_dir: &Path,
 ) -> Result<SpawnReady, String> {
-    // Validate username using the same rules as the config module
-    if sandbox_user.is_empty()
-        || !sandbox_user
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(format!(
-            "Invalid sandbox_user '{}': must be alphanumeric, underscore, or hyphen",
-            sandbox_user
-        ));
-    }
+    mino::sandbox::config::validate_sandbox_user(sandbox_user)
+        .map_err(|e| e.to_string())?;
 
     let uid = match get_user_uid(sandbox_user) {
         Some(uid) => uid,
@@ -311,13 +302,8 @@ fn handle_exec(args: &[String]) -> Result<i32, String> {
         _ => return Err("Missing --sandbox-user argument".to_string()),
     };
 
-    // Validate sandbox_user
-    if !sandbox_user
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(format!("Invalid sandbox_user: {:?}", sandbox_user));
-    }
+    mino::sandbox::config::validate_sandbox_user(sandbox_user)
+        .map_err(|e| format!("Invalid sandbox_user: {}", e))?;
 
     let command: &[String] = match command_start {
         Some(idx) if idx < args.len() => &args[idx..],

@@ -4,6 +4,7 @@ use crate::cli::args::StopArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{create_runtime, ContainerRuntime};
+use crate::sandbox::RuntimeMode;
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, TaskSpinner, UiContext};
 use console::style;
@@ -35,7 +36,7 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
         return Ok(());
     }
 
-    if session.runtime_mode.as_deref() == Some("native") {
+    if session.runtime_mode == Some(RuntimeMode::Native) {
         // Native mode: kill the process directly
         if let Some(pid) = session.process_id {
             let mut spinner = TaskSpinner::new(&ctx);
@@ -107,7 +108,7 @@ fn stop_native_session(pid: u32, force: bool) -> MinoResult<()> {
         // SAFETY: libc::kill sends a signal to a process identified by PID.
         // We have a valid PID from the session record. Both SIGTERM and SIGKILL
         // are standard POSIX signals.
-        let result = unsafe { libc::kill(pid as i32, signal) };
+        let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
         if result != 0 {
             let err = std::io::Error::last_os_error();
             // ESRCH = no such process (already exited) — not an error

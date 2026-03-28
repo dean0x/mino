@@ -4,6 +4,7 @@ use crate::cli::args::ExecArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{create_runtime, ContainerRuntime};
+use crate::sandbox::RuntimeMode;
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, UiContext};
 use console::style;
@@ -33,7 +34,7 @@ pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<()> {
         args.command
     };
 
-    let exit_code = if session.runtime_mode.as_deref() == Some("native") {
+    let exit_code = if session.runtime_mode == Some(RuntimeMode::Native) {
         let code = exec_native(&session, &command).await?;
         debug!(code, "Native exec finished");
         code
@@ -290,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn exec_native_no_pid_errors() {
         let mut session = test_session("s", SessionStatus::Running, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         // process_id is None
         let cmd = vec!["bash".to_string()];
         let err = exec_native(&session, &cmd).await.unwrap_err();

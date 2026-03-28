@@ -3,6 +3,7 @@
 use crate::cli::args::{ListArgs, OutputFormat};
 use crate::config::Config;
 use crate::error::MinoResult;
+use crate::sandbox::RuntimeMode;
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, UiContext};
 use console::{pad_str, style, Alignment};
@@ -64,8 +65,11 @@ fn format_plain(sessions: &[Session]) -> String {
 }
 
 /// Get display string for runtime mode, defaulting to "container".
-fn runtime_label(session: &Session) -> &str {
-    session.runtime_mode.as_deref().unwrap_or("container")
+fn runtime_label(session: &Session) -> String {
+    session
+        .runtime_mode
+        .unwrap_or(RuntimeMode::Container)
+        .to_string()
 }
 
 fn print_table(sessions: &[Session]) {
@@ -136,7 +140,7 @@ fn print_table(sessions: &[Session]) {
             "{} {} {} {} {}",
             pad_str(&session.name, W_NAME, Alignment::Left, None),
             pad_str(&status_styled, W_STATUS, Alignment::Left, None),
-            pad_str(runtime, W_RUNTIME, Alignment::Left, None),
+            pad_str(&runtime, W_RUNTIME, Alignment::Left, None),
             pad_str(&started, W_STARTED, Alignment::Left, None),
             pad_str(project, W_PROJECT, Alignment::Left, None),
         );
@@ -206,7 +210,7 @@ mod tests {
     #[test]
     fn json_output_includes_runtime_mode() {
         let mut session = test_session("native-session", SessionStatus::Running, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         let sessions = vec![session];
 
         let json = format_json(&sessions).unwrap();
@@ -239,7 +243,7 @@ mod tests {
     #[test]
     fn runtime_label_shows_native() {
         let mut session = test_session("s", SessionStatus::Running, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         assert_eq!(runtime_label(&session), "native");
     }
 }

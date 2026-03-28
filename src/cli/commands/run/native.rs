@@ -238,7 +238,7 @@ async fn create_session_and_audit(
         command.to_vec(),
         SessionStatus::Starting,
     );
-    session.runtime_mode = Some("native".to_string());
+    session.runtime_mode = Some(crate::sandbox::RuntimeMode::Native);
     session.sandbox_user = Some(config.sandbox.sandbox_user.clone());
     manager.create(&session).await?;
 

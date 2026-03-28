@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::error::MinoResult;
 use crate::orchestration::{create_runtime, OrbStack, Platform};
+use crate::sandbox::RuntimeMode;
 use crate::session::{Session, SessionStatus};
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
@@ -377,7 +378,7 @@ fn count_stale_native_sessions(sessions: &[Session]) -> usize {
 
 /// Check if a native session is stale (PID dead but status active).
 pub(crate) fn is_stale_native_session(session: &Session) -> bool {
-    session.runtime_mode.as_deref() == Some("native")
+    session.runtime_mode == Some(RuntimeMode::Native)
         && matches!(
             session.status,
             SessionStatus::Running | SessionStatus::Starting
@@ -450,7 +451,7 @@ pub(crate) fn is_pid_alive(pid: Option<u32>) -> bool {
         }
         // SAFETY: libc::kill with signal 0 does not send any signal — it only
         // checks whether the process exists and we have permission to signal it.
-        Some(p) => unsafe { libc::kill(p as i32, 0) == 0 },
+        Some(p) => unsafe { libc::kill(p as libc::pid_t, 0) == 0 },
         None => false,
     }
     #[cfg(not(unix))]
@@ -501,7 +502,7 @@ mod tests {
     #[test]
     fn count_stale_native_running_dead_pid() {
         let mut session = test_session("s1", SessionStatus::Running, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         session.process_id = Some(u32::MAX - 1); // dead PID
         assert_eq!(count_stale_native_sessions(&[session]), 1);
     }
@@ -509,7 +510,7 @@ mod tests {
     #[test]
     fn count_stale_native_stopped_ignored() {
         let mut session = test_session("s1", SessionStatus::Stopped, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         session.process_id = Some(u32::MAX - 1);
         assert_eq!(count_stale_native_sessions(&[session]), 0);
     }
@@ -517,7 +518,7 @@ mod tests {
     #[test]
     fn count_stale_native_no_pid_is_stale() {
         let mut session = test_session("s1", SessionStatus::Running, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         // process_id is None — is_pid_alive(None) returns false -> stale
         assert_eq!(count_stale_native_sessions(&[session]), 1);
     }
@@ -534,7 +535,7 @@ mod tests {
     #[test]
     fn is_stale_native_starting_dead_pid() {
         let mut session = test_session("s1", SessionStatus::Starting, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         session.process_id = Some(u32::MAX - 1);
         assert!(is_stale_native_session(&session));
     }
@@ -542,7 +543,7 @@ mod tests {
     #[test]
     fn is_stale_native_failed_is_not_stale() {
         let mut session = test_session("s1", SessionStatus::Failed, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         session.process_id = Some(u32::MAX - 1);
         assert!(!is_stale_native_session(&session));
     }
@@ -551,7 +552,7 @@ mod tests {
     #[test]
     fn is_stale_native_running_live_pid_is_not_stale() {
         let mut session = test_session("s1", SessionStatus::Running, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         session.process_id = Some(std::process::id()); // our own PID is alive
         assert!(!is_stale_native_session(&session));
     }

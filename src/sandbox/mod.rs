@@ -15,9 +15,11 @@ pub mod proxy;
 pub mod resource_limits;
 
 use crate::error::{MinoError, MinoResult};
+use serde::{Deserialize, Serialize};
 
 /// Runtime execution mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RuntimeMode {
     /// Traditional container-based isolation (Podman)
     Container,
@@ -25,9 +27,10 @@ pub enum RuntimeMode {
     Native,
 }
 
-impl RuntimeMode {
-    /// Parse from string (config/CLI value)
-    pub fn parse(s: &str) -> MinoResult<Self> {
+impl std::str::FromStr for RuntimeMode {
+    type Err = MinoError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "container" => Ok(Self::Container),
             "native" => Ok(Self::Native),
@@ -60,7 +63,7 @@ pub fn resolve_runtime_mode(
     match raw.to_lowercase().as_str() {
         // "auto" currently defaults to Container until native setup detection exists
         "auto" => Ok(RuntimeMode::Container),
-        other => RuntimeMode::parse(other),
+        other => other.parse::<RuntimeMode>(),
     }
 }
 
@@ -70,19 +73,19 @@ mod tests {
 
     #[test]
     fn parse_container_mode() {
-        let mode = RuntimeMode::parse("container").unwrap();
+        let mode = "container".parse::<RuntimeMode>().unwrap();
         assert_eq!(mode, RuntimeMode::Container);
     }
 
     #[test]
     fn parse_native_mode() {
-        let mode = RuntimeMode::parse("native").unwrap();
+        let mode = "native".parse::<RuntimeMode>().unwrap();
         assert_eq!(mode, RuntimeMode::Native);
     }
 
     #[test]
     fn parse_invalid_mode() {
-        let err = RuntimeMode::parse("docker").unwrap_err();
+        let err = "docker".parse::<RuntimeMode>().unwrap_err();
         assert!(err.to_string().contains("Invalid runtime mode"));
         assert!(err.to_string().contains("docker"));
     }
@@ -90,12 +93,27 @@ mod tests {
     #[test]
     fn to_string_roundtrip() {
         let container = RuntimeMode::Container;
-        let parsed = RuntimeMode::parse(&container.to_string()).unwrap();
+        let parsed: RuntimeMode = container.to_string().parse().unwrap();
         assert_eq!(parsed, container);
 
         let native = RuntimeMode::Native;
-        let parsed = RuntimeMode::parse(&native.to_string()).unwrap();
+        let parsed: RuntimeMode = native.to_string().parse().unwrap();
         assert_eq!(parsed, native);
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let native = RuntimeMode::Native;
+        let json = serde_json::to_string(&native).unwrap();
+        assert_eq!(json, "\"native\"");
+        let parsed: RuntimeMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, native);
+
+        let container = RuntimeMode::Container;
+        let json = serde_json::to_string(&container).unwrap();
+        assert_eq!(json, "\"container\"");
+        let parsed: RuntimeMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, container);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use crate::cli::args::LogsArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{create_runtime, ContainerRuntime};
+use crate::sandbox::RuntimeMode;
 use crate::session::{Session, SessionManager};
 use std::path::Path;
 
@@ -17,7 +18,7 @@ pub async fn execute(args: LogsArgs, config: &Config) -> MinoResult<()> {
         .await?
         .ok_or_else(|| MinoError::SessionNotFound(args.session.clone()))?;
 
-    let is_native = session.runtime_mode.as_deref() == Some("native");
+    let is_native = session.runtime_mode == Some(RuntimeMode::Native);
 
     if is_native {
         let log_path = session
@@ -244,7 +245,7 @@ mod tests {
     #[test]
     fn native_session_without_log_file_is_error() {
         let mut session = test_session("native-sess", SessionStatus::Running, None);
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         // log_file is None — accessing logs should fail
         assert!(session.log_file.is_none());
     }

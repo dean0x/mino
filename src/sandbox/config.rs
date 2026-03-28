@@ -149,6 +149,11 @@ pub fn validate_sandbox_user(username: &str) -> MinoResult<()> {
             "sandbox_user must not be empty".to_string(),
         ));
     }
+    if username.len() > 32 {
+        return Err(MinoError::User(
+            "sandbox_user exceeds 32 characters".to_string(),
+        ));
+    }
     if !username
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
@@ -368,6 +373,19 @@ mod tests {
     fn validate_sandbox_user_rejects_newlines() {
         let err = validate_sandbox_user("user\ninjection").unwrap_err();
         assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn validate_sandbox_user_rejects_too_long() {
+        let long_name = "a".repeat(33);
+        let err = validate_sandbox_user(&long_name).unwrap_err();
+        assert!(err.to_string().contains("exceeds 32 characters"));
+    }
+
+    #[test]
+    fn validate_sandbox_user_accepts_exactly_32() {
+        let name = "a".repeat(32);
+        assert!(validate_sandbox_user(&name).is_ok());
     }
 
     #[test]

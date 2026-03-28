@@ -83,7 +83,7 @@ impl SandboxProcess {
 
         // SAFETY: libc::kill sends a signal to a process. We have a valid PID
         // from the child process handle. SIGTERM is a standard termination signal.
-        let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
         if ret != 0 {
             let err = std::io::Error::last_os_error();
             return Err(MinoError::io(

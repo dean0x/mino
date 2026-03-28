@@ -2,6 +2,7 @@
 
 use crate::config::ConfigManager;
 use crate::error::{MinoError, MinoResult};
+use crate::sandbox::RuntimeMode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -63,9 +64,9 @@ pub struct Session {
     #[serde(default)]
     pub home_volume: Option<String>,
 
-    /// Runtime mode used for this session ("container" or "native")
+    /// Runtime mode used for this session
     #[serde(default)]
-    pub runtime_mode: Option<String>,
+    pub runtime_mode: Option<RuntimeMode>,
 
     /// Native mode: PID of sandboxed process
     #[serde(default)]
@@ -343,7 +344,7 @@ mod tests {
             vec!["bash".to_string()],
             SessionStatus::Running,
         );
-        session.runtime_mode = Some("native".to_string());
+        session.runtime_mode = Some(RuntimeMode::Native);
         session.process_id = Some(12345);
         session.log_file = Some(PathBuf::from("/tmp/mino-session.log"));
         session.sandbox_user = Some("_mino_agent".to_string());
@@ -355,7 +356,7 @@ mod tests {
         assert!(json.contains("\"sandbox_user\":\"_mino_agent\""));
 
         let parsed: Session = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.runtime_mode.as_deref(), Some("native"));
+        assert_eq!(parsed.runtime_mode, Some(RuntimeMode::Native));
         assert_eq!(parsed.process_id, Some(12345));
         assert!(parsed.log_file.is_some());
         assert_eq!(parsed.sandbox_user.as_deref(), Some("_mino_agent"));
