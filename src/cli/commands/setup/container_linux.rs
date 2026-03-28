@@ -1,12 +1,11 @@
 //! Container runtime setup for Linux (native Podman + rootless mode)
 
 use super::{detect_package_manager, run_visible, run_visible_sudo, StepResult};
+use crate::cli::args::SetupArgs;
 use crate::error::MinoResult;
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
-
-use crate::cli::args::SetupArgs;
 
 pub(super) async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
     ui::section(ctx, "Checking prerequisites...");

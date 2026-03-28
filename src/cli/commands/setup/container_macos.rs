@@ -1,14 +1,13 @@
 //! Container runtime setup for macOS (OrbStack + Podman-in-VM)
 
 use super::{run_visible, run_visible_orb, vm_exists, StepResult};
+use crate::cli::args::SetupArgs;
 use crate::config::Config;
 use crate::error::MinoResult;
 use crate::orchestration::OrbStack;
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
-
-use crate::cli::args::SetupArgs;
 
 pub(super) async fn setup_macos(
     ctx: &UiContext,

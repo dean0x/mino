@@ -1,12 +1,11 @@
 //! Native sandbox setup for Linux (user namespaces + unshare)
 
 use super::StepResult;
+use crate::cli::args::SetupArgs;
 use crate::error::MinoResult;
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
-
-use crate::cli::args::SetupArgs;
 
 pub(super) async fn setup_native_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
     ui::section(ctx, "Native Sandbox Setup (Linux)");

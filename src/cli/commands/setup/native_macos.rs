@@ -6,12 +6,11 @@
 use super::{
     check_installed_helper_version, find_available_system_uid, run_visible_sudo, StepResult,
 };
+use crate::cli::args::SetupArgs;
 use crate::error::MinoResult;
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
-
-use crate::cli::args::SetupArgs;
 
 pub(super) async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
     ui::section(ctx, "Native Sandbox Setup (macOS)");

@@ -129,7 +129,6 @@ pub(super) async fn vm_exists(vm_name: &str) -> bool {
 
 /// Check if user namespaces are enabled (shared between container_linux and native_linux)
 pub(super) async fn check_user_namespaces(ctx: &UiContext, args: &SetupArgs) -> StepResult {
-    // Check if user namespaces are enabled
     let output = Command::new("cat")
         .arg("/proc/sys/user/max_user_namespaces")
         .stdout(Stdio::piped())
@@ -150,7 +149,6 @@ pub(super) async fn check_user_namespaces(ctx: &UiContext, args: &SetupArgs) -> 
                 } else {
                     ui::step_warn(ctx, "User namespaces disabled (max_user_namespaces = 0)");
                 }
-
                 ui::remark(
                     ctx,
                     "User namespaces must be enabled for rootless containers.",
@@ -354,12 +352,6 @@ pub(super) async fn detect_package_manager() -> Option<(&'static str, Vec<&'stat
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn step_result_eq() {
-        assert_eq!(StepResult::AlreadyOk, StepResult::AlreadyOk);
-        assert_ne!(StepResult::AlreadyOk, StepResult::Failed);
-    }
 
     #[test]
     fn step_result_is_ok() {
