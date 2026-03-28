@@ -182,21 +182,11 @@ fn main() {
                     project_dir,
                     sandbox_user,
                 } => handle_cleanup(&session_id, &project_dir, &sandbox_user).map(|()| 0),
-                HelperRequest::HealthCheck => {
-                    print_response(&HelperResponse::Healthy {
-                        version: env!("CARGO_PKG_VERSION").to_string(),
-                    });
-                    Ok(0)
-                }
+                HelperRequest::HealthCheck => respond_healthy(),
             }
         }
         "exec" => handle_exec(&args[2..]),
-        "health-check" => {
-            print_response(&HelperResponse::Healthy {
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            });
-            Ok(0)
-        }
+        "health-check" => respond_healthy(),
         _ => {
             print_error(&format!("Unknown action: {}", action));
             process::exit(1);
@@ -689,6 +679,13 @@ fn copy_dotfiles(src: &Path, dest: &Path) {
             }
         }
     }
+}
+
+fn respond_healthy() -> Result<i32, String> {
+    print_response(&HelperResponse::Healthy {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    });
+    Ok(0)
 }
 
 fn print_response(response: &HelperResponse) {

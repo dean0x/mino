@@ -21,17 +21,15 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
         .await?
         .ok_or_else(|| MinoError::SessionNotFound(args.session.clone()))?;
 
+    let styled_name = style(&args.session).cyan();
+
     if !matches!(
         session.status,
         SessionStatus::Running | SessionStatus::Starting
     ) {
         ui::step_info(
             &ctx,
-            &format!(
-                "Session {} is already {}",
-                style(&args.session).cyan(),
-                session.status
-            ),
+            &format!("Session {} is already {}", styled_name, session.status),
         );
         return Ok(());
     }
@@ -40,10 +38,7 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
         // Native mode: kill the process directly
         if let Some(pid) = session.process_id {
             let mut spinner = TaskSpinner::new(&ctx);
-            spinner.start(&format!(
-                "Stopping session {}...",
-                style(&args.session).cyan()
-            ));
+            spinner.start(&format!("Stopping session {}...", styled_name));
 
             stop_native_session(pid, args.force)?;
 
@@ -62,31 +57,22 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
                 }
             }
 
-            spinner.stop(&format!("Session {} stopped", style(&args.session).cyan()));
+            spinner.stop(&format!("Session {} stopped", styled_name));
         } else {
-            ui::step_ok(
-                &ctx,
-                &format!("Session {} stopped", style(&args.session).cyan()),
-            );
+            ui::step_ok(&ctx, &format!("Session {} stopped", styled_name));
         }
     } else if session.container_id.is_some() {
         // Container mode: existing logic
         let runtime = create_runtime(config)?;
 
         let mut spinner = TaskSpinner::new(&ctx);
-        spinner.start(&format!(
-            "Stopping session {}...",
-            style(&args.session).cyan()
-        ));
+        spinner.start(&format!("Stopping session {}...", styled_name));
 
         stop_container(&session, &*runtime, args.force).await?;
 
-        spinner.stop(&format!("Session {} stopped", style(&args.session).cyan()));
+        spinner.stop(&format!("Session {} stopped", styled_name));
     } else {
-        ui::step_ok(
-            &ctx,
-            &format!("Session {} stopped", style(&args.session).cyan()),
-        );
+        ui::step_ok(&ctx, &format!("Session {} stopped", styled_name));
     }
 
     // Update session status
