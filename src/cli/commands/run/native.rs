@@ -589,6 +589,16 @@ async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
         .await
         .map_err(|e| MinoError::io("creating dotfile temp dir", e))?;
 
+    // Restrict permissions so other users cannot replace files with symlinks
+    // between creation and the helper binary's copy (TOCTOU hardening).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o700);
+        std::fs::set_permissions(&tmp_dir, perms)
+            .map_err(|e| MinoError::io("setting dotfile temp dir permissions", e))?;
+    }
+
     for dotfile in collect_dotfile_names(&config.sandbox.dotfiles) {
         if dotfiles::is_risky_dotfile(&dotfile) {
             tracing::warn!(
