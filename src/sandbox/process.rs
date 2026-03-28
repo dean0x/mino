@@ -163,10 +163,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn terminate_sends_sigterm() {
-        let child = Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
+        let child = Command::new("sleep").arg("60").spawn().unwrap();
         let mut process = SandboxProcess::new(child, "test-terminate".to_string());
         process.terminate().await.unwrap();
         let status = process.wait().await.unwrap();

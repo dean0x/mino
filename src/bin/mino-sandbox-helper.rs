@@ -220,8 +220,7 @@ fn prepare_spawn(
     acl_paths: &[AclEntry],
     home_dir: &Path,
 ) -> Result<SpawnReady, String> {
-    mino::sandbox::config::validate_sandbox_user(sandbox_user)
-        .map_err(|e| e.to_string())?;
+    mino::sandbox::config::validate_sandbox_user(sandbox_user).map_err(|e| e.to_string())?;
 
     let (uid, gid) = match get_user_ids(sandbox_user) {
         Ok(ids) => ids,
@@ -318,8 +317,7 @@ fn handle_exec(args: &[String]) -> Result<i32, String> {
     let parsed = parse_exec_args(args)?;
 
     // Validate session_id using the library function
-    validate_session_name(parsed.session_id)
-        .map_err(|e| format!("Invalid session_id: {}", e))?;
+    validate_session_name(parsed.session_id).map_err(|e| format!("Invalid session_id: {}", e))?;
 
     mino::sandbox::config::validate_sandbox_user(parsed.sandbox_user)
         .map_err(|e| format!("Invalid sandbox_user: {}", e))?;

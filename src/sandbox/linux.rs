@@ -97,10 +97,7 @@ async fn verify_pid_ownership(pid: u32) -> MinoResult<()> {
                 .next()
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| {
-                    MinoError::Internal(format!(
-                        "Failed to parse UID from /proc/{}/status",
-                        pid
-                    ))
+                    MinoError::Internal(format!("Failed to parse UID from /proc/{}/status", pid))
                 })?;
 
             if real_uid != expected_uid {

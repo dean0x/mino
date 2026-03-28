@@ -112,7 +112,10 @@ pub fn parse_dscl_ids(output: &str) -> Result<(u32, u32), String> {
 /// Unlike `build_child_env`, this does not inherit the original request env.
 /// Instead it provides only the essentials: HOME, USER, PATH, and TERM
 /// (from the host process if available).
-pub fn build_exec_env(home_dir: &Path, sandbox_user: &str) -> Result<HashMap<String, String>, String> {
+pub fn build_exec_env(
+    home_dir: &Path,
+    sandbox_user: &str,
+) -> Result<HashMap<String, String>, String> {
     let home = home_dir
         .to_str()
         .ok_or_else(|| format!("Home directory path contains invalid UTF-8: {:?}", home_dir))?;

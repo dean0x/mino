@@ -985,11 +985,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // After drop, the proxy should refuse new connections
-        let result = tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr)).await;
-        match result {
-            Ok(Ok(_)) => panic!("should refuse connections after drop"),
-            Ok(Err(_)) | Err(_) => {} // Connection refused or timed out — expected
+        let result =
+            tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr)).await;
+        if let Ok(Ok(_)) = result {
+            panic!("should refuse connections after drop");
         }
+        // Connection refused or timed out — expected
     }
 
     // ---- build_socks5_success_reply test ----
