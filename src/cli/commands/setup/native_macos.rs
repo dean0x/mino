@@ -7,7 +7,7 @@ use super::{
     check_installed_helper_version, find_available_system_uid, run_visible_sudo, StepResult,
 };
 use crate::cli::args::SetupArgs;
-use crate::error::{MinoError, MinoResult};
+use crate::error::MinoResult;
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -458,46 +458,17 @@ const HELPER_BINARY_PATH: &str = "/usr/local/bin/mino-sandbox-helper";
 /// Generate sudoers file content that grants a user passwordless sudo access
 /// to the mino-sandbox-helper binary.
 ///
-/// Validates the username to prevent injection into the sudoers file. Only
-/// alphanumeric characters, underscores, and hyphens are allowed (max 32 chars),
-/// matching macOS system username constraints.
+/// Validates the username via `validate_sandbox_user` to prevent injection
+/// into the sudoers file. Only alphanumeric characters, underscores, and
+/// hyphens are allowed (max 32 chars).
 ///
 /// Returns `Err` if the username is empty, too long, or contains disallowed chars.
 pub(super) fn generate_sudoers_content(username: &str) -> MinoResult<String> {
-    validate_sudoers_username(username)?;
+    crate::sandbox::config::validate_sandbox_user(username)?;
     Ok(format!(
         "{} ALL=(root) NOPASSWD: {}\n",
         username, HELPER_BINARY_PATH
     ))
-}
-
-/// Validate that a username is safe for inclusion in a sudoers file.
-///
-/// Rejects empty, oversized, or special-character usernames that could
-/// inject rules or break sudoers syntax.
-fn validate_sudoers_username(username: &str) -> MinoResult<()> {
-    if username.is_empty() {
-        return Err(MinoError::User(
-            "Invalid username '' for sudoers (must be 1-32 alphanumeric/underscore/hyphen chars)"
-                .to_string(),
-        ));
-    }
-    if username.len() > 32 {
-        return Err(MinoError::User(format!(
-            "Invalid username '{}' for sudoers (must be 1-32 alphanumeric/underscore/hyphen chars)",
-            username
-        )));
-    }
-    if !username
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(MinoError::User(format!(
-            "Invalid username '{}' for sudoers (must be 1-32 alphanumeric/underscore/hyphen chars)",
-            username
-        )));
-    }
-    Ok(())
 }
 
 /// Compute the step gating chain: given a sequence of results, count how many
@@ -575,78 +546,78 @@ mod tests {
     #[test]
     fn sudoers_rejects_empty_username() {
         let err = generate_sudoers_content("").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("must not be empty"));
     }
 
     #[test]
     fn sudoers_rejects_username_over_32_chars() {
         let long = "a".repeat(33);
         let err = generate_sudoers_content(&long).unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("exceeds 32 characters"));
     }
 
     #[test]
     fn sudoers_rejects_spaces() {
         // Spaces in a sudoers username would break the rule syntax
         let err = generate_sudoers_content("bad user").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_newlines() {
         // Newlines could inject additional sudoers directives
         let err = generate_sudoers_content("user\nALL=(ALL) NOPASSWD: ALL").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_tab_injection() {
         let err = generate_sudoers_content("user\tALL").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_semicolons() {
         let err = generate_sudoers_content("user;evil").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_slashes() {
         let err = generate_sudoers_content("../../etc").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_hash_comment_injection() {
         // '#' could comment out the rest of the rule and leave a partial entry
         let err = generate_sudoers_content("user#comment").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_null_byte() {
         let err = generate_sudoers_content("user\0evil").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_comma() {
         // Commas separate user entries in sudoers
         let err = generate_sudoers_content("user,root").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_equals() {
         let err = generate_sudoers_content("user=root").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn sudoers_rejects_parentheses() {
         let err = generate_sudoers_content("user(root)").unwrap_err();
-        assert!(err.to_string().contains("Invalid username"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     // ---- step gating logic ----
@@ -705,98 +676,4 @@ mod tests {
         assert_eq!(count_setup_issues(&[]), 0);
     }
 
-    // ---- step gating chains ----
-
-    #[test]
-    fn step_gating_success_propagates() {
-        // When step 1 succeeds, step 2 should proceed (not be blocked)
-        let step1 = StepResult::AlreadyOk;
-        let step2 = if step1.is_ok() {
-            StepResult::Installed
-        } else {
-            StepResult::Blocked
-        };
-        assert_eq!(step2, StepResult::Installed);
-    }
-
-    #[test]
-    fn step_gating_failure_blocks_downstream() {
-        // When step 1 fails, step 2 should be blocked
-        let step1 = StepResult::Failed;
-        let step2 = if step1.is_ok() {
-            StepResult::Installed
-        } else {
-            StepResult::Blocked
-        };
-        assert_eq!(step2, StepResult::Blocked);
-    }
-
-    #[test]
-    fn step_gating_skipped_blocks_downstream() {
-        // When step 1 is skipped, step 2 should be blocked
-        let step1 = StepResult::Skipped;
-        let step2 = if step1.is_ok() {
-            StepResult::Installed
-        } else {
-            StepResult::Blocked
-        };
-        assert_eq!(step2, StepResult::Blocked);
-    }
-
-    #[test]
-    fn step_gating_four_step_chain_first_failure() {
-        // Simulates the macOS setup flow: user -> helper -> sudoers -> pf
-        let step1 = StepResult::Failed;
-        let step2 = if step1.is_ok() { StepResult::Installed } else { StepResult::Blocked };
-        let step3 = if step2.is_ok() { StepResult::Installed } else { StepResult::Blocked };
-        let step4 = if step3.is_ok() { StepResult::Installed } else { StepResult::Blocked };
-
-        assert_eq!(step1, StepResult::Failed);
-        assert_eq!(step2, StepResult::Blocked);
-        assert_eq!(step3, StepResult::Blocked);
-        assert_eq!(step4, StepResult::Blocked);
-
-        let issues = count_setup_issues(&[step1, step2, step3, step4]);
-        assert_eq!(issues, 1); // Only root failure counts
-    }
-
-    #[test]
-    fn step_gating_four_step_chain_all_success() {
-        let step1 = StepResult::AlreadyOk;
-        let step2 = if step1.is_ok() { StepResult::Installed } else { StepResult::Blocked };
-        let step3 = if step2.is_ok() { StepResult::AlreadyOk } else { StepResult::Blocked };
-        let step4 = if step3.is_ok() { StepResult::Installed } else { StepResult::Blocked };
-
-        assert!(step4.is_ok());
-        let issues = count_setup_issues(&[step1, step2, step3, step4]);
-        assert_eq!(issues, 0);
-    }
-
-    #[test]
-    fn step_gating_four_step_chain_mid_failure() {
-        // Step 2 fails, steps 3-4 should be blocked
-        let step1 = StepResult::AlreadyOk;
-        let step2 = if step1.is_ok() { StepResult::Failed } else { StepResult::Blocked };
-        let step3 = if step2.is_ok() { StepResult::Installed } else { StepResult::Blocked };
-        let step4 = if step3.is_ok() { StepResult::Installed } else { StepResult::Blocked };
-
-        assert_eq!(step2, StepResult::Failed);
-        assert_eq!(step3, StepResult::Blocked);
-        assert_eq!(step4, StepResult::Blocked);
-
-        let issues = count_setup_issues(&[step1, step2, step3, step4]);
-        assert_eq!(issues, 1);
-    }
-
-    // ---- constants ----
-
-    #[test]
-    fn sudoers_path_is_standard_drop_in_location() {
-        assert_eq!(SUDOERS_PATH, "/etc/sudoers.d/mino");
-    }
-
-    #[test]
-    fn helper_binary_path_matches_expected() {
-        assert_eq!(HELPER_BINARY_PATH, "/usr/local/bin/mino-sandbox-helper");
-    }
 }

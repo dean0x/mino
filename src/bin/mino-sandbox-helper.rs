@@ -267,16 +267,15 @@ fn main() {
     }
 }
 
-/// Validate sandbox_user and look up UID/GID before forking.
+/// Look up UID/GID for the sandbox user before forking.
 ///
 /// On error, cleans up any ACLs that were already set and returns Err.
+/// Caller must validate `sandbox_user` before calling this function.
 fn prepare_spawn(
     sandbox_user: &str,
     acl_paths: &[AclEntry],
     home_dir: &Path,
 ) -> Result<SpawnReady, String> {
-    mino::sandbox::config::validate_sandbox_user(sandbox_user).map_err(|e| e.to_string())?;
-
     let (uid, gid) = match get_user_ids(sandbox_user) {
         Ok(ids) => ids,
         Err(e) => {
