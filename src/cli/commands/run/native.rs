@@ -521,6 +521,9 @@ async fn cleanup_dotfile_dir(dir: &Option<PathBuf>) {
 /// On Unix, SIGINT and SIGTERM are caught and forwarded to the sandboxed
 /// process via `terminate()`. This ensures that Ctrl-C properly stops
 /// the sandbox rather than killing only the mino wrapper.
+///
+/// Signal handling is integration-tested; the individual components
+/// (`terminate`, `wait`) are unit-tested independently in the process module.
 #[cfg(unix)]
 async fn wait_with_signal_forwarding(
     process: &mut crate::sandbox::process::SandboxProcess,
@@ -558,6 +561,22 @@ async fn wait_with_signal_forwarding(
     process.wait().await
 }
 
+/// Collect and deduplicate dotfile names from defaults and user config.
+fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for name in crate::sandbox::dotfiles::DEFAULT_DOTFILES
+        .iter()
+        .map(|s| s.to_string())
+        .chain(config_dotfiles.iter().cloned())
+    {
+        if seen.insert(name.clone()) {
+            result.push(name);
+        }
+    }
+    result
+}
+
 /// Prepare dotfiles for the sandbox by copying and sanitizing them into a temp dir
 async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
     let home_dir = match dirs::home_dir() {
@@ -570,11 +589,7 @@ async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
         .await
         .map_err(|e| MinoError::io("creating dotfile temp dir", e))?;
 
-    // Collect all dotfiles: safe defaults + user-configured
-    let default_dotfiles = dotfiles::DEFAULT_DOTFILES.iter().map(|s| s.to_string());
-    let user_dotfiles = config.sandbox.dotfiles.iter().cloned();
-
-    for dotfile in default_dotfiles.chain(user_dotfiles) {
+    for dotfile in collect_dotfile_names(&config.sandbox.dotfiles) {
         if dotfiles::is_risky_dotfile(&dotfile) {
             tracing::warn!(
                 "{} may contain auth tokens. Secrets will be accessible to the agent.",
@@ -609,6 +624,7 @@ async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
 mod tests {
     use super::*;
     use crate::cli::args::RunArgs;
+    use serial_test::serial;
 
     fn test_run_args() -> RunArgs {
         RunArgs {
@@ -706,12 +722,22 @@ mod tests {
     }
 
     #[test]
-    fn build_sandbox_env_inherits_locale_vars_when_present() {
-        // TERM is typically set in test environments; verify it propagates
+    #[serial]
+    fn build_sandbox_env_inherits_term_when_set() {
+        unsafe { std::env::set_var("TERM", "xterm-256color") };
         let env = build_sandbox_env(&Config::default(), &HashMap::new());
-        if std::env::var("TERM").is_ok() {
-            assert!(env.contains_key("TERM"));
-        }
+        assert_eq!(env.get("TERM").unwrap(), "xterm-256color");
+        unsafe { std::env::remove_var("TERM") };
+    }
+
+    #[test]
+    #[serial]
+    fn build_sandbox_env_omits_term_when_unset() {
+        unsafe { std::env::remove_var("TERM") };
+        let env = build_sandbox_env(&Config::default(), &HashMap::new());
+        assert!(!env.contains_key("TERM"));
+        // Restore a reasonable default
+        unsafe { std::env::set_var("TERM", "xterm-256color") };
     }
 
     #[test]
@@ -764,5 +790,30 @@ mod tests {
         let mut args = test_run_args();
         args.detach = true;
         assert!(validate_native_flags(&args).is_ok());
+    }
+
+    // ---- collect_dotfile_names tests ----
+
+    #[test]
+    fn collect_dotfile_names_includes_defaults() {
+        let names = collect_dotfile_names(&[]);
+        assert!(names.contains(&".gitconfig".to_string()));
+        assert!(names.contains(&".config/git/ignore".to_string()));
+    }
+
+    #[test]
+    fn collect_dotfile_names_includes_user_dotfiles() {
+        let names = collect_dotfile_names(&[".vimrc".to_string()]);
+        assert!(names.contains(&".vimrc".to_string()));
+    }
+
+    #[test]
+    fn collect_dotfile_names_deduplicates() {
+        let names = collect_dotfile_names(&[".gitconfig".to_string()]);
+        let gitconfig_count = names.iter().filter(|n| *n == ".gitconfig").count();
+        assert_eq!(
+            gitconfig_count, 1,
+            "expected .gitconfig to appear only once"
+        );
     }
 }
