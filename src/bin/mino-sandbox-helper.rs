@@ -518,8 +518,10 @@ unsafe fn parent_process(
 }
 
 fn handle_cleanup(session_id: &str, project_dir: &Path, sandbox_user: &str) -> Result<(), String> {
-    // Validate session_id using the library function
+    // Validate inputs — this binary runs as root so all inputs must be checked
     validate_session_name(session_id).map_err(|e| format!("Invalid session_id: {}", e))?;
+    mino::sandbox::config::validate_sandbox_user(sandbox_user)
+        .map_err(|e| format!("Invalid sandbox_user: {}", e))?;
 
     // Remove ACLs on project dir
     let _ = remove_acl(project_dir, sandbox_user);
@@ -879,5 +881,61 @@ mod tests {
         assert_eq!(parsed.sandbox_user, "_mino_agent");
         assert_eq!(parsed.command.len(), 1);
         assert_eq!(parsed.command[0], "ls");
+    }
+
+    // ---- parse_cleanup_args tests ----
+
+    #[test]
+    fn parse_cleanup_args_valid() {
+        let input = args(&[
+            "--session-id",
+            "my-session",
+            "--project-dir",
+            "/home/user/project",
+            "--sandbox-user",
+            "_mino_agent",
+        ]);
+        let parsed = parse_cleanup_args(&input).unwrap();
+        assert_eq!(parsed.session_id, "my-session");
+        assert_eq!(parsed.project_dir, PathBuf::from("/home/user/project"));
+        assert_eq!(parsed.sandbox_user, "_mino_agent");
+    }
+
+    #[test]
+    fn parse_cleanup_args_missing_session_id() {
+        let input = args(&[
+            "--project-dir",
+            "/tmp/proj",
+            "--sandbox-user",
+            "_mino_agent",
+        ]);
+        let err = parse_cleanup_args(&input).unwrap_err();
+        assert!(
+            err.contains("--session-id"),
+            "expected error about --session-id, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_cleanup_args_missing_project_dir() {
+        let input = args(&["--session-id", "s1", "--sandbox-user", "_mino_agent"]);
+        let err = parse_cleanup_args(&input).unwrap_err();
+        assert!(
+            err.contains("--project-dir"),
+            "expected error about --project-dir, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_cleanup_args_missing_sandbox_user() {
+        let input = args(&["--session-id", "s1", "--project-dir", "/tmp/proj"]);
+        let err = parse_cleanup_args(&input).unwrap_err();
+        assert!(
+            err.contains("--sandbox-user"),
+            "expected error about --sandbox-user, got: {}",
+            err
+        );
     }
 }
