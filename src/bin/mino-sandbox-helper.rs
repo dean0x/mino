@@ -67,6 +67,7 @@ fn load_request(args: &[String]) -> Result<HelperRequest, String> {
 }
 
 /// Parsed arguments for the exec subcommand.
+#[derive(Debug)]
 struct ExecArgs<'a> {
     session_id: &'a str,
     sandbox_user: &'a str,
@@ -698,4 +699,110 @@ fn print_error(message: &str) {
     print_response(&HelperResponse::Error {
         message: message.to_string(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Convert a slice of &str into Vec<String> for test convenience.
+    fn args(slice: &[&str]) -> Vec<String> {
+        slice.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parse_exec_args_valid() {
+        let input = args(&[
+            "--session-id",
+            "my-session",
+            "--sandbox-user",
+            "_mino_agent",
+            "--",
+            "bash",
+            "-c",
+            "echo hello",
+        ]);
+        let parsed = parse_exec_args(&input).unwrap();
+        assert_eq!(parsed.session_id, "my-session");
+        assert_eq!(parsed.sandbox_user, "_mino_agent");
+        assert_eq!(parsed.command.len(), 3);
+        assert_eq!(parsed.command[0], "bash");
+        assert_eq!(parsed.command[1], "-c");
+        assert_eq!(parsed.command[2], "echo hello");
+    }
+
+    #[test]
+    fn parse_exec_args_missing_session_id() {
+        let input = args(&["--sandbox-user", "_mino_agent", "--", "bash"]);
+        let err = parse_exec_args(&input).unwrap_err();
+        assert!(
+            err.contains("--session-id"),
+            "expected error about --session-id, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_exec_args_missing_sandbox_user() {
+        let input = args(&["--session-id", "my-session", "--", "bash"]);
+        let err = parse_exec_args(&input).unwrap_err();
+        assert!(
+            err.contains("--sandbox-user"),
+            "expected error about --sandbox-user, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_exec_args_missing_separator() {
+        let input = args(&[
+            "--session-id",
+            "my-session",
+            "--sandbox-user",
+            "_mino_agent",
+            "bash",
+        ]);
+        let err = parse_exec_args(&input).unwrap_err();
+        assert!(
+            err.contains("command") || err.contains("--"),
+            "expected error about missing command/separator, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_exec_args_empty_command_after_separator() {
+        let input = args(&[
+            "--session-id",
+            "my-session",
+            "--sandbox-user",
+            "_mino_agent",
+            "--",
+        ]);
+        let err = parse_exec_args(&input).unwrap_err();
+        assert!(
+            err.contains("command"),
+            "expected error about missing/empty command, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_exec_args_pid_flag_accepted_and_ignored() {
+        let input = args(&[
+            "--session-id",
+            "my-session",
+            "--sandbox-user",
+            "_mino_agent",
+            "--pid",
+            "12345",
+            "--",
+            "ls",
+        ]);
+        let parsed = parse_exec_args(&input).unwrap();
+        assert_eq!(parsed.session_id, "my-session");
+        assert_eq!(parsed.sandbox_user, "_mino_agent");
+        assert_eq!(parsed.command.len(), 1);
+        assert_eq!(parsed.command[0], "ls");
+    }
 }
