@@ -628,12 +628,19 @@ unsafe fn apply_resource_limits(limits: &ResourceLimitsDto) {
     );
 }
 
+/// The platform-specific type for rlimit resource identifiers.
+/// Linux uses `__rlimit_resource_t` (u32), macOS uses `c_int` (i32).
+#[cfg(target_os = "linux")]
+type RlimitResource = libc::__rlimit_resource_t;
+#[cfg(not(target_os = "linux"))]
+type RlimitResource = libc::c_int;
+
 /// Set a single resource limit. Zero values are skipped (no limit).
 ///
 /// # Safety
 /// Calls libc::setrlimit. Must be called before dropping root privileges.
 #[cfg(unix)]
-unsafe fn set_rlimit(resource: libc::c_int, value: u64, name: &str) {
+unsafe fn set_rlimit(resource: RlimitResource, value: u64, name: &str) {
     if value == 0 {
         return;
     }
@@ -1160,7 +1167,11 @@ mod tests {
             "-- nvim config",
         )
         .unwrap();
-        std::fs::write(src.path().join(".config").join("starship.toml"), "# starship").unwrap();
+        std::fs::write(
+            src.path().join(".config").join("starship.toml"),
+            "# starship",
+        )
+        .unwrap();
 
         copy_dotfiles(src.path(), dest.path());
 
@@ -1207,8 +1218,11 @@ mod tests {
 
         // Directory with content
         std::fs::create_dir(src.path().join(".ssh")).unwrap();
-        std::fs::write(src.path().join(".ssh").join("config"), "Host *\n  AddKeysToAgent yes")
-            .unwrap();
+        std::fs::write(
+            src.path().join(".ssh").join("config"),
+            "Host *\n  AddKeysToAgent yes",
+        )
+        .unwrap();
 
         // Symlink (should be skipped)
         #[cfg(unix)]
@@ -1240,7 +1254,8 @@ mod tests {
         // Create a directory with a symlink inside it
         std::fs::create_dir(src.path().join("subdir")).unwrap();
         std::fs::write(src.path().join("subdir").join("real.txt"), "content").unwrap();
-        std::os::unix::fs::symlink("/etc/shadow", src.path().join("subdir").join("sneaky")).unwrap();
+        std::os::unix::fs::symlink("/etc/shadow", src.path().join("subdir").join("sneaky"))
+            .unwrap();
 
         copy_dotfiles(src.path(), dest.path());
 
