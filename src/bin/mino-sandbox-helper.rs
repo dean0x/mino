@@ -300,6 +300,26 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     }
 }
 
+/// Drop supplementary groups, then set GID and UID to the sandbox user.
+///
+/// # Safety
+/// Calls libc setgroups, setgid, setuid — all FFI calls.
+/// Order: setgid before setuid (after setuid we can't change GID).
+/// Must run as root; after completion the process runs as the specified user.
+#[cfg(unix)]
+unsafe fn drop_privileges(uid: u32, gid: u32) -> Result<(), String> {
+    if libc::setgroups(0, std::ptr::null()) != 0 {
+        return Err("setgroups failed".into());
+    }
+    if libc::setgid(gid) != 0 {
+        return Err("setgid failed".into());
+    }
+    if libc::setuid(uid) != 0 {
+        return Err("setuid failed".into());
+    }
+    Ok(())
+}
+
 /// Execute a command as the sandbox user inside an existing session.
 ///
 /// Unlike `spawn`, this does not set up ACLs or fork — it simply drops
@@ -323,22 +343,10 @@ fn handle_exec(args: &[String]) -> Result<i32, String> {
 
     let (uid, gid) = get_user_ids(parsed.sandbox_user)?;
 
+    // SAFETY: drop_privileges calls setgroups/setgid/setuid — must run as root.
     #[cfg(unix)]
     unsafe {
-        // Drop supplementary groups
-        if libc::setgroups(0, std::ptr::null()) != 0 {
-            return Err("setgroups failed".to_string());
-        }
-
-        // setgid before setuid (after setuid we can't change GID)
-        if libc::setgid(gid) != 0 {
-            return Err("setgid failed".to_string());
-        }
-
-        // setuid to sandbox user (drops root)
-        if libc::setuid(uid) != 0 {
-            return Err("setuid failed".to_string());
-        }
+        drop_privileges(uid, gid)?;
     }
 
     #[cfg(not(unix))]
@@ -371,21 +379,9 @@ unsafe fn child_process(args: ChildArgs<'_>) -> ! {
     // Set resource limits (must happen before dropping root)
     apply_resource_limits(args.resource_limits);
 
-    // Drop supplementary groups first
-    if libc::setgroups(0, std::ptr::null()) != 0 {
-        eprintln!("setgroups failed");
-        process::exit(1);
-    }
-
-    // setgid MUST come before setuid — after setuid we can't change GID
-    if libc::setgid(args.gid) != 0 {
-        eprintln!("setgid failed");
-        process::exit(1);
-    }
-
-    // setuid to sandbox user (drops root)
-    if libc::setuid(args.uid) != 0 {
-        eprintln!("setuid failed");
+    // Drop privileges: setgid before setuid (can't change GID after dropping root)
+    if let Err(e) = drop_privileges(args.uid, args.gid) {
+        eprintln!("{}", e);
         process::exit(1);
     }
 
