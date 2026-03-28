@@ -559,7 +559,7 @@ async fn try_connect(target_addr: &str) -> ConnectResult {
 fn is_allowed(host: &str, port: u16, allow_map: &AllowMap) -> bool {
     allow_map
         .get(&host.to_ascii_lowercase())
-        .map_or(false, |ports| ports.contains(&port))
+        .is_some_and(|ports| ports.contains(&port))
 }
 
 /// Bidirectional TCP relay with graceful half-close.
