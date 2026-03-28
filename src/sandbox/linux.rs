@@ -254,6 +254,26 @@ fn escape_path_str(s: &str) -> MinoResult<String> {
     escape_path(std::path::Path::new(s))
 }
 
+/// Append a bind-mount command for a user path to the setup script.
+///
+/// Resolves symlinks at mount time via `readlink -f` to prevent mounting
+/// unexpected content. `|| :` prevents `set -e` from aborting if the path
+/// doesn't exist — readlink returns empty, `[ -d "" ]` is false, and the
+/// `&&` chain skips the mount.
+fn append_bind_mount(script: &mut String, root: &str, path_str: &str, readonly: bool) -> MinoResult<()> {
+    let mount_point = path_str.trim_start_matches('/');
+    let quoted = escape_path_str(path_str)?;
+    let quoted_mount = escape_path_str(mount_point)?;
+    let ro_flag = if readonly { "ro," } else { "" };
+    use std::fmt::Write;
+    writeln!(script,
+        "REAL=$(readlink -f {quoted} 2>/dev/null || :) && [ -d \"$REAL\" ] && \
+         mkdir -p {root}/{quoted_mount} && mount --bind \"$REAL\" {root}/{quoted_mount} && \
+         mount -o remount,{ro_flag}nosuid,nodev,bind {root}/{quoted_mount}"
+    ).unwrap();
+    Ok(())
+}
+
 /// Single-quote a string for safe inclusion in shell scripts.
 ///
 /// Wraps the value in single quotes after escaping embedded single quotes
@@ -334,22 +354,12 @@ pub(crate) fn generate_setup_script(
 
     // 7. Bind-mount passthrough paths read-only (with nosuid,nodev)
     for path_str in &config.sandbox_config.passthrough_paths {
-        let mount_point = path_str.trim_start_matches('/');
-        let quoted = escape_path_str(path_str)?;
-        let quoted_mount = escape_path_str(mount_point)?;
-        script.push_str(&format!(
-            "[ -d {quoted} ] && mkdir -p {root}/{quoted_mount} && mount --bind {quoted} {root}/{quoted_mount} && mount -o remount,ro,nosuid,nodev,bind {root}/{quoted_mount}\n"
-        ));
+        append_bind_mount(&mut script, root, path_str, true)?;
     }
 
     // 8. Bind-mount writable paths (with nosuid,nodev)
     for path_str in &config.sandbox_config.writable_paths {
-        let mount_point = path_str.trim_start_matches('/');
-        let quoted = escape_path_str(path_str)?;
-        let quoted_mount = escape_path_str(mount_point)?;
-        script.push_str(&format!(
-            "[ -d {quoted} ] && mkdir -p {root}/{quoted_mount} && mount --bind {quoted} {root}/{quoted_mount} && mount -o remount,nosuid,nodev,bind {root}/{quoted_mount}\n"
-        ));
+        append_bind_mount(&mut script, root, path_str, false)?;
     }
 
     // 9. Copy dotfiles to sandbox HOME
@@ -688,7 +698,7 @@ mod tests {
         config.sandbox_config.passthrough_paths = vec!["/opt/my tools".to_string()];
         let limits = no_limits();
         let script = generate_setup_script(&config, &limits).unwrap();
-        assert!(script.contains("mount --bind '/opt/my tools'"));
+        assert!(script.contains("readlink -f '/opt/my tools'"));
     }
 
     #[test]
@@ -709,12 +719,14 @@ mod tests {
             vec!["/opt/toolchain".to_string(), "/usr/local/go".to_string()];
         let script = generate_setup_script(&config, &no_limits()).unwrap();
 
-        assert!(script.contains("mount --bind '/opt/toolchain' /tmp/mino-root-$$/'opt/toolchain'"));
+        assert!(script.contains("readlink -f '/opt/toolchain'"));
+        assert!(script.contains("mount --bind \"$REAL\" /tmp/mino-root-$$/'opt/toolchain'"));
         assert!(script
-            .contains("mount -o remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'opt/toolchain'"));
-        assert!(script.contains("mount --bind '/usr/local/go' /tmp/mino-root-$$/'usr/local/go'"));
+            .contains("remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'opt/toolchain'"));
+        assert!(script.contains("readlink -f '/usr/local/go'"));
+        assert!(script.contains("mount --bind \"$REAL\" /tmp/mino-root-$$/'usr/local/go'"));
         assert!(script
-            .contains("mount -o remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'usr/local/go'"));
+            .contains("remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'usr/local/go'"));
     }
 
     #[test]
@@ -723,7 +735,8 @@ mod tests {
         config.sandbox_config.writable_paths = vec!["/tmp/shared".to_string()];
         let script = generate_setup_script(&config, &no_limits()).unwrap();
 
-        assert!(script.contains("mount --bind '/tmp/shared' /tmp/mino-root-$$/'tmp/shared'"));
+        assert!(script.contains("readlink -f '/tmp/shared'"));
+        assert!(script.contains("mount --bind \"$REAL\" /tmp/mino-root-$$/'tmp/shared'"));
         // Writable paths get nosuid,nodev but NOT read-only
         assert!(script.contains("remount,nosuid,nodev,bind /tmp/mino-root-$$/'tmp/shared'"));
         assert!(!script.contains("remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'tmp/shared'"));
@@ -778,9 +791,9 @@ mod tests {
             "/dev/shm",
             "mount --bind '/home/user/project'",
             "nosuid,nodev,bind /tmp/mino-root-$$/workspace",
-            "'/opt/tools'",
+            "readlink -f '/opt/tools'",
             "ro,nosuid,nodev,bind",
-            "'/var/cache'",
+            "readlink -f '/var/cache'",
             "nosuid,nodev,bind",
             "cp -a '/tmp/dotfiles'/*",
             "mount -t tmpfs -o nosuid,nodev tmpfs /tmp/mino-root-$$/tmp",
@@ -924,5 +937,31 @@ mod tests {
     fn script_project_dir_has_nosuid_nodev() {
         let script = script_default();
         assert!(script.contains("remount,nosuid,nodev,bind /tmp/mino-root-$$/workspace"));
+    }
+
+    // ---- append_bind_mount tests ----
+
+    #[test]
+    fn append_bind_mount_readonly() {
+        let mut script = String::new();
+        append_bind_mount(&mut script, "/tmp/root", "/opt/tools", true).unwrap();
+        assert!(script.contains("readlink -f '/opt/tools'"));
+        assert!(script.contains("remount,ro,nosuid,nodev,bind"));
+    }
+
+    #[test]
+    fn append_bind_mount_readwrite() {
+        let mut script = String::new();
+        append_bind_mount(&mut script, "/tmp/root", "/var/cache", false).unwrap();
+        assert!(script.contains("readlink -f '/var/cache'"));
+        assert!(script.contains("remount,nosuid,nodev,bind"));
+        assert!(!script.contains("remount,ro,"));
+    }
+
+    #[test]
+    fn append_bind_mount_escapes_path() {
+        let mut script = String::new();
+        append_bind_mount(&mut script, "/tmp/root", "/opt/my tools", true).unwrap();
+        assert!(script.contains("readlink -f '/opt/my tools'"));
     }
 }
