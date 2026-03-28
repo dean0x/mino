@@ -10,6 +10,7 @@
 
 use crate::error::{MinoError, MinoResult};
 use crate::network::NetworkRule;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +30,25 @@ const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Timeout for connecting to the upstream target
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pre-built lookup map for allowed host:port pairs.
+///
+/// Built once from the rule list at proxy startup and shared immutably
+/// across all connection handlers via `Arc`.
+type AllowMap = HashMap<String, HashSet<u16>>;
+
+/// Build an AllowMap from a list of network rules.
+///
+/// Groups rules by lowercase hostname for O(1) host lookup + O(1) port lookup.
+fn build_allow_map(rules: &[NetworkRule]) -> AllowMap {
+    let mut map: AllowMap = HashMap::new();
+    for r in rules {
+        map.entry(r.host.to_ascii_lowercase())
+            .or_default()
+            .insert(r.port);
+    }
+    map
+}
 
 /// Handle to a running proxy instance.
 ///
@@ -110,10 +130,10 @@ pub async fn start_proxy(
         .map_err(|e| MinoError::NetworkProxy(format!("Failed to get proxy address: {e}")))?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let rules = Arc::new(rules);
+    let allow_map = Arc::new(build_allow_map(&rules));
     let denial_log = denial_log.map(Arc::new);
 
-    tokio::spawn(accept_loop(listener, rules, denial_log, shutdown_rx));
+    tokio::spawn(accept_loop(listener, allow_map, denial_log, shutdown_rx));
 
     debug!("Proxy started on {}", addr);
 
@@ -126,7 +146,7 @@ pub async fn start_proxy(
 /// exhaustion from a misbehaving sandbox process.
 async fn accept_loop(
     listener: TcpListener,
-    rules: Arc<Vec<NetworkRule>>,
+    allow_map: Arc<AllowMap>,
     denial_log: Option<Arc<DenialSender>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -145,10 +165,10 @@ async fn accept_loop(
                                 continue;
                             }
                         };
-                        let rules = Arc::clone(&rules);
+                        let allow_map = Arc::clone(&allow_map);
                         let denial_log = denial_log.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, peer_addr, &rules, denial_log.as_deref()).await {
+                            if let Err(e) = handle_connection(stream, peer_addr, &allow_map, denial_log.as_deref()).await {
                                 debug!("Proxy connection error from {}: {}", peer_addr, e);
                             }
                             drop(permit);
@@ -176,7 +196,7 @@ async fn accept_loop(
 async fn handle_connection(
     stream: TcpStream,
     _peer_addr: SocketAddr,
-    rules: &[NetworkRule],
+    allow_map: &AllowMap,
     denial_log: Option<&DenialSender>,
 ) -> MinoResult<()> {
     let mut peek_buf = [0u8; 1];
@@ -201,8 +221,8 @@ async fn handle_connection(
     }
 
     match peek_buf[0] {
-        0x05 => handle_socks5(stream, rules, denial_log).await,
-        _ => handle_http_connect(stream, rules, denial_log).await,
+        0x05 => handle_socks5(stream, allow_map, denial_log).await,
+        _ => handle_http_connect(stream, allow_map, denial_log).await,
     }
 }
 
@@ -232,7 +252,7 @@ fn validate_hostname(host: &str) -> MinoResult<()> {
 /// no-auth (method 0x00). Supports IPv4, IPv6, and domain address types.
 async fn handle_socks5(
     mut stream: TcpStream,
-    rules: &[NetworkRule],
+    allow_map: &AllowMap,
     denial_log: Option<&DenialSender>,
 ) -> MinoResult<()> {
     // --- Greeting phase ---
@@ -281,7 +301,7 @@ async fn handle_socks5(
     validate_hostname(&host)?;
 
     // --- Policy check ---
-    if !is_allowed(&host, port, rules) {
+    if !is_allowed(&host, port, allow_map) {
         debug!("SOCKS5 denied: {}:{}", host, port);
         if let Some(tx) = denial_log {
             let _ = tx.send((host.clone(), port));
@@ -418,7 +438,7 @@ fn build_socks5_success_reply(target: &TcpStream) -> Vec<u8> {
 /// oversized HTTP request headers.
 async fn handle_http_connect(
     mut stream: TcpStream,
-    rules: &[NetworkRule],
+    allow_map: &AllowMap,
     denial_log: Option<&DenialSender>,
 ) -> MinoResult<()> {
     let mut buf = [0u8; MAX_REQUEST_SIZE];
@@ -447,7 +467,7 @@ async fn handle_http_connect(
     let (host, port) = parse_connect_request(&request)?;
     validate_hostname(&host)?;
 
-    if !is_allowed(&host, port, rules) {
+    if !is_allowed(&host, port, allow_map) {
         debug!("HTTP CONNECT denied: {}:{}", host, port);
         if let Some(tx) = denial_log {
             let _ = tx.send((host.clone(), port));
@@ -532,15 +552,14 @@ async fn try_connect(target_addr: &str) -> ConnectResult {
     }
 }
 
-/// Check whether a host:port pair is allowed by the rule set.
+/// Check whether a host:port pair is allowed by the pre-built allow map.
 ///
-/// Empty rules = deny all (secure default). Both host and port must match.
+/// Empty map = deny all (secure default). Both host and port must match.
 /// Hostname comparison is case-insensitive per RFC 4343.
-fn is_allowed(host: &str, port: u16, rules: &[NetworkRule]) -> bool {
-    let host_lower = host.to_ascii_lowercase();
-    rules
-        .iter()
-        .any(|r| r.host.to_ascii_lowercase() == host_lower && r.port == port)
+fn is_allowed(host: &str, port: u16, allow_map: &AllowMap) -> bool {
+    allow_map
+        .get(&host.to_ascii_lowercase())
+        .map_or(false, |ports| ports.contains(&port))
 }
 
 /// Bidirectional TCP relay with graceful half-close.
@@ -602,27 +621,28 @@ mod tests {
     #[test]
     fn is_allowed_matching_rule_returns_true() {
         let rules = vec![rule("github.com", 443)];
-        assert!(is_allowed("github.com", 443, &rules));
+        assert!(is_allowed("github.com", 443, &build_allow_map(&rules)));
     }
 
     #[test]
     fn is_allowed_no_matching_rule_returns_false() {
         let rules = vec![rule("github.com", 443)];
-        assert!(!is_allowed("evil.com", 443, &rules));
+        assert!(!is_allowed("evil.com", 443, &build_allow_map(&rules)));
     }
 
     #[test]
     fn is_allowed_empty_rules_returns_false() {
-        assert!(!is_allowed("github.com", 443, &[]));
+        assert!(!is_allowed("github.com", 443, &build_allow_map(&[])));
     }
 
     #[test]
     fn is_allowed_checks_both_host_and_port() {
         let rules = vec![rule("github.com", 443)];
+        let map = build_allow_map(&rules);
         // Right host, wrong port
-        assert!(!is_allowed("github.com", 80, &rules));
+        assert!(!is_allowed("github.com", 80, &map));
         // Wrong host, right port
-        assert!(!is_allowed("evil.com", 443, &rules));
+        assert!(!is_allowed("evil.com", 443, &map));
     }
 
     #[test]
@@ -632,18 +652,34 @@ mod tests {
             rule("npmjs.org", 443),
             rule("github.com", 22),
         ];
-        assert!(is_allowed("github.com", 443, &rules));
-        assert!(is_allowed("npmjs.org", 443, &rules));
-        assert!(is_allowed("github.com", 22, &rules));
-        assert!(!is_allowed("npmjs.org", 22, &rules));
+        let map = build_allow_map(&rules);
+        assert!(is_allowed("github.com", 443, &map));
+        assert!(is_allowed("npmjs.org", 443, &map));
+        assert!(is_allowed("github.com", 22, &map));
+        assert!(!is_allowed("npmjs.org", 22, &map));
     }
 
     #[test]
     fn is_allowed_case_insensitive() {
         let rules = vec![rule("GitHub.Com", 443)];
-        assert!(is_allowed("github.com", 443, &rules));
-        assert!(is_allowed("GITHUB.COM", 443, &rules));
-        assert!(is_allowed("GitHub.Com", 443, &rules));
+        let map = build_allow_map(&rules);
+        assert!(is_allowed("github.com", 443, &map));
+        assert!(is_allowed("GITHUB.COM", 443, &map));
+        assert!(is_allowed("GitHub.Com", 443, &map));
+    }
+
+    #[test]
+    fn build_allow_map_groups_by_host() {
+        let rules = vec![
+            rule("github.com", 443),
+            rule("github.com", 22),
+            rule("npmjs.org", 443),
+        ];
+        let map = build_allow_map(&rules);
+        assert_eq!(map.len(), 2); // 2 unique hosts
+        assert!(map["github.com"].contains(&443));
+        assert!(map["github.com"].contains(&22));
+        assert!(map["npmjs.org"].contains(&443));
     }
 
     // ---- parse_connect_request tests ----
