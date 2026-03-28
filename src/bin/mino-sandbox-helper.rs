@@ -627,13 +627,19 @@ fn exec_command(command: &[String], env: Option<&HashMap<String, String>>) -> st
 /// Set up signal forwarding to child process
 ///
 /// # Safety
-/// Installs C-style signal handlers via libc::signal.
+/// Installs signal handlers via `sigaction(2)` with `SA_RESTART`.
 /// Must be called only once, from the parent process after fork().
 #[cfg(unix)]
 unsafe fn setup_signal_forwarding(child_pid: i32) {
     CHILD_PID.store(child_pid, Ordering::SeqCst);
-    libc::signal(libc::SIGINT, forward_signal as *const () as usize);
-    libc::signal(libc::SIGTERM, forward_signal as *const () as usize);
+
+    let mut action: libc::sigaction = std::mem::zeroed();
+    action.sa_sigaction = forward_signal as *const () as usize;
+    action.sa_flags = libc::SA_RESTART;
+    libc::sigemptyset(&mut action.sa_mask);
+
+    libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut());
+    libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut());
 }
 
 /// Global child PID for signal forwarding

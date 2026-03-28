@@ -29,6 +29,15 @@ impl StepResult {
     fn is_ok(self) -> bool {
         matches!(self, Self::AlreadyOk | Self::Installed)
     }
+
+    /// Whether this step represents a user-actionable issue.
+    ///
+    /// Returns true for `Failed` and `Skipped` but NOT for `Blocked`,
+    /// since blocked steps are cascading consequences of an upstream failure
+    /// and should not be counted separately in the issue total.
+    fn is_issue(self) -> bool {
+        matches!(self, Self::Failed | Self::Skipped)
+    }
 }
 
 /// Execute the setup command
@@ -93,7 +102,7 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
 
     // Step 1: Check Homebrew
     let homebrew_result = check_homebrew(ctx, args).await;
-    if !homebrew_result.is_ok() {
+    if homebrew_result.is_issue() {
         issues += 1;
     }
 
@@ -104,7 +113,7 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, "OrbStack", "Homebrew");
         StepResult::Blocked
     };
-    if !orbstack_result.is_ok() {
+    if orbstack_result.is_issue() {
         issues += 1;
     }
 
@@ -115,7 +124,7 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, "OrbStack Service", "OrbStack");
         StepResult::Blocked
     };
-    if !orbstack_running_result.is_ok() {
+    if orbstack_running_result.is_issue() {
         issues += 1;
     }
 
@@ -128,7 +137,7 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, &format!("Mino VM ({})", vm_name), "OrbStack");
         StepResult::Blocked
     };
-    if !vm_result.is_ok() {
+    if vm_result.is_issue() {
         issues += 1;
     }
 
@@ -139,7 +148,7 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, "Podman (in VM)", "VM");
         StepResult::Blocked
     };
-    if !podman_result.is_ok() {
+    if podman_result.is_issue() {
         issues += 1;
     }
 
@@ -150,7 +159,7 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, "Rootless Mode (in VM)", "Podman");
         StepResult::Blocked
     };
-    if !rootless_result.is_ok() {
+    if rootless_result.is_issue() {
         issues += 1;
     }
 
@@ -178,7 +187,7 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
 
     // Step 1: Check/install Podman
     let podman_result = check_native_podman(ctx, args).await;
-    if !podman_result.is_ok() {
+    if podman_result.is_issue() {
         issues += 1;
     }
 
@@ -189,7 +198,7 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
         ui::step_blocked(ctx, "Rootless Mode", "Podman");
         StepResult::Blocked
     };
-    if !rootless_result.is_ok() {
+    if rootless_result.is_issue() {
         issues += 1;
     }
 
@@ -200,7 +209,7 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
         ui::step_blocked(ctx, "User Namespaces", "Rootless Mode");
         StepResult::Blocked
     };
-    if !userns_result.is_ok() {
+    if userns_result.is_issue() {
         issues += 1;
     }
 
@@ -873,7 +882,7 @@ async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()>
     // Summary
     let issues = [user_result, helper_result, sudoers_result, pf_result]
         .iter()
-        .filter(|r| !r.is_ok())
+        .filter(|r| r.is_issue())
         .count();
 
     if issues > 0 {
@@ -1347,13 +1356,13 @@ async fn setup_native_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()>
 
     // Step 1: Verify user namespace support
     let userns_result = check_user_namespaces(ctx, args).await;
-    if userns_result == StepResult::Failed || userns_result == StepResult::Skipped {
+    if userns_result.is_issue() {
         issues += 1;
     }
 
     // Step 2: Check unshare is available
     let unshare_result = check_unshare(ctx).await;
-    if unshare_result == StepResult::Failed {
+    if unshare_result.is_issue() {
         issues += 1;
     }
 
@@ -1485,5 +1494,16 @@ mod tests {
         assert!(!StepResult::Failed.is_ok());
         assert!(!StepResult::Skipped.is_ok());
         assert!(!StepResult::Blocked.is_ok());
+    }
+
+    #[test]
+    fn step_result_is_issue() {
+        // Only Failed and Skipped are user-actionable issues.
+        // Blocked is a cascading consequence and should not inflate the count.
+        assert!(!StepResult::AlreadyOk.is_issue());
+        assert!(!StepResult::Installed.is_issue());
+        assert!(StepResult::Failed.is_issue());
+        assert!(StepResult::Skipped.is_issue());
+        assert!(!StepResult::Blocked.is_issue());
     }
 }
