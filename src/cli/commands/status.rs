@@ -392,8 +392,8 @@ pub(crate) fn is_stale_native_session(session: &Session) -> bool {
 
 /// Clean up stale native sessions — mark them as Failed.
 ///
-/// Returns the number of sessions cleaned up. On macOS, also attempts
-/// to remove ACLs and pf rules for the stale session.
+/// Returns the number of sessions cleaned up. Also performs
+/// platform-specific cleanup (e.g., ACLs and pf rules on macOS).
 pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> {
     let sessions = Session::list_all().await?;
     let stale: Vec<_> = sessions
@@ -415,22 +415,19 @@ pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> 
             session.process_id
         );
 
-        // On macOS, attempt to clean up ACLs and pf rules via the helper
-        #[cfg(target_os = "macos")]
-        {
+        // Clean up sandbox resources (ACLs, pf rules) via trait dispatch.
+        // On Linux this is a no-op; on macOS it removes ACLs and pf rules.
+        if let Ok(platform) = crate::sandbox::native::create_sandbox_platform() {
             let sandbox_user = session
                 .sandbox_user
                 .as_deref()
                 .unwrap_or(crate::sandbox::config::DEFAULT_SANDBOX_USER);
-            if let Err(e) = crate::sandbox::macos::cleanup_macos_sandbox(
-                &session.name,
-                &session.project_dir,
-                sandbox_user,
-            )
-            .await
+            if let Err(e) = platform
+                .cleanup(&session.name, &session.project_dir, sandbox_user)
+                .await
             {
                 tracing::warn!(
-                    "Failed to clean up macOS sandbox for session {}: {}",
+                    "Failed to clean up sandbox for session {}: {}",
                     session.name,
                     e
                 );

@@ -77,7 +77,10 @@ pub fn parse_network_rule(s: &str) -> MinoResult<NetworkRule> {
         )));
     }
 
-    Ok(NetworkRule { host, port })
+    Ok(NetworkRule {
+        host: host.to_ascii_lowercase(),
+        port,
+    })
 }
 
 /// Parse a mode string ("host", "none", "bridge") into a `NetworkMode`.

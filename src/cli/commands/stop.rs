@@ -270,15 +270,15 @@ mod tests {
         }
 
         #[test]
-        fn stop_native_uses_sigterm_by_default() {
-            // We can't directly verify the signal type without a real process,
-            // but we verify the function completes without error for a dead PID
+        fn stop_native_graceful_dead_pid_ok() {
+            // Verify graceful stop (SIGTERM path) tolerates a dead PID (ESRCH)
             let result = stop_native_session(u32::MAX - 2, false);
             assert!(result.is_ok());
         }
 
         #[test]
-        fn stop_native_uses_sigkill_when_forced() {
+        fn stop_native_force_dead_pid_ok() {
+            // Verify forced stop (SIGKILL path) tolerates a dead PID (ESRCH)
             let result = stop_native_session(u32::MAX - 2, true);
             assert!(result.is_ok());
         }

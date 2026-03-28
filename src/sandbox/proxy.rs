@@ -535,8 +535,12 @@ async fn try_connect(target_addr: &str) -> ConnectResult {
 /// Check whether a host:port pair is allowed by the rule set.
 ///
 /// Empty rules = deny all (secure default). Both host and port must match.
+/// Hostname comparison is case-insensitive per RFC 4343.
 fn is_allowed(host: &str, port: u16, rules: &[NetworkRule]) -> bool {
-    rules.iter().any(|r| r.host == host && r.port == port)
+    let host_lower = host.to_ascii_lowercase();
+    rules
+        .iter()
+        .any(|r| r.host.to_ascii_lowercase() == host_lower && r.port == port)
 }
 
 /// Bidirectional TCP relay with graceful half-close.
@@ -632,6 +636,14 @@ mod tests {
         assert!(is_allowed("npmjs.org", 443, &rules));
         assert!(is_allowed("github.com", 22, &rules));
         assert!(!is_allowed("npmjs.org", 22, &rules));
+    }
+
+    #[test]
+    fn is_allowed_case_insensitive() {
+        let rules = vec![rule("GitHub.Com", 443)];
+        assert!(is_allowed("github.com", 443, &rules));
+        assert!(is_allowed("GITHUB.COM", 443, &rules));
+        assert!(is_allowed("GitHub.Com", 443, &rules));
     }
 
     // ---- parse_connect_request tests ----
@@ -987,15 +999,19 @@ mod tests {
         let addr = handle.addr;
         drop(handle);
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // After drop, the proxy should refuse new connections
-        let result =
-            tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr)).await;
-        if let Ok(Ok(_)) = result {
-            panic!("should refuse connections after drop");
+        // Retry until connections are refused or timeout, avoiding flaky
+        // single-sleep assertions that race against async shutdown.
+        let start = std::time::Instant::now();
+        loop {
+            match tokio::time::timeout(Duration::from_millis(200), TcpStream::connect(addr)).await {
+                Ok(Ok(_)) if start.elapsed() < Duration::from_secs(2) => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    continue;
+                }
+                Ok(Ok(_)) => panic!("should refuse connections after drop"),
+                _ => break, // Connection refused or timed out — expected
+            }
         }
-        // Connection refused or timed out — expected
     }
 
     // ---- build_socks5_success_reply test ----

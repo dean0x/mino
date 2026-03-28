@@ -11,7 +11,9 @@ use tokio::process::Command;
 use tracing::debug;
 
 use crate::error::{MinoError, MinoResult};
-use crate::sandbox::helper_protocol::{AclEntry, HelperRequest, HelperResponse, ResourceLimitsDto};
+use crate::sandbox::helper_protocol::{AclEntry, HelperRequest, ResourceLimitsDto};
+#[cfg(test)]
+use crate::sandbox::helper_protocol::HelperResponse;
 use crate::sandbox::native::{SandboxPlatform, SandboxSpawnConfig};
 use crate::sandbox::process::SandboxProcess;
 use crate::sandbox::resource_limits::ResourceLimits;
@@ -80,7 +82,7 @@ async fn exec_macos(
 const HELPER_BINARY: &str = "/usr/local/bin/mino-sandbox-helper";
 
 /// Validate macOS prerequisites for native sandbox
-pub async fn validate_macos_setup() -> MinoResult<()> {
+pub(crate) async fn validate_macos_setup() -> MinoResult<()> {
     // Run independent checks in parallel (installed + user exists)
     let (installed, user) = tokio::join!(
         check_helper_installed(),
@@ -140,7 +142,7 @@ async fn check_sandbox_user_exists(username: &str) -> MinoResult<()> {
 }
 
 /// Build ACL entries from a SandboxSpawnConfig
-pub fn build_acl_entries(config: &SandboxSpawnConfig) -> Vec<AclEntry> {
+pub(crate) fn build_acl_entries(config: &SandboxSpawnConfig) -> Vec<AclEntry> {
     let mut acl_paths = Vec::new();
 
     // Project dir: read-write
@@ -169,7 +171,7 @@ pub fn build_acl_entries(config: &SandboxSpawnConfig) -> Vec<AclEntry> {
 }
 
 /// Spawn a macOS sandbox via the privileged helper
-pub async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<SandboxProcess> {
+pub(crate) async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<SandboxProcess> {
     let resource_limits = ResourceLimits::from_config(&config.sandbox_config);
     let acl_paths = build_acl_entries(&config);
 
@@ -229,7 +231,7 @@ pub async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
 }
 
 /// Clean up a macOS sandbox session (ACLs, pf rules)
-pub async fn cleanup_macos_sandbox(
+pub(crate) async fn cleanup_macos_sandbox(
     session_id: &str,
     project_dir: &Path,
     sandbox_user: &str,
@@ -269,7 +271,8 @@ pub async fn cleanup_macos_sandbox(
 }
 
 /// Parse JSON response from helper stdout
-pub fn parse_helper_response(stdout: &[u8]) -> MinoResult<HelperResponse> {
+#[cfg(test)]
+fn parse_helper_response(stdout: &[u8]) -> MinoResult<HelperResponse> {
     let text = String::from_utf8_lossy(stdout);
     serde_json::from_str(text.trim()).map_err(|e| {
         MinoError::SandboxHelper(format!(
@@ -277,18 +280,6 @@ pub fn parse_helper_response(stdout: &[u8]) -> MinoResult<HelperResponse> {
             e, text
         ))
     })
-}
-
-/// Validate that a username is safe for embedding in pf rules.
-///
-/// pf usernames must be alphanumeric plus underscore/hyphen. Rejects any
-/// characters that could inject additional pf directives (spaces, newlines,
-/// braces, etc.).
-fn validate_pf_username(username: &str) -> bool {
-    !username.is_empty()
-        && username
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Generate pf anchor rules for the sandbox
@@ -299,17 +290,12 @@ fn validate_pf_username(username: &str) -> bool {
 /// - Loopback proxy connection (if proxy_port is specified)
 ///
 /// Returns an error if `sandbox_user` contains characters that could inject pf rules.
-pub fn generate_pf_rules(
+pub(crate) fn generate_pf_rules(
     sandbox_user: &str,
     _session_id: &str,
     proxy_port: Option<u16>,
 ) -> MinoResult<String> {
-    if !validate_pf_username(sandbox_user) {
-        return Err(MinoError::Internal(format!(
-            "sandbox_user '{}' contains invalid characters for pf rules",
-            sandbox_user
-        )));
-    }
+    crate::sandbox::config::validate_sandbox_user(sandbox_user)?;
 
     let mut rules = String::new();
 
@@ -349,27 +335,48 @@ pub fn generate_pf_rules(
 /// Uses `create_new(true)` (O_CREAT | O_EXCL) so the open fails if the file
 /// already exists, preventing symlink attacks where an attacker pre-creates
 /// a symlink at the target path.
+///
+/// If the file already exists (e.g., stale from a previous crash), verifies it
+/// is not a symlink before removing it and retrying. This closes the TOCTOU
+/// window that would exist if we blindly removed before creating.
 async fn write_restricted_file(path: &std::path::Path, content: &str) -> MinoResult<()> {
     use std::fs::OpenOptions;
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
-    // Remove any stale file from a previous run (e.g., crash) so that
-    // create_new succeeds. This is safe because we own the path pattern.
-    let _ = std::fs::remove_file(path);
-
-    let mut opts = OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    opts.mode(0o600);
-
     let path = path.to_path_buf();
     let content = content.to_string();
     let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         use std::io::Write;
-        let mut f = opts.open(&path)?;
-        f.write_all(content.as_bytes())?;
-        Ok(())
+
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+
+        match opts.open(&path) {
+            Ok(mut f) => {
+                f.write_all(content.as_bytes())?;
+                Ok(())
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Stale file from a previous run — verify it is not a symlink
+                // before removing to prevent symlink-following attacks.
+                if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                    if meta.file_type().is_symlink() {
+                        return Err(std::io::Error::other(format!(
+                            "refusing to overwrite symlink at {}",
+                            path.display()
+                        )));
+                    }
+                }
+                std::fs::remove_file(&path)?;
+                let mut f = opts.open(&path)?;
+                f.write_all(content.as_bytes())?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     })
     .await
     .map_err(|e| MinoError::io("spawning restricted file writer", e.into()))?;
@@ -549,14 +556,14 @@ mod tests {
     fn pf_rules_user_with_spaces_returns_error() {
         // A username with spaces would break pf rule syntax — must be rejected
         let err = generate_pf_rules("bad user", "sess-1", None).unwrap_err();
-        assert!(err.to_string().contains("invalid characters for pf rules"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
     fn pf_rules_user_with_newline_returns_error() {
         // A username with newline could inject additional pf rules
         let err = generate_pf_rules("_mino\npass out quick", "sess-1", None).unwrap_err();
-        assert!(err.to_string().contains("invalid characters for pf rules"));
+        assert!(err.to_string().contains("invalid characters"));
     }
 
     #[test]
@@ -567,22 +574,6 @@ mod tests {
 
         let rules = generate_pf_rules("sandbox-user", "sess-1", None).unwrap();
         assert!(rules.contains("user sandbox-user"));
-    }
-
-    #[test]
-    fn validate_pf_username_accepts_valid() {
-        assert!(validate_pf_username("_mino_agent"));
-        assert!(validate_pf_username("sandbox-user"));
-        assert!(validate_pf_username("user123"));
-    }
-
-    #[test]
-    fn validate_pf_username_rejects_invalid() {
-        assert!(!validate_pf_username(""));
-        assert!(!validate_pf_username("bad user"));
-        assert!(!validate_pf_username("user\n"));
-        assert!(!validate_pf_username("user;drop"));
-        assert!(!validate_pf_username("user{tcp}"));
     }
 
     #[test]

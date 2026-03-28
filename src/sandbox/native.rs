@@ -123,10 +123,22 @@ mod tests {
             );
         }
 
-        // On Linux, the result depends on the system configuration
+        // On Linux, validate_setup checks for user namespaces and `unshare`.
+        // CI/dev machines may or may not have these, so accept either outcome
+        // but verify errors are the expected type (not a panic or unexpected variant).
         #[cfg(target_os = "linux")]
         {
-            let _ = result;
+            if let Err(ref e) = result {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("user namespaces")
+                        || msg.contains("unshare")
+                        || msg.contains("not found"),
+                    "unexpected error on Linux: {}",
+                    msg
+                );
+            }
+            // Ok is also valid — means the system has full namespace support
         }
     }
 

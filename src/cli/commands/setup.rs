@@ -1093,20 +1093,8 @@ async fn configure_sudoers(ctx: &UiContext, args: &SetupArgs) -> StepResult {
         .unwrap_or_else(|_| std::env::var("LOGNAME").unwrap_or_else(|_| "unknown".to_string()));
 
     // Validate username to prevent injection into sudoers file.
-    // Only allow alphanumeric, underscore, and hyphen; max 32 chars.
-    if username.is_empty()
-        || username.len() > 32
-        || !username
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        ui::step_error(
-            ctx,
-            &format!(
-                "Invalid username '{}' for sudoers (must be 1-32 alphanumeric/underscore/hyphen chars)",
-                username
-            ),
-        );
+    if let Err(e) = crate::sandbox::config::validate_sandbox_user(&username) {
+        ui::step_error(ctx, &e.to_string());
         return StepResult::Failed;
     }
 

@@ -87,6 +87,8 @@ async fn verify_pid_ownership(pid: u32) -> MinoResult<()> {
         .await
         .map_err(|e| MinoError::io(format!("reading /proc/{}/status", pid), e))?;
 
+    // SAFETY: getuid() is always safe — it has no preconditions and
+    // simply returns the real UID of the calling process.
     let expected_uid = unsafe { libc::getuid() };
 
     for line in content.lines() {
@@ -146,7 +148,7 @@ const ROOT_DIRS: &[&str] = &[
 ];
 
 /// Validate Linux prerequisites for native sandbox
-pub async fn validate_linux_setup() -> MinoResult<()> {
+pub(crate) async fn validate_linux_setup() -> MinoResult<()> {
     check_user_namespaces().await?;
     check_unshare_available().await?;
     Ok(())
@@ -194,7 +196,7 @@ async fn check_unshare_available() -> MinoResult<()> {
 }
 
 /// Spawn a Linux sandbox using user namespaces + pivot_root
-pub async fn spawn_linux_sandbox(config: SandboxSpawnConfig) -> MinoResult<SandboxProcess> {
+pub(crate) async fn spawn_linux_sandbox(config: SandboxSpawnConfig) -> MinoResult<SandboxProcess> {
     let resource_limits = ResourceLimits::from_config(&config.sandbox_config);
     let setup_script = generate_setup_script(&config, &resource_limits)?;
 

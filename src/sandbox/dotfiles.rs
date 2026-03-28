@@ -19,7 +19,7 @@ const RISKY_DOTFILES: &[&str] = &[
 /// Removes entire `[credential]` and `[credential "..."]` sections,
 /// which typically contain `helper = ...` lines that could leak tokens.
 /// All other configuration (name, email, aliases, etc.) is preserved.
-pub fn strip_gitconfig_secrets(content: &str) -> String {
+pub(crate) fn strip_gitconfig_secrets(content: &str) -> String {
     let mut result = Vec::new();
     let mut in_credential_section = false;
 
@@ -60,7 +60,7 @@ pub fn strip_gitconfig_secrets(content: &str) -> String {
 }
 
 /// Check if a dotfile path is known-risky (may contain auth tokens)
-pub fn is_risky_dotfile(path: &str) -> bool {
+pub(crate) fn is_risky_dotfile(path: &str) -> bool {
     RISKY_DOTFILES.iter().any(|risky| path.ends_with(risky))
 }
 
@@ -68,7 +68,7 @@ pub fn is_risky_dotfile(path: &str) -> bool {
 ///
 /// Dispatches to the appropriate secret-stripping function based on the
 /// dotfile path. Unknown files are returned as-is.
-pub fn prepare_dotfile_content(dotfile_path: &str, content: &str) -> String {
+pub(crate) fn prepare_dotfile_content(dotfile_path: &str, content: &str) -> String {
     if dotfile_path.ends_with(".gitconfig") {
         strip_gitconfig_secrets(content)
     } else {
