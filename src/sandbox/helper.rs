@@ -4,7 +4,7 @@
 //! (chmod, pfctl) without actually executing them. The helper binary imports
 //! these to avoid duplicating logic.
 
-use crate::error::MinoResult;
+use crate::error::{MinoError, MinoResult};
 use crate::session::validate_session_name;
 use std::collections::HashMap;
 use std::path::Path;
@@ -62,10 +62,13 @@ pub fn build_child_env(
     base_env: &HashMap<String, String>,
     home_dir: &Path,
     sandbox_user: &str,
-) -> Result<HashMap<String, String>, String> {
-    let home = home_dir
-        .to_str()
-        .ok_or_else(|| format!("Home directory path contains invalid UTF-8: {:?}", home_dir))?;
+) -> MinoResult<HashMap<String, String>> {
+    let home = home_dir.to_str().ok_or_else(|| {
+        MinoError::Internal(format!(
+            "Home directory path contains invalid UTF-8: {:?}",
+            home_dir
+        ))
+    })?;
     let mut env = base_env.clone();
     env.insert("HOME".to_string(), home.to_string());
     env.insert("USER".to_string(), sandbox_user.to_string());
@@ -79,31 +82,27 @@ pub fn build_child_env(
 /// UniqueID: 502
 /// PrimaryGroupID: 20
 /// ```
-pub fn parse_dscl_ids(output: &str) -> Result<(u32, u32), String> {
+pub fn parse_dscl_ids(output: &str) -> MinoResult<(u32, u32)> {
     let mut uid: Option<u32> = None;
     let mut gid: Option<u32> = None;
 
     for line in output.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix("UniqueID:") {
-            uid = Some(
-                value
-                    .trim()
-                    .parse()
-                    .map_err(|_| format!("Non-numeric UniqueID: {}", value.trim()))?,
-            );
+            uid = Some(value.trim().parse().map_err(|_| {
+                MinoError::Internal(format!("Non-numeric UniqueID: {}", value.trim()))
+            })?);
         } else if let Some(value) = line.strip_prefix("PrimaryGroupID:") {
-            gid = Some(
-                value
-                    .trim()
-                    .parse()
-                    .map_err(|_| format!("Non-numeric PrimaryGroupID: {}", value.trim()))?,
-            );
+            gid = Some(value.trim().parse().map_err(|_| {
+                MinoError::Internal(format!("Non-numeric PrimaryGroupID: {}", value.trim()))
+            })?);
         }
     }
 
-    let uid = uid.ok_or_else(|| "Missing UniqueID in dscl output".to_string())?;
-    let gid = gid.ok_or_else(|| "Missing PrimaryGroupID in dscl output".to_string())?;
+    let uid =
+        uid.ok_or_else(|| MinoError::Internal("Missing UniqueID in dscl output".to_string()))?;
+    let gid = gid
+        .ok_or_else(|| MinoError::Internal("Missing PrimaryGroupID in dscl output".to_string()))?;
     Ok((uid, gid))
 }
 
@@ -115,10 +114,13 @@ pub fn parse_dscl_ids(output: &str) -> Result<(u32, u32), String> {
 pub fn build_exec_env(
     home_dir: &Path,
     sandbox_user: &str,
-) -> Result<HashMap<String, String>, String> {
-    let home = home_dir
-        .to_str()
-        .ok_or_else(|| format!("Home directory path contains invalid UTF-8: {:?}", home_dir))?;
+) -> MinoResult<HashMap<String, String>> {
+    let home = home_dir.to_str().ok_or_else(|| {
+        MinoError::Internal(format!(
+            "Home directory path contains invalid UTF-8: {:?}",
+            home_dir
+        ))
+    })?;
     let mut env = HashMap::new();
     env.insert("HOME".to_string(), home.to_string());
     env.insert("USER".to_string(), sandbox_user.to_string());
@@ -253,34 +255,34 @@ mod tests {
     #[test]
     fn parse_dscl_ids_missing_uid() {
         let output = "PrimaryGroupID: 20\n";
-        let err = parse_dscl_ids(output).unwrap_err();
+        let err = parse_dscl_ids(output).unwrap_err().to_string();
         assert!(err.contains("Missing UniqueID"));
     }
 
     #[test]
     fn parse_dscl_ids_missing_gid() {
         let output = "UniqueID: 502\n";
-        let err = parse_dscl_ids(output).unwrap_err();
+        let err = parse_dscl_ids(output).unwrap_err().to_string();
         assert!(err.contains("Missing PrimaryGroupID"));
     }
 
     #[test]
     fn parse_dscl_ids_non_numeric_uid() {
         let output = "UniqueID: abc\nPrimaryGroupID: 20\n";
-        let err = parse_dscl_ids(output).unwrap_err();
+        let err = parse_dscl_ids(output).unwrap_err().to_string();
         assert!(err.contains("Non-numeric UniqueID"));
     }
 
     #[test]
     fn parse_dscl_ids_non_numeric_gid() {
         let output = "UniqueID: 502\nPrimaryGroupID: xyz\n";
-        let err = parse_dscl_ids(output).unwrap_err();
+        let err = parse_dscl_ids(output).unwrap_err().to_string();
         assert!(err.contains("Non-numeric PrimaryGroupID"));
     }
 
     #[test]
     fn parse_dscl_ids_empty_output() {
-        let err = parse_dscl_ids("").unwrap_err();
+        let err = parse_dscl_ids("").unwrap_err().to_string();
         assert!(err.contains("Missing UniqueID"));
     }
 

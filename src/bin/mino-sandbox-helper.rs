@@ -262,7 +262,10 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     // 5. Fork + setgid + setuid + exec
     #[cfg(unix)]
     {
-        // SAFETY: fork() is the only FFI call here
+        // SAFETY: fork() duplicates the process. The helper binary is single-threaded
+        // (no tokio runtime, no background threads), so there is no risk of duplicating
+        // locked mutexes. The child calls only async-signal-safe libc functions and
+        // process::exit/exec before returning control.
         let pid = unsafe { libc::fork() };
         if pid < 0 {
             return Err("fork() failed".to_string());
@@ -347,7 +350,7 @@ fn handle_exec(args: &[String]) -> Result<i32, String> {
     // Build minimal env for exec (don't inherit root's environment)
     let home_dir = PathBuf::from(format!("/tmp/mino-home-{}", parsed.session_id));
     let exec_env = helper::build_exec_env(&home_dir, parsed.sandbox_user)
-        .map_err(|e| format!("Failed to build exec env: {}", e))?;
+        .map_err(|e| format!("failed to build exec env: {}", e))?;
 
     // exec the command — this replaces the current process
     let err = exec_command(parsed.command, Some(&exec_env));
@@ -390,7 +393,7 @@ unsafe fn child_process(args: ChildArgs<'_>) -> ! {
     let final_env = match helper::build_child_env(args.env, args.home_dir, args.sandbox_user) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("[mino-helper] Failed to build child env: {}", e);
+            eprintln!("[mino-helper] failed to build child env: {}", e);
             process::exit(1);
         }
     };
@@ -534,7 +537,7 @@ fn get_user_ids(username: &str) -> Result<(u32, u32), String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    helper::parse_dscl_ids(&stdout)
+    helper::parse_dscl_ids(&stdout).map_err(|e| e.to_string())
 }
 
 /// Apply POSIX resource limits via setrlimit
@@ -673,10 +676,22 @@ fn copy_dotfiles(src: &Path, dest: &Path) {
             }
 
             if metadata.is_dir() {
-                let _ = std::fs::create_dir_all(&dest_path);
+                if let Err(e) = std::fs::create_dir_all(&dest_path) {
+                    eprintln!(
+                        "[mino-helper] failed to create dir {}: {}",
+                        dest_path.display(),
+                        e
+                    );
+                    continue;
+                }
                 copy_dotfiles(&src_path, &dest_path);
-            } else {
-                let _ = std::fs::copy(&src_path, &dest_path);
+            } else if let Err(e) = std::fs::copy(&src_path, &dest_path) {
+                eprintln!(
+                    "[mino-helper] failed to copy dotfile {} -> {}: {}",
+                    src_path.display(),
+                    dest_path.display(),
+                    e
+                );
             }
         }
     }
