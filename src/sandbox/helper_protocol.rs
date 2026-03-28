@@ -38,7 +38,7 @@ pub enum HelperRequest {
 
 /// Default sandbox user for backward compatibility with older Cleanup requests.
 fn default_sandbox_user() -> String {
-    "_mino_agent".to_string()
+    super::config::DEFAULT_SANDBOX_USER.to_string()
 }
 
 /// ACL entry for a path
