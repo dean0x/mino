@@ -7,6 +7,12 @@ use crate::error::{MinoError, MinoResult};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Default sandbox user name on macOS.
+///
+/// Used as fallback when session records lack a `sandbox_user` field
+/// (e.g., sessions created before the field was added).
+pub const DEFAULT_SANDBOX_USER: &str = "_mino_agent";
+
 /// Paths that are ALWAYS blocked from passthrough (credential stores)
 const SENSITIVE_PATHS: &[&str] = &[
     ".ssh",
@@ -82,7 +88,7 @@ impl Default for SandboxConfig {
             max_processes: 256,
             max_cpu_seconds: 0,
             max_file_size_mb: 0,
-            sandbox_user: "_mino_agent".to_string(),
+            sandbox_user: DEFAULT_SANDBOX_USER.to_string(),
             cache_mode: CacheMode::ReadOnly,
             passthrough_paths: vec![],
             writable_paths: vec![],

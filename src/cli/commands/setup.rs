@@ -1,13 +1,12 @@
 //! Setup command - interactive prerequisite installation
 
+use crate::cli::args::SetupArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{OrbStack, Platform};
 use crate::ui::{self, UiContext};
 use std::process::Stdio;
 use tokio::process::Command;
-
-use super::super::args::SetupArgs;
 
 /// Setup step result for tracking what was done
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -832,7 +831,7 @@ async fn check_user_namespaces(ctx: &UiContext, args: &SetupArgs) -> StepResult 
 async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
     ui::section(ctx, "Native Sandbox Setup (macOS)");
 
-    let sandbox_user = "_mino_agent";
+    let sandbox_user = crate::sandbox::config::DEFAULT_SANDBOX_USER;
 
     // Step 1: Create system user
     let user_result = setup_sandbox_user(ctx, args, sandbox_user).await;
@@ -1243,7 +1242,7 @@ async fn configure_pf_anchor(ctx: &UiContext, args: &SetupArgs, sandbox_user: &s
 async fn uninstall_native_macos(ctx: &UiContext) -> MinoResult<()> {
     ui::section(ctx, "Removing native sandbox components...");
 
-    let sandbox_user = "_mino_agent";
+    let sandbox_user = crate::sandbox::config::DEFAULT_SANDBOX_USER;
 
     // 1. Kill any running processes owned by _mino_agent
     let kill_output = Command::new("sudo")

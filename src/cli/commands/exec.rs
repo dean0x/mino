@@ -114,7 +114,10 @@ async fn exec_native(session: &Session, command: &[String]) -> MinoResult<i32> {
     let pid = session
         .process_id
         .ok_or_else(|| MinoError::User("No process ID for this session".to_string()))?;
-    let sandbox_user = session.sandbox_user.as_deref().unwrap_or("_mino_agent");
+    let sandbox_user = session
+        .sandbox_user
+        .as_deref()
+        .unwrap_or(crate::sandbox::config::DEFAULT_SANDBOX_USER);
     platform
         .exec(pid, &session.name, sandbox_user, command)
         .await

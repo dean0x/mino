@@ -184,7 +184,12 @@ async fn handle_connection(
     let peek_result = tokio::time::timeout(REQUEST_READ_TIMEOUT, stream.peek(&mut peek_buf)).await;
 
     match peek_result {
-        Ok(Ok(_)) => {}
+        Ok(Ok(n)) if n > 0 => {}
+        Ok(Ok(_)) => {
+            return Err(MinoError::NetworkProxy(
+                "Connection closed before sending data".to_string(),
+            ));
+        }
         Ok(Err(e)) => {
             return Err(MinoError::NetworkProxy(format!("Peek error: {e}")));
         }

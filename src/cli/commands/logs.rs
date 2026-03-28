@@ -18,9 +18,7 @@ pub async fn execute(args: LogsArgs, config: &Config) -> MinoResult<()> {
         .await?
         .ok_or_else(|| MinoError::SessionNotFound(args.session.clone()))?;
 
-    let is_native = session.runtime_mode == Some(RuntimeMode::Native);
-
-    if is_native {
+    if session.runtime_mode == Some(RuntimeMode::Native) {
         let log_path = session
             .log_file
             .as_ref()
@@ -50,19 +48,20 @@ async fn read_log_tail(path: &Path, lines: u32) -> MinoResult<String> {
         .map_err(|e| MinoError::io(format!("reading log file {}", path.display()), e))?;
 
     let all_lines: Vec<&str> = content.lines().collect();
-    let start = if lines > 0 && all_lines.len() > lines as usize {
-        all_lines.len() - lines as usize
+    let count = lines as usize;
+    let start = if count > 0 && all_lines.len() > count {
+        all_lines.len() - count
     } else {
         0
     };
 
-    let mut output = String::new();
-    for line in &all_lines[start..] {
-        output.push_str(line);
-        output.push('\n');
-    }
-
-    Ok(output)
+    Ok(all_lines[start..]
+        .iter()
+        .fold(String::new(), |mut acc, line| {
+            acc.push_str(line);
+            acc.push('\n');
+            acc
+        }))
 }
 
 /// Follow a log file, printing new lines as they appear.

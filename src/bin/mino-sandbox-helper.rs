@@ -329,10 +329,6 @@ fn handle_exec(args: &[String]) -> Result<i32, String> {
 
     let (uid, gid) = get_user_ids(parsed.sandbox_user)?;
 
-    let sandbox_user = parsed.sandbox_user;
-    let session_id = parsed.session_id;
-    let command = parsed.command;
-
     #[cfg(unix)]
     unsafe {
         // Drop supplementary groups
@@ -358,12 +354,12 @@ fn handle_exec(args: &[String]) -> Result<i32, String> {
     }
 
     // Build minimal env for exec (don't inherit root's environment)
-    let home_dir = PathBuf::from(format!("/tmp/mino-home-{}", session_id));
-    let exec_env = helper::build_exec_env(&home_dir, sandbox_user)
+    let home_dir = PathBuf::from(format!("/tmp/mino-home-{}", parsed.session_id));
+    let exec_env = helper::build_exec_env(&home_dir, parsed.sandbox_user)
         .map_err(|e| format!("Failed to build exec env: {}", e))?;
 
     // exec the command — this replaces the current process
-    let err = exec_command(command, Some(&exec_env));
+    let err = exec_command(parsed.command, Some(&exec_env));
     Err(format!("exec failed: {}", err))
 }
 

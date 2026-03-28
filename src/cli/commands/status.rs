@@ -262,9 +262,13 @@ async fn check_native_sandbox_status(ctx: &UiContext, platform: &Platform) {
 }
 
 async fn check_native_sandbox_macos(ctx: &UiContext) {
-    // Check _mino_agent user exists
+    // Check sandbox user exists
     let user_exists = Command::new("dscl")
-        .args([".", "-read", "/Users/_mino_agent"])
+        .args([
+            ".",
+            "-read",
+            &format!("/Users/{}", crate::sandbox::config::DEFAULT_SANDBOX_USER),
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -414,7 +418,10 @@ pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> 
         // On macOS, attempt to clean up ACLs and pf rules via the helper
         #[cfg(target_os = "macos")]
         {
-            let sandbox_user = session.sandbox_user.as_deref().unwrap_or("_mino_agent");
+            let sandbox_user = session
+                .sandbox_user
+                .as_deref()
+                .unwrap_or(crate::sandbox::config::DEFAULT_SANDBOX_USER);
             if let Err(e) = crate::sandbox::macos::cleanup_macos_sandbox(
                 &session.name,
                 &session.project_dir,

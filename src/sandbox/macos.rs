@@ -81,11 +81,10 @@ const HELPER_BINARY: &str = "/usr/local/bin/mino-sandbox-helper";
 
 /// Validate macOS prerequisites for native sandbox
 pub async fn validate_macos_setup() -> MinoResult<()> {
-    let default_config = crate::sandbox::config::SandboxConfig::default();
     // Run independent checks in parallel (installed + user exists)
     let (installed, user) = tokio::join!(
         check_helper_installed(),
-        check_sandbox_user_exists(&default_config.sandbox_user),
+        check_sandbox_user_exists(crate::sandbox::config::DEFAULT_SANDBOX_USER),
     );
     installed?;
     // Version check depends on helper being installed, so run sequentially
