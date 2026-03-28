@@ -942,4 +942,316 @@ mod tests {
             err
         );
     }
+
+    // ---- load_request tests ----
+
+    #[test]
+    fn load_request_spawn_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("request.json");
+        let json = serde_json::to_string(&HelperRequest::Spawn {
+            session_id: "test-sess".to_string(),
+            project_dir: PathBuf::from("/tmp/project"),
+            env: HashMap::from([("FOO".to_string(), "bar".to_string())]),
+            command: vec!["echo".to_string(), "hello".to_string()],
+            resource_limits: ResourceLimitsDto {
+                max_memory_bytes: 1024,
+                max_processes: 64,
+                max_cpu_seconds: 300,
+                max_file_size_bytes: 1048576,
+            },
+            acl_paths: vec![AclEntry {
+                path: PathBuf::from("/tmp/project"),
+                writable: true,
+            }],
+            dotfile_dir: None,
+            home_dir: PathBuf::from("/tmp/mino-home-test-sess"),
+            sandbox_user: "_mino_agent".to_string(),
+        })
+        .unwrap();
+        std::fs::write(&file_path, &json).unwrap();
+
+        let cli_args = args(&[
+            "mino-sandbox-helper",
+            "spawn",
+            "--request-file",
+            file_path.to_str().unwrap(),
+        ]);
+        let request = load_request(&cli_args).unwrap();
+
+        match request {
+            HelperRequest::Spawn {
+                session_id,
+                command,
+                env,
+                sandbox_user,
+                ..
+            } => {
+                assert_eq!(session_id, "test-sess");
+                assert_eq!(command, vec!["echo", "hello"]);
+                assert_eq!(env.get("FOO").unwrap(), "bar");
+                assert_eq!(sandbox_user, "_mino_agent");
+            }
+            _ => panic!("expected Spawn variant"),
+        }
+
+        // File should be deleted after loading
+        assert!(
+            !file_path.exists(),
+            "request file should be deleted after loading"
+        );
+    }
+
+    #[test]
+    fn load_request_cleanup_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("cleanup.json");
+        let json = serde_json::to_string(&HelperRequest::Cleanup {
+            session_id: "sess-cleanup".to_string(),
+            project_dir: PathBuf::from("/home/user/proj"),
+            sandbox_user: "_mino_agent".to_string(),
+        })
+        .unwrap();
+        std::fs::write(&file_path, &json).unwrap();
+
+        let cli_args = args(&[
+            "mino-sandbox-helper",
+            "cleanup",
+            "--request-file",
+            file_path.to_str().unwrap(),
+        ]);
+        let request = load_request(&cli_args).unwrap();
+
+        match request {
+            HelperRequest::Cleanup {
+                session_id,
+                project_dir,
+                sandbox_user,
+            } => {
+                assert_eq!(session_id, "sess-cleanup");
+                assert_eq!(project_dir, PathBuf::from("/home/user/proj"));
+                assert_eq!(sandbox_user, "_mino_agent");
+            }
+            _ => panic!("expected Cleanup variant"),
+        }
+    }
+
+    #[test]
+    fn load_request_missing_flag() {
+        let cli_args = args(&["mino-sandbox-helper", "spawn"]);
+        let err = load_request(&cli_args).unwrap_err();
+        assert!(
+            err.contains("--request-file"),
+            "expected error about --request-file, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn load_request_nonexistent_file() {
+        let cli_args = args(&[
+            "mino-sandbox-helper",
+            "spawn",
+            "--request-file",
+            "/tmp/does-not-exist-mino-test.json",
+        ]);
+        let err = load_request(&cli_args).unwrap_err();
+        assert!(
+            err.contains("Failed to read"),
+            "expected read error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn load_request_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("bad.json");
+        std::fs::write(&file_path, "not valid json {{{").unwrap();
+
+        let cli_args = args(&[
+            "mino-sandbox-helper",
+            "spawn",
+            "--request-file",
+            file_path.to_str().unwrap(),
+        ]);
+        let err = load_request(&cli_args).unwrap_err();
+        assert!(
+            err.contains("Failed to parse"),
+            "expected parse error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn load_request_health_check_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("health.json");
+        let json = serde_json::to_string(&HelperRequest::HealthCheck).unwrap();
+        std::fs::write(&file_path, &json).unwrap();
+
+        let cli_args = args(&[
+            "mino-sandbox-helper",
+            "health-check",
+            "--request-file",
+            file_path.to_str().unwrap(),
+        ]);
+        let request = load_request(&cli_args).unwrap();
+        assert!(matches!(request, HelperRequest::HealthCheck));
+    }
+
+    // ---- copy_dotfiles tests ----
+
+    #[test]
+    fn copy_dotfiles_copies_regular_files() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Create regular files in source
+        std::fs::write(src.path().join(".bashrc"), "# bashrc content").unwrap();
+        std::fs::write(src.path().join(".profile"), "# profile content").unwrap();
+
+        copy_dotfiles(src.path(), dest.path());
+
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join(".bashrc")).unwrap(),
+            "# bashrc content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join(".profile")).unwrap(),
+            "# profile content"
+        );
+    }
+
+    #[test]
+    fn copy_dotfiles_skips_symlinks() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Create a regular file and a symlink
+        std::fs::write(src.path().join("regular.txt"), "real file").unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/passwd", src.path().join("dangerous-link")).unwrap();
+        }
+
+        copy_dotfiles(src.path(), dest.path());
+
+        // Regular file should be copied
+        assert!(dest.path().join("regular.txt").exists());
+
+        // Symlink should NOT be copied (security: prevent data exfiltration)
+        #[cfg(unix)]
+        assert!(
+            !dest.path().join("dangerous-link").exists(),
+            "symlinks must be skipped for security"
+        );
+    }
+
+    #[test]
+    fn copy_dotfiles_recurses_into_directories() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Create nested directory structure
+        std::fs::create_dir_all(src.path().join(".config").join("nvim")).unwrap();
+        std::fs::write(
+            src.path().join(".config").join("nvim").join("init.lua"),
+            "-- nvim config",
+        )
+        .unwrap();
+        std::fs::write(src.path().join(".config").join("starship.toml"), "# starship").unwrap();
+
+        copy_dotfiles(src.path(), dest.path());
+
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join(".config").join("nvim").join("init.lua"))
+                .unwrap(),
+            "-- nvim config"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join(".config").join("starship.toml")).unwrap(),
+            "# starship"
+        );
+    }
+
+    #[test]
+    fn copy_dotfiles_empty_source_is_noop() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Empty source directory -- should not error
+        copy_dotfiles(src.path(), dest.path());
+
+        // Dest should still be empty (only the dir itself)
+        let entries: Vec<_> = std::fs::read_dir(dest.path()).unwrap().collect();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn copy_dotfiles_nonexistent_source_is_noop() {
+        let dest = tempfile::tempdir().unwrap();
+        let nonexistent = PathBuf::from("/tmp/mino-test-nonexistent-dir-12345");
+
+        // Should not panic or error -- the function silently handles this
+        copy_dotfiles(&nonexistent, dest.path());
+    }
+
+    #[test]
+    fn copy_dotfiles_mixed_entries() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Regular file
+        std::fs::write(src.path().join(".gitconfig"), "[user]\n  name = Test").unwrap();
+
+        // Directory with content
+        std::fs::create_dir(src.path().join(".ssh")).unwrap();
+        std::fs::write(src.path().join(".ssh").join("config"), "Host *\n  AddKeysToAgent yes")
+            .unwrap();
+
+        // Symlink (should be skipped)
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/etc/hosts", src.path().join(".hosts-link")).unwrap();
+
+        copy_dotfiles(src.path(), dest.path());
+
+        // Regular file copied
+        assert!(dest.path().join(".gitconfig").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join(".gitconfig")).unwrap(),
+            "[user]\n  name = Test"
+        );
+
+        // Directory and its content copied
+        assert!(dest.path().join(".ssh").join("config").exists());
+
+        // Symlink not copied
+        #[cfg(unix)]
+        assert!(!dest.path().join(".hosts-link").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dotfiles_skips_symlink_in_nested_dir() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Create a directory with a symlink inside it
+        std::fs::create_dir(src.path().join("subdir")).unwrap();
+        std::fs::write(src.path().join("subdir").join("real.txt"), "content").unwrap();
+        std::os::unix::fs::symlink("/etc/shadow", src.path().join("subdir").join("sneaky")).unwrap();
+
+        copy_dotfiles(src.path(), dest.path());
+
+        // Real file should be copied
+        assert!(dest.path().join("subdir").join("real.txt").exists());
+
+        // Symlink in subdirectory should be skipped
+        assert!(
+            !dest.path().join("subdir").join("sneaky").exists(),
+            "symlinks in nested dirs must also be skipped"
+        );
+    }
 }
