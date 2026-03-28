@@ -406,6 +406,7 @@ pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> 
     }
 
     let manager = crate::session::SessionManager::new().await?;
+    let platform = crate::sandbox::native::create_sandbox_platform().ok();
     let mut cleaned = 0;
 
     for session in &stale {
@@ -417,7 +418,7 @@ pub async fn cleanup_stale_native_sessions() -> crate::error::MinoResult<usize> 
 
         // Clean up sandbox resources (ACLs, pf rules) via trait dispatch.
         // On Linux this is a no-op; on macOS it removes ACLs and pf rules.
-        if let Ok(platform) = crate::sandbox::native::create_sandbox_platform() {
+        if let Some(ref platform) = platform {
             let sandbox_user = session
                 .sandbox_user
                 .as_deref()

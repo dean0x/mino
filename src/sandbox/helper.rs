@@ -9,6 +9,17 @@ use crate::session::validate_session_name;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Convert a home directory path to a UTF-8 string, returning an error
+/// if the path contains non-UTF-8 bytes.
+fn home_dir_to_str(home_dir: &Path) -> MinoResult<&str> {
+    home_dir.to_str().ok_or_else(|| {
+        MinoError::Internal(format!(
+            "Home directory path contains invalid UTF-8: {:?}",
+            home_dir
+        ))
+    })
+}
+
 /// ACL permission string for macOS `chmod +a/-a` commands.
 fn acl_perms(writable: bool) -> &'static str {
     if writable {
@@ -63,12 +74,7 @@ pub fn build_child_env(
     home_dir: &Path,
     sandbox_user: &str,
 ) -> MinoResult<HashMap<String, String>> {
-    let home = home_dir.to_str().ok_or_else(|| {
-        MinoError::Internal(format!(
-            "Home directory path contains invalid UTF-8: {:?}",
-            home_dir
-        ))
-    })?;
+    let home = home_dir_to_str(home_dir)?;
     let mut env = base_env.clone();
     env.insert("HOME".to_string(), home.to_string());
     env.insert("USER".to_string(), sandbox_user.to_string());
@@ -115,12 +121,7 @@ pub fn build_exec_env(
     home_dir: &Path,
     sandbox_user: &str,
 ) -> MinoResult<HashMap<String, String>> {
-    let home = home_dir.to_str().ok_or_else(|| {
-        MinoError::Internal(format!(
-            "Home directory path contains invalid UTF-8: {:?}",
-            home_dir
-        ))
-    })?;
+    let home = home_dir_to_str(home_dir)?;
     let mut env = HashMap::new();
     env.insert("HOME".to_string(), home.to_string());
     env.insert("USER".to_string(), sandbox_user.to_string());
