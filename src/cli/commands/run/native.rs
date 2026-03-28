@@ -84,14 +84,16 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     };
 
     spawn_and_monitor(
-        &*platform,
+        SpawnMonitorCtx {
+            platform: &*platform,
+            config,
+            ui_ctx: &ctx,
+            spinner: &mut spinner,
+        },
         spawn_config,
         session_ctx,
         dotfile_dir,
         args.detach,
-        config,
-        &ctx,
-        &mut spinner,
     )
     .await
 }
@@ -275,23 +277,35 @@ async fn create_session_and_audit(
     })
 }
 
+/// Context for spawn_and_monitor, bundling references that were previously
+/// passed as individual arguments.
+struct SpawnMonitorCtx<'a> {
+    platform: &'a dyn SandboxPlatform,
+    config: &'a Config,
+    ui_ctx: &'a UiContext,
+    spinner: &'a mut TaskSpinner,
+}
+
 /// Spawn the sandbox process and monitor it (blocking for foreground, background for detach).
-#[allow(clippy::too_many_arguments)]
 async fn spawn_and_monitor(
-    platform: &dyn SandboxPlatform,
+    ctx: SpawnMonitorCtx<'_>,
     spawn_config: SandboxSpawnConfig,
-    ctx: SessionContext,
+    session_ctx: SessionContext,
     dotfile_dir: Option<PathBuf>,
     detach: bool,
-    config: &Config,
-    ui_ctx: &UiContext,
-    spinner: &mut TaskSpinner,
 ) -> MinoResult<()> {
+    let SpawnMonitorCtx {
+        platform,
+        config,
+        ui_ctx,
+        spinner,
+    } = ctx;
+
     let SessionContext {
         session_name,
         manager,
         audit,
-    } = ctx;
+    } = session_ctx;
 
     spinner.message("Starting native sandbox...");
 
