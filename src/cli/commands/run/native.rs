@@ -111,13 +111,15 @@ async fn validate_and_resolve(
     let project_dir = resolve_project_dir(args)?;
     debug!("Project directory: {}", project_dir.display());
 
+    let (cfg_network, cfg_allow, cfg_preset) =
+        crate::sandbox::config::resolve_sandbox_network(&config.sandbox, &config.container);
     let network_mode = resolve_network_mode(&NetworkResolutionInput {
         cli_network: args.network.as_deref(),
         cli_allow_rules: &args.network_allow,
         cli_preset: args.network_preset.as_deref(),
-        config_network: &config.container.network,
-        config_network_allow: &config.container.network_allow,
-        config_preset: config.container.network_preset.as_deref(),
+        config_network: cfg_network,
+        config_network_allow: cfg_allow,
+        config_preset: cfg_preset,
     })?;
     debug!("Network mode: {:?}", network_mode);
 
@@ -484,8 +486,13 @@ fn build_sandbox_env(
     // Credential env vars
     env.extend(credentials.clone());
 
-    // User-specified env vars from config
-    env.extend(config.container.env.clone());
+    // User-specified env vars from config (sandbox-specific overrides container)
+    let effective_env = config
+        .sandbox
+        .env
+        .as_ref()
+        .unwrap_or(&config.container.env);
+    env.extend(effective_env.clone());
 
     env
 }
@@ -825,5 +832,35 @@ mod tests {
             gitconfig_count, 1,
             "expected .gitconfig to appear only once"
         );
+    }
+
+    #[test]
+    fn build_sandbox_env_prefers_sandbox_env() {
+        let mut config = Config::default();
+        // Set container env
+        config
+            .container
+            .env
+            .insert("SHARED".to_string(), "from_container".to_string());
+        // Set sandbox-specific env that should take precedence
+        let mut sandbox_env = HashMap::new();
+        sandbox_env.insert("SHARED".to_string(), "from_sandbox".to_string());
+        sandbox_env.insert("SANDBOX_ONLY".to_string(), "yes".to_string());
+        config.sandbox.env = Some(sandbox_env);
+        let env = build_sandbox_env(&config, &HashMap::new());
+        assert_eq!(env.get("SHARED").unwrap(), "from_sandbox");
+        assert_eq!(env.get("SANDBOX_ONLY").unwrap(), "yes");
+    }
+
+    #[test]
+    fn build_sandbox_env_falls_back_to_container_env() {
+        let mut config = Config::default();
+        config
+            .container
+            .env
+            .insert("FROM_CONTAINER".to_string(), "hello".to_string());
+        // sandbox.env is None (default)
+        let env = build_sandbox_env(&config, &HashMap::new());
+        assert_eq!(env.get("FROM_CONTAINER").unwrap(), "hello");
     }
 }

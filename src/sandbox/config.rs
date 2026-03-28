@@ -3,8 +3,10 @@
 //! Defines configuration for native sandbox mode including resource limits,
 //! path validation, and security-sensitive path blocking.
 
+use crate::config::schema::ContainerConfig;
 use crate::error::{MinoError, MinoResult};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Default sandbox user name on macOS.
@@ -79,6 +81,18 @@ pub struct SandboxConfig {
 
     /// Allow mounting sensitive paths (overrides block list)
     pub allow_sensitive: bool,
+
+    /// Network mode for native sandbox (falls back to [container] network if None)
+    pub network: Option<String>,
+
+    /// Network allow rules for native sandbox (falls back to [container] if None)
+    pub network_allow: Option<Vec<String>>,
+
+    /// Network preset for native sandbox (falls back to [container] if None)
+    pub network_preset: Option<String>,
+
+    /// Environment variables for native sandbox (falls back to [container] if None)
+    pub env: Option<HashMap<String, String>>,
 }
 
 impl Default for SandboxConfig {
@@ -94,6 +108,10 @@ impl Default for SandboxConfig {
             writable_paths: vec![],
             dotfiles: vec![],
             allow_sensitive: false,
+            network: None,
+            network_allow: None,
+            network_preset: None,
+            env: None,
         }
     }
 }
@@ -148,6 +166,26 @@ pub fn validate_sandbox_paths(config: &SandboxConfig, home_dir: &Path) -> MinoRe
     validate_sandbox_user(&config.sandbox_user)?;
 
     Ok(())
+}
+
+/// Resolve effective network config for native sandbox.
+///
+/// Sandbox-specific values take precedence over container config.
+/// When a sandbox field is `None`, the corresponding container field is used.
+pub fn resolve_sandbox_network<'a>(
+    sandbox: &'a SandboxConfig,
+    container: &'a ContainerConfig,
+) -> (&'a str, &'a [String], Option<&'a str>) {
+    let network = sandbox.network.as_deref().unwrap_or(&container.network);
+    let allow = sandbox
+        .network_allow
+        .as_deref()
+        .unwrap_or(&container.network_allow);
+    let preset = sandbox
+        .network_preset
+        .as_deref()
+        .or(container.network_preset.as_deref());
+    (network, allow, preset)
 }
 
 /// Validate that the sandbox username contains only safe characters.
@@ -445,5 +483,89 @@ mod tests {
         };
         let err = validate_sandbox_paths(&config, &home).unwrap_err();
         assert!(err.to_string().contains("invalid characters"));
+    }
+
+    // ---- resolve_sandbox_network tests ----
+
+    #[test]
+    fn resolve_sandbox_network_prefers_sandbox_when_present() {
+        let sandbox = SandboxConfig {
+            network: Some("none".to_string()),
+            network_allow: Some(vec!["example.com:443".to_string()]),
+            network_preset: Some("dev".to_string()),
+            ..Default::default()
+        };
+        let container = crate::config::schema::ContainerConfig::default();
+        let (network, allow, preset) = resolve_sandbox_network(&sandbox, &container);
+        assert_eq!(network, "none");
+        assert_eq!(allow, &["example.com:443".to_string()]);
+        assert_eq!(preset, Some("dev"));
+    }
+
+    #[test]
+    fn resolve_sandbox_network_falls_back_to_container() {
+        let sandbox = SandboxConfig::default();
+        let mut container = crate::config::schema::ContainerConfig::default();
+        container.network = "host".to_string();
+        container.network_allow = vec!["api.example.com:443".to_string()];
+        container.network_preset = Some("registries".to_string());
+        let (network, allow, preset) = resolve_sandbox_network(&sandbox, &container);
+        assert_eq!(network, "host");
+        assert_eq!(allow, &["api.example.com:443".to_string()]);
+        assert_eq!(preset, Some("registries"));
+    }
+
+    #[test]
+    fn resolve_sandbox_network_mixed_override() {
+        let sandbox = SandboxConfig {
+            network: Some("none".to_string()),
+            // network_allow and network_preset are None -> fall back
+            ..Default::default()
+        };
+        let mut container = crate::config::schema::ContainerConfig::default();
+        container.network_allow = vec!["fallback.com:80".to_string()];
+        container.network_preset = Some("dev".to_string());
+        let (network, allow, preset) = resolve_sandbox_network(&sandbox, &container);
+        assert_eq!(network, "none");
+        assert_eq!(allow, &["fallback.com:80".to_string()]);
+        assert_eq!(preset, Some("dev"));
+    }
+
+    #[test]
+    fn sandbox_config_new_fields_default_to_none() {
+        let config = SandboxConfig::default();
+        assert!(config.network.is_none());
+        assert!(config.network_allow.is_none());
+        assert!(config.network_preset.is_none());
+        assert!(config.env.is_none());
+    }
+
+    #[test]
+    fn sandbox_config_deserializes_network_fields() {
+        let toml = r#"
+            network = "none"
+            network_allow = ["example.com:443"]
+            network_preset = "dev"
+        "#;
+        let config: SandboxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.network.as_deref(), Some("none"));
+        assert_eq!(
+            config.network_allow.as_ref().unwrap(),
+            &["example.com:443".to_string()]
+        );
+        assert_eq!(config.network_preset.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn sandbox_config_deserializes_env_field() {
+        let toml = r#"
+            [env]
+            MY_VAR = "my_value"
+            ANOTHER = "val2"
+        "#;
+        let config: SandboxConfig = toml::from_str(toml).unwrap();
+        let env = config.env.unwrap();
+        assert_eq!(env.get("MY_VAR").unwrap(), "my_value");
+        assert_eq!(env.get("ANOTHER").unwrap(), "val2");
     }
 }
