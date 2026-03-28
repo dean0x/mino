@@ -35,6 +35,18 @@ const SENSITIVE_CONTAINER_KEYS: &[&str] = &[
 /// On macOS, these control which OrbStack VM commands execute inside.
 const SENSITIVE_VM_KEYS: &[&str] = &["name", "distro"];
 
+/// Sandbox keys considered security-sensitive for trust gating.
+/// Controls resource limits, path access, and credential store overrides.
+const SENSITIVE_SANDBOX_KEYS: &[&str] = &[
+    "allow_sensitive",
+    "passthrough_paths",
+    "writable_paths",
+    "sandbox_user",
+    "max_memory_mb",
+    "max_processes",
+    "cache_mode",
+];
+
 /// A single trust entry keyed by file content hash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TrustEntry {
@@ -130,6 +142,7 @@ pub fn hash_content(bytes: &[u8]) -> String {
 const SENSITIVE_SECTIONS: &[(&str, &[&str])] = &[
     ("container", SENSITIVE_CONTAINER_KEYS),
     ("vm", SENSITIVE_VM_KEYS),
+    ("sandbox", SENSITIVE_SANDBOX_KEYS),
 ];
 
 /// Walk the parsed TOML value and check for sensitive key paths.
@@ -619,5 +632,113 @@ mod tests {
         assert!(summary.contains("container.image = \"evil:latest\""));
         assert!(summary.contains("vm.name = \"attacker\""));
         assert!(summary.contains("vm.distro = \"alpine\""));
+    }
+
+    #[test]
+    fn test_sandbox_allow_sensitive_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [sandbox]
+            allow_sensitive = true
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.allow_sensitive".to_string()));
+    }
+
+    #[test]
+    fn test_sandbox_passthrough_paths_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [sandbox]
+            passthrough_paths = ["/etc/shadow"]
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.passthrough_paths".to_string()));
+    }
+
+    #[test]
+    fn test_sandbox_writable_paths_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [sandbox]
+            writable_paths = ["/etc"]
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.writable_paths".to_string()));
+    }
+
+    #[test]
+    fn test_sandbox_user_is_sensitive() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [sandbox]
+            sandbox_user = "root"
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.sandbox_user".to_string()));
+    }
+
+    #[test]
+    fn test_sandbox_multiple_keys_detected() {
+        let value: toml::Value = toml::from_str(
+            r#"
+            [sandbox]
+            allow_sensitive = true
+            passthrough_paths = ["/etc/shadow"]
+            sandbox_user = "root"
+            max_memory_mb = 999999
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(analysis.has_sensitive());
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.allow_sensitive".to_string()));
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.passthrough_paths".to_string()));
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.sandbox_user".to_string()));
+        assert!(analysis
+            .fields
+            .contains(&"sandbox.max_memory_mb".to_string()));
+        assert_eq!(analysis.fields.len(), 4);
+    }
+
+    #[test]
+    fn test_sandbox_benign_key_not_flagged() {
+        // dotfiles and max_file_size_mb are not in the sensitive list
+        let value: toml::Value = toml::from_str(
+            r#"
+            [sandbox]
+            dotfiles = [".bashrc"]
+            max_file_size_mb = 100
+            "#,
+        )
+        .unwrap();
+        let analysis = analyze_sensitive_fields(&value);
+        assert!(!analysis.has_sensitive());
     }
 }

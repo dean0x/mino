@@ -4,6 +4,7 @@ use crate::cli::args::ExecArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{create_runtime, ContainerRuntime};
+use crate::sandbox::RuntimeMode;
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, UiContext};
 use console::style;
@@ -33,11 +34,17 @@ pub async fn execute(args: ExecArgs, config: &Config) -> MinoResult<()> {
         args.command
     };
 
-    let runtime = create_runtime(config)?;
-    let tty = std::io::stdin().is_terminal();
-    let exit_code = exec_in_session(&session, &*runtime, &command, tty).await?;
-
-    debug!(exit_code, "Container exec finished");
+    let exit_code = if session.runtime_mode == Some(RuntimeMode::Native) {
+        let code = exec_native(&session, &command).await?;
+        debug!(code, "Native exec finished");
+        code
+    } else {
+        let runtime = create_runtime(config)?;
+        let tty = std::io::stdin().is_terminal();
+        let code = exec_in_session(&session, &*runtime, &command, tty).await?;
+        debug!(code, "Container exec finished");
+        code
+    };
 
     if exit_code != 0 {
         std::process::exit((exit_code & 0xFF) as i32);
@@ -96,6 +103,24 @@ async fn exec_in_session(
         .ok_or_else(|| MinoError::ContainerNotFound(session.name.clone()))?;
 
     runtime.exec_in_container(container_id, command, tty).await
+}
+
+/// Execute a command inside a native sandbox session.
+///
+/// Uses the `SandboxPlatform` trait for platform dispatch, removing all
+/// `#[cfg]` blocks from this function.
+async fn exec_native(session: &Session, command: &[String]) -> MinoResult<i32> {
+    let platform = crate::sandbox::native::create_sandbox_platform()?;
+    let pid = session
+        .process_id
+        .ok_or_else(|| MinoError::User("No process ID for this session".to_string()))?;
+    let sandbox_user = session
+        .sandbox_user
+        .as_deref()
+        .unwrap_or(crate::sandbox::config::DEFAULT_SANDBOX_USER);
+    platform
+        .exec(pid, &session.name, sandbox_user, command)
+        .await
 }
 
 #[cfg(test)]
@@ -262,5 +287,17 @@ mod tests {
             .unwrap();
 
         runtime.assert_called_with("exec_in_container", &["cid", "true", "bash"]);
+    }
+
+    // -- exec_native tests --
+
+    #[tokio::test]
+    async fn exec_native_no_pid_errors() {
+        let mut session = test_session("s", SessionStatus::Running, None);
+        session.runtime_mode = Some(RuntimeMode::Native);
+        // process_id is None
+        let cmd = vec!["bash".to_string()];
+        let err = exec_native(&session, &cmd).await.unwrap_err();
+        assert!(err.to_string().contains("No process ID"));
     }
 }

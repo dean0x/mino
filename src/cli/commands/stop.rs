@@ -4,6 +4,7 @@ use crate::cli::args::StopArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::orchestration::{create_runtime, ContainerRuntime};
+use crate::sandbox::RuntimeMode;
 use crate::session::{Session, SessionManager, SessionStatus};
 use crate::ui::{self, TaskSpinner, UiContext};
 use console::style;
@@ -20,39 +21,58 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
         .await?
         .ok_or_else(|| MinoError::SessionNotFound(args.session.clone()))?;
 
+    let styled_name = style(&args.session).cyan();
+
     if !matches!(
         session.status,
         SessionStatus::Running | SessionStatus::Starting
     ) {
         ui::step_info(
             &ctx,
-            &format!(
-                "Session {} is already {}",
-                style(&args.session).cyan(),
-                session.status
-            ),
+            &format!("Session {} is already {}", styled_name, session.status),
         );
         return Ok(());
     }
 
-    // Stop container
-    if session.container_id.is_some() {
+    if session.runtime_mode == Some(RuntimeMode::Native) {
+        // Native mode: kill the process directly
+        if let Some(pid) = session.process_id {
+            let mut spinner = TaskSpinner::new(&ctx);
+            spinner.start(&format!("Stopping session {}...", styled_name));
+
+            stop_native_session(pid, args.force)?;
+
+            // Clean up sandbox resources (ACLs, pf rules) even if the helper's
+            // auto-cleanup didn't run (e.g., mino was killed externally)
+            if let Ok(platform) = crate::sandbox::native::create_sandbox_platform() {
+                let sandbox_user = session
+                    .sandbox_user
+                    .as_deref()
+                    .unwrap_or(crate::sandbox::config::DEFAULT_SANDBOX_USER);
+                if let Err(e) = platform
+                    .cleanup(&session.name, &session.project_dir, sandbox_user)
+                    .await
+                {
+                    warn!("Sandbox cleanup for session {}: {}", args.session, e);
+                }
+            }
+
+            spinner.stop(&format!("Session {} stopped", styled_name));
+        } else {
+            ui::step_ok(&ctx, &format!("Session {} stopped", styled_name));
+        }
+    } else if session.container_id.is_some() {
+        // Container mode: existing logic
         let runtime = create_runtime(config)?;
 
         let mut spinner = TaskSpinner::new(&ctx);
-        spinner.start(&format!(
-            "Stopping session {}...",
-            style(&args.session).cyan()
-        ));
+        spinner.start(&format!("Stopping session {}...", styled_name));
 
         stop_container(&session, &*runtime, args.force).await?;
 
-        spinner.stop(&format!("Session {} stopped", style(&args.session).cyan()));
+        spinner.stop(&format!("Session {} stopped", styled_name));
     } else {
-        ui::step_ok(
-            &ctx,
-            &format!("Session {} stopped", style(&args.session).cyan()),
-        );
+        ui::step_ok(&ctx, &format!("Session {} stopped", styled_name));
     }
 
     // Update session status
@@ -61,6 +81,37 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
         .await?;
 
     Ok(())
+}
+
+/// Stop a native sandbox process by sending a signal.
+///
+/// Sends SIGTERM (graceful) or SIGKILL (force). Tolerates ESRCH (process
+/// already exited) since the sandbox may have terminated on its own.
+fn stop_native_session(pid: u32, force: bool) -> MinoResult<()> {
+    #[cfg(unix)]
+    {
+        let raw_pid = crate::sandbox::process::pid_to_pid_t(pid)?;
+        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // SAFETY: libc::kill sends a signal to a process identified by PID.
+        // We have a valid PID from the session record. Both SIGTERM and SIGKILL
+        // are standard POSIX signals.
+        let result = unsafe { libc::kill(raw_pid, signal) };
+        if result != 0 {
+            let err = std::io::Error::last_os_error();
+            // ESRCH = no such process (already exited) — not an error
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                return Err(MinoError::io(format!("signaling PID {}", pid), err));
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, force);
+        Err(MinoError::NativeUnsupported {
+            feature: "process signals".to_string(),
+        })
+    }
 }
 
 /// Stop a session's container. Returns `Ok(true)` if a stop was performed,
@@ -113,6 +164,8 @@ async fn stop_container(
 mod tests {
     use super::*;
     use crate::orchestration::mock::{test_session, MockRuntime};
+
+    // -- Container stop tests --
 
     #[tokio::test]
     async fn stop_already_stopped_skips() {
@@ -192,5 +245,40 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("connection refused"));
+    }
+
+    // -- Native stop tests --
+
+    #[cfg(unix)]
+    mod native {
+        use super::*;
+
+        /// A PID that fits in i32 but almost certainly does not exist,
+        /// so libc::kill returns ESRCH.
+        const DEAD_PID: u32 = i32::MAX as u32;
+
+        #[test]
+        fn stop_native_esrch_returns_ok() {
+            // A valid-range PID that almost certainly doesn't exist triggers ESRCH
+            let result = stop_native_session(DEAD_PID, false);
+            assert!(result.is_ok(), "ESRCH should be tolerated");
+        }
+
+        #[test]
+        fn stop_native_force_with_dead_pid_returns_ok() {
+            let result = stop_native_session(DEAD_PID, true);
+            assert!(
+                result.is_ok(),
+                "ESRCH should be tolerated for force kill too"
+            );
+        }
+
+        #[test]
+        fn stop_native_rejects_out_of_range_pid() {
+            // u32 values above i32::MAX must be rejected to prevent kill(-1, sig)
+            let result = stop_native_session(u32::MAX, false);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
+        }
     }
 }
