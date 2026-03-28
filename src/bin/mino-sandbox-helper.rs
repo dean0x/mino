@@ -301,6 +301,10 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
         sandbox_user,
     } = params;
 
+    // 0. Validate sandbox_user before any ACL or filesystem operations.
+    //    This binary runs as root — reject malformed usernames immediately.
+    mino::sandbox::config::validate_sandbox_user(&sandbox_user).map_err(|e| e.to_string())?;
+
     // 1. Create home directory
     std::fs::create_dir_all(&home_dir).map_err(|e| format!("Failed to create home dir: {}", e))?;
 
