@@ -90,11 +90,12 @@ pub async fn execute(args: StopArgs, config: &Config) -> MinoResult<()> {
 fn stop_native_session(pid: u32, force: bool) -> MinoResult<()> {
     #[cfg(unix)]
     {
+        let raw_pid = crate::sandbox::process::pid_to_pid_t(pid)?;
         let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
         // SAFETY: libc::kill sends a signal to a process identified by PID.
         // We have a valid PID from the session record. Both SIGTERM and SIGKILL
         // are standard POSIX signals.
-        let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
+        let result = unsafe { libc::kill(raw_pid, signal) };
         if result != 0 {
             let err = std::io::Error::last_os_error();
             // ESRCH = no such process (already exited) — not an error
@@ -252,17 +253,20 @@ mod tests {
     mod native {
         use super::*;
 
+        /// A PID that fits in i32 but almost certainly does not exist,
+        /// so libc::kill returns ESRCH.
+        const DEAD_PID: u32 = i32::MAX as u32;
+
         #[test]
         fn stop_native_esrch_returns_ok() {
-            // PID 0 is special (signals process group), use a very large PID
-            // that almost certainly doesn't exist, triggering ESRCH
-            let result = stop_native_session(u32::MAX - 1, false);
+            // A valid-range PID that almost certainly doesn't exist triggers ESRCH
+            let result = stop_native_session(DEAD_PID, false);
             assert!(result.is_ok(), "ESRCH should be tolerated");
         }
 
         #[test]
         fn stop_native_force_with_dead_pid_returns_ok() {
-            let result = stop_native_session(u32::MAX - 1, true);
+            let result = stop_native_session(DEAD_PID, true);
             assert!(
                 result.is_ok(),
                 "ESRCH should be tolerated for force kill too"
@@ -272,15 +276,23 @@ mod tests {
         #[test]
         fn stop_native_graceful_dead_pid_ok() {
             // Verify graceful stop (SIGTERM path) tolerates a dead PID (ESRCH)
-            let result = stop_native_session(u32::MAX - 2, false);
+            let result = stop_native_session(DEAD_PID - 1, false);
             assert!(result.is_ok());
         }
 
         #[test]
         fn stop_native_force_dead_pid_ok() {
             // Verify forced stop (SIGKILL path) tolerates a dead PID (ESRCH)
-            let result = stop_native_session(u32::MAX - 2, true);
+            let result = stop_native_session(DEAD_PID - 1, true);
             assert!(result.is_ok());
+        }
+
+        #[test]
+        fn stop_native_rejects_out_of_range_pid() {
+            // u32 values above i32::MAX must be rejected to prevent kill(-1, sig)
+            let result = stop_native_session(u32::MAX, false);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
         }
     }
 }

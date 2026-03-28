@@ -8,6 +8,23 @@ use std::fmt;
 use std::path::PathBuf;
 use tokio::process::Child;
 
+/// Convert a PID stored as `u32` to `libc::pid_t` (`i32`) with bounds checking.
+///
+/// A bare `pid as libc::pid_t` is unsound: any u32 above `i32::MAX` wraps to a
+/// negative value via two's complement. `kill(-1, sig)` signals **every** process
+/// the caller owns, so an unchecked cast on a corrupted session file could be
+/// catastrophic.
+#[cfg(unix)]
+pub(crate) fn pid_to_pid_t(pid: u32) -> MinoResult<libc::pid_t> {
+    libc::pid_t::try_from(pid).map_err(|_| {
+        MinoError::Internal(format!(
+            "PID {} exceeds maximum valid value ({}); refusing to signal",
+            pid,
+            i32::MAX,
+        ))
+    })
+}
+
 /// Handle to a running sandboxed process
 ///
 /// Note: `Debug` is manually implemented because `tokio::process::Child`
@@ -81,9 +98,11 @@ impl SandboxProcess {
             ))
         })?;
 
+        let raw_pid = pid_to_pid_t(pid)?;
+
         // SAFETY: libc::kill sends a signal to a process. We have a valid PID
         // from the child process handle. SIGTERM is a standard termination signal.
-        let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        let ret = unsafe { libc::kill(raw_pid, libc::SIGTERM) };
         if ret != 0 {
             let err = std::io::Error::last_os_error();
             return Err(MinoError::io(
@@ -168,5 +187,35 @@ mod tests {
         process.terminate().await.unwrap();
         let status = process.wait().await.unwrap();
         assert_ne!(status, 0);
+    }
+
+    #[cfg(unix)]
+    mod pid_conversion {
+        use super::*;
+
+        #[test]
+        fn valid_pid_converts() {
+            assert_eq!(pid_to_pid_t(1).unwrap(), 1);
+            assert_eq!(pid_to_pid_t(12345).unwrap(), 12345);
+        }
+
+        #[test]
+        fn max_valid_pid_converts() {
+            let max = i32::MAX as u32;
+            assert_eq!(pid_to_pid_t(max).unwrap(), i32::MAX);
+        }
+
+        #[test]
+        fn above_i32_max_is_rejected() {
+            let above = (i32::MAX as u32) + 1;
+            let err = pid_to_pid_t(above).unwrap_err();
+            assert!(err.to_string().contains("exceeds maximum"));
+        }
+
+        #[test]
+        fn u32_max_is_rejected() {
+            let err = pid_to_pid_t(u32::MAX).unwrap_err();
+            assert!(err.to_string().contains("exceeds maximum"));
+        }
     }
 }

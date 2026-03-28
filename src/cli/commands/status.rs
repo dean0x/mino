@@ -454,9 +454,15 @@ pub(crate) fn is_pid_alive(pid: Option<u32>) -> bool {
             // A session with PID 0 is definitely stale.
             false
         }
-        // SAFETY: libc::kill with signal 0 does not send any signal — it only
-        // checks whether the process exists and we have permission to signal it.
-        Some(p) => unsafe { libc::kill(p as libc::pid_t, 0) == 0 },
+        Some(p) => {
+            // Validate PID fits in pid_t; an out-of-range value cannot be alive.
+            let Ok(raw_pid) = crate::sandbox::process::pid_to_pid_t(p) else {
+                return false;
+            };
+            // SAFETY: libc::kill with signal 0 does not send any signal — it only
+            // checks whether the process exists and we have permission to signal it.
+            unsafe { libc::kill(raw_pid, 0) == 0 }
+        }
         None => false,
     }
     #[cfg(not(unix))]
@@ -478,8 +484,15 @@ mod tests {
 
     #[test]
     fn is_pid_alive_dead_pid_returns_false() {
-        // Use a very large PID unlikely to exist
-        assert!(!is_pid_alive(Some(u32::MAX - 1)));
+        // Use a valid-range PID that almost certainly doesn't exist
+        assert!(!is_pid_alive(Some(i32::MAX as u32)));
+    }
+
+    #[test]
+    fn is_pid_alive_out_of_range_pid_returns_false() {
+        // PIDs above i32::MAX are out of range for pid_t and must return false
+        assert!(!is_pid_alive(Some(u32::MAX)));
+        assert!(!is_pid_alive(Some((i32::MAX as u32) + 1)));
     }
 
     #[cfg(unix)]
