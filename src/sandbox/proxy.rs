@@ -409,7 +409,7 @@ async fn handle_http_connect(
     rules: &[NetworkRule],
     denial_log: Option<&DenialSender>,
 ) -> MinoResult<()> {
-    let mut buf = vec![0u8; MAX_REQUEST_SIZE];
+    let mut buf = [0u8; MAX_REQUEST_SIZE];
 
     let read_result = tokio::time::timeout(REQUEST_READ_TIMEOUT, stream.read(&mut buf)).await;
 
