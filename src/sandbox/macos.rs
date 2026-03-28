@@ -56,7 +56,6 @@ async fn exec_macos(
     sandbox_user: &str,
     command: &[String],
 ) -> MinoResult<i32> {
-    let pid_str = pid.to_string();
     let status = Command::new("sudo")
         .arg(HELPER_BINARY)
         .arg("exec")
@@ -65,7 +64,7 @@ async fn exec_macos(
         .arg("--sandbox-user")
         .arg(sandbox_user)
         .arg("--pid")
-        .arg(pid_str)
+        .arg(pid.to_string())
         .arg("--")
         .args(command)
         .stdin(Stdio::inherit())
@@ -227,7 +226,7 @@ pub async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<Sandb
 /// Clean up a macOS sandbox session (ACLs, pf rules)
 pub async fn cleanup_macos_sandbox(
     session_id: &str,
-    project_dir: &std::path::Path,
+    project_dir: &Path,
     sandbox_user: &str,
 ) -> MinoResult<()> {
     let request = HelperRequest::Cleanup {

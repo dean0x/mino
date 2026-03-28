@@ -98,13 +98,8 @@ pub async fn execute(args: SetupArgs, config: &Config) -> MinoResult<()> {
 async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> MinoResult<()> {
     ui::section(ctx, "Checking prerequisites...");
 
-    let mut issues = 0;
-
     // Step 1: Check Homebrew
     let homebrew_result = check_homebrew(ctx, args).await;
-    if homebrew_result.is_issue() {
-        issues += 1;
-    }
 
     // Step 2: Check OrbStack
     let orbstack_result = if homebrew_result.is_ok() {
@@ -113,9 +108,6 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, "OrbStack", "Homebrew");
         StepResult::Blocked
     };
-    if orbstack_result.is_issue() {
-        issues += 1;
-    }
 
     // Step 3: Check OrbStack running
     let orbstack_running_result = if orbstack_result.is_ok() {
@@ -124,9 +116,6 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, "OrbStack Service", "OrbStack");
         StepResult::Blocked
     };
-    if orbstack_running_result.is_issue() {
-        issues += 1;
-    }
 
     // Step 4: Check VM exists
     let vm_name = &config.vm.name;
@@ -137,9 +126,6 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, &format!("Mino VM ({})", vm_name), "OrbStack");
         StepResult::Blocked
     };
-    if vm_result.is_issue() {
-        issues += 1;
-    }
 
     // Step 5: Check Podman in VM
     let podman_result = if vm_result.is_ok() {
@@ -148,9 +134,6 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, "Podman (in VM)", "VM");
         StepResult::Blocked
     };
-    if podman_result.is_issue() {
-        issues += 1;
-    }
 
     // Step 6: Check rootless Podman in VM
     let rootless_result = if podman_result.is_ok() {
@@ -159,11 +142,18 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
         ui::step_blocked(ctx, "Rootless Mode (in VM)", "Podman");
         StepResult::Blocked
     };
-    if rootless_result.is_issue() {
-        issues += 1;
-    }
 
     // Summary
+    let results = [
+        homebrew_result,
+        orbstack_result,
+        orbstack_running_result,
+        vm_result,
+        podman_result,
+        rootless_result,
+    ];
+    let issues = results.iter().filter(|r| r.is_issue()).count();
+
     if issues > 0 {
         if args.check {
             ui::outro_warn(
@@ -183,13 +173,8 @@ async fn setup_macos(ctx: &UiContext, args: &SetupArgs, config: &Config) -> Mino
 async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
     ui::section(ctx, "Checking prerequisites...");
 
-    let mut issues = 0;
-
     // Step 1: Check/install Podman
     let podman_result = check_native_podman(ctx, args).await;
-    if podman_result.is_issue() {
-        issues += 1;
-    }
 
     // Step 2: Check rootless mode
     let rootless_result = if podman_result.is_ok() {
@@ -198,9 +183,6 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
         ui::step_blocked(ctx, "Rootless Mode", "Podman");
         StepResult::Blocked
     };
-    if rootless_result.is_issue() {
-        issues += 1;
-    }
 
     // Step 3: Check user namespace support
     let userns_result = if rootless_result.is_ok() {
@@ -209,11 +191,11 @@ async fn setup_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
         ui::step_blocked(ctx, "User Namespaces", "Rootless Mode");
         StepResult::Blocked
     };
-    if userns_result.is_issue() {
-        issues += 1;
-    }
 
     // Summary
+    let results = [podman_result, rootless_result, userns_result];
+    let issues = results.iter().filter(|r| r.is_issue()).count();
+
     if issues > 0 {
         if args.check {
             ui::outro_warn(
@@ -1352,21 +1334,18 @@ async fn uninstall_native_macos(ctx: &UiContext) -> MinoResult<()> {
 async fn setup_native_linux(ctx: &UiContext, args: &SetupArgs) -> MinoResult<()> {
     ui::section(ctx, "Native Sandbox Setup (Linux)");
 
-    let mut issues = 0;
-
     // Step 1: Verify user namespace support
     let userns_result = check_user_namespaces(ctx, args).await;
-    if userns_result.is_issue() {
-        issues += 1;
-    }
 
     // Step 2: Check unshare is available
     let unshare_result = check_unshare(ctx).await;
-    if unshare_result.is_issue() {
-        issues += 1;
-    }
 
     // Summary
+    let issues = [userns_result, unshare_result]
+        .iter()
+        .filter(|r| r.is_issue())
+        .count();
+
     if issues > 0 {
         ui::outro_warn(
             ctx,

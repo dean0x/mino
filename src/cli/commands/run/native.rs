@@ -101,7 +101,7 @@ async fn validate_and_resolve(
     args: &RunArgs,
     config: &Config,
     platform: &dyn SandboxPlatform,
-    spinner: &mut TaskSpinner,
+    _spinner: &mut TaskSpinner,
 ) -> MinoResult<(PathBuf, NetworkMode)> {
     platform.validate_setup().await?;
     validate_native_flags(args)?;
@@ -122,10 +122,6 @@ async fn validate_and_resolve(
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     validate_sandbox_paths(&config.sandbox, &home_dir)?;
 
-    // spinner is passed by &mut reference — the caller controls its lifetime.
-    // No need to bind it here; using _ to indicate spinner is intentionally unused
-    // from this point forward.
-    let _ = spinner;
     Ok((project_dir, network_mode))
 }
 
