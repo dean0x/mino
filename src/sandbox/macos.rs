@@ -224,36 +224,9 @@ pub(crate) async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResul
         .spawn()
         .map_err(|e| MinoError::SandboxHelper(format!("Failed to spawn helper: {}", e)))?;
 
-    // Clean up the request file when the helper process exits (normal or crash).
-    // Capture child PID before moving child into SandboxProcess.
-    let request_file_cleanup = request_file.clone();
-    let child_id = child.id();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if let Some(pid) = child_id {
-                #[cfg(unix)]
-                {
-                    // SAFETY: kill(pid, 0) checks if process is alive without
-                    // sending a signal. Safe with any valid pid value.
-                    let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
-                    if !alive {
-                        break;
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = pid;
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                    break;
-                }
-            } else {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                break;
-            }
-        }
-        let _ = tokio::fs::remove_file(&request_file_cleanup).await;
-    });
+    // The helper binary deletes the request file immediately after reading it
+    // (mino-sandbox-helper.rs load_request). If the helper crashes before reading,
+    // write_restricted_file handles stale files on the next spawn. No polling needed.
 
     Ok(SandboxProcess::new(child, session_id_for_process))
 }
@@ -323,18 +296,22 @@ pub(crate) fn generate_pf_rules(
     // in order and `quick` stops processing on first match. If the block rule
     // came first, DNS and proxy pass rules would be unreachable.
 
-    // Allow DNS (system resolver)
-    rules.push_str(&format!(
-        "pass out quick proto udp to any port 53 user {}\n",
-        sandbox_user
-    ));
-    rules.push_str(&format!(
-        "pass out quick proto tcp to any port 53 user {}\n",
-        sandbox_user
-    ));
-
-    // If proxy port is set, allow connection to the proxy on localhost only
+    // DNS and proxy rules only when a proxy is active (--network-allow mode).
+    // Without a proxy port, we are in full-block mode (equivalent to
+    // NetworkMode::None) where all traffic including DNS should be blocked,
+    // matching the Linux namespace-based isolation behavior.
     if let Some(port) = proxy_port {
+        // Allow DNS (system resolver) — needed for the proxy to resolve hostnames
+        rules.push_str(&format!(
+            "pass out quick proto udp to any port 53 user {}\n",
+            sandbox_user
+        ));
+        rules.push_str(&format!(
+            "pass out quick proto tcp to any port 53 user {}\n",
+            sandbox_user
+        ));
+
+        // Allow connection to the filtering proxy on localhost only
         rules.push_str(&format!(
             "pass out quick proto tcp to 127.0.0.1 port {} user {}\n",
             port, sandbox_user
@@ -411,14 +388,13 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn pf_rules_without_proxy_blocks_all_allows_dns() {
+    fn pf_rules_without_proxy_blocks_all_including_dns() {
         let rules = generate_pf_rules("_mino_agent", "sess-1", None).unwrap();
 
         // Should block all TCP/UDP
         assert!(rules.contains("block out quick proto { tcp udp } user _mino_agent"));
-        // Should allow DNS on UDP and TCP
-        assert!(rules.contains("pass out quick proto udp to any port 53 user _mino_agent"));
-        assert!(rules.contains("pass out quick proto tcp to any port 53 user _mino_agent"));
+        // Without a proxy, DNS should also be blocked (matching Linux None mode)
+        assert!(!rules.contains("port 53"));
         // Should NOT have any localhost port rule
         assert!(!rules.contains("127.0.0.1 port"));
     }
