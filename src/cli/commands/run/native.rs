@@ -487,11 +487,7 @@ fn build_sandbox_env(
     env.extend(credentials.clone());
 
     // User-specified env vars from config (sandbox-specific overrides container)
-    let effective_env = config
-        .sandbox
-        .env
-        .as_ref()
-        .unwrap_or(&config.container.env);
+    let effective_env = config.sandbox.env.as_ref().unwrap_or(&config.container.env);
     env.extend(effective_env.clone());
 
     env

@@ -48,7 +48,10 @@ mod tests {
 
     #[test]
     fn parse_first_line_single_line() {
-        assert_eq!(parse_first_line("podman version 4.9.3"), "podman version 4.9.3");
+        assert_eq!(
+            parse_first_line("podman version 4.9.3"),
+            "podman version 4.9.3"
+        );
     }
 
     #[test]
@@ -120,7 +123,10 @@ mod tests {
 
     #[test]
     fn subid_entry_underscore_user() {
-        assert_eq!(generate_subid_entry("_mino_agent"), "_mino_agent:100000:65536");
+        assert_eq!(
+            generate_subid_entry("_mino_agent"),
+            "_mino_agent:100000:65536"
+        );
     }
 
     #[test]

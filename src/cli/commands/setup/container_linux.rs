@@ -91,8 +91,7 @@ async fn check_native_podman(ctx: &UiContext, args: &SetupArgs) -> StepResult {
                         if let Ok(out) = new_output {
                             if out.status.success() {
                                 let new_version = String::from_utf8_lossy(&out.stdout);
-                                let new_first_line =
-                                    super::helpers::parse_first_line(&new_version);
+                                let new_first_line = super::helpers::parse_first_line(&new_version);
                                 ui::step_ok_detail(ctx, "Podman upgraded", new_first_line.trim());
                             }
                         }

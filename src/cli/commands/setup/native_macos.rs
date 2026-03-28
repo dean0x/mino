@@ -630,7 +630,11 @@ mod tests {
 
     #[test]
     fn count_issues_one_failed() {
-        let results = [StepResult::AlreadyOk, StepResult::Failed, StepResult::Blocked];
+        let results = [
+            StepResult::AlreadyOk,
+            StepResult::Failed,
+            StepResult::Blocked,
+        ];
         // Only Failed counts, Blocked is a cascading consequence
         assert_eq!(count_setup_issues(&results), 1);
     }
@@ -644,7 +648,11 @@ mod tests {
     #[test]
     fn count_issues_blocked_not_counted() {
         // Blocked steps are NOT user-actionable issues
-        let results = [StepResult::Blocked, StepResult::Blocked, StepResult::Blocked];
+        let results = [
+            StepResult::Blocked,
+            StepResult::Blocked,
+            StepResult::Blocked,
+        ];
         assert_eq!(count_setup_issues(&results), 0);
     }
 
@@ -663,11 +671,7 @@ mod tests {
 
     #[test]
     fn count_issues_multiple_failures() {
-        let results = [
-            StepResult::Failed,
-            StepResult::Failed,
-            StepResult::Skipped,
-        ];
+        let results = [StepResult::Failed, StepResult::Failed, StepResult::Skipped];
         assert_eq!(count_setup_issues(&results), 3);
     }
 
@@ -675,5 +679,4 @@ mod tests {
     fn count_issues_empty() {
         assert_eq!(count_setup_issues(&[]), 0);
     }
-
 }
