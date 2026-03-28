@@ -268,7 +268,7 @@ async fn check_podman_in_vm(
     match output {
         Ok(out) if out.status.success() => {
             let version = String::from_utf8_lossy(&out.stdout);
-            let first_line = version.lines().next().unwrap_or("unknown");
+            let first_line = super::helpers::parse_first_line(&version);
             ui::step_ok_detail(ctx, "Podman installed in VM", first_line.trim());
 
             // Upgrade if requested
@@ -286,7 +286,7 @@ async fn check_podman_in_vm(
                     if let Ok(out) = new_output {
                         if out.status.success() {
                             let new_version = String::from_utf8_lossy(&out.stdout);
-                            let new_first_line = new_version.lines().next().unwrap_or("unknown");
+                            let new_first_line = super::helpers::parse_first_line(&new_version);
                             ui::step_ok_detail(ctx, "Podman upgraded", new_first_line.trim());
                         }
                     }
@@ -308,7 +308,7 @@ async fn check_podman_in_vm(
                 ui::remark(ctx, "Installing Podman...");
 
                 // For apt-based systems, we need to run update first
-                if vm_distro == "ubuntu" || vm_distro == "debian" {
+                if super::helpers::is_apt_based_distro(vm_distro) {
                     let update_success =
                         run_visible_orb(vm_name, &["sudo", "apt-get", "update"]).await;
                     if !update_success {
@@ -340,7 +340,7 @@ async fn check_podman_in_vm(
 /// Upgrade Podman in VM using the appropriate package manager
 async fn upgrade_podman_in_vm(ctx: &UiContext, vm_name: &str, vm_distro: &str) -> bool {
     // For apt-based systems, run update first
-    if vm_distro == "ubuntu" || vm_distro == "debian" {
+    if super::helpers::is_apt_based_distro(vm_distro) {
         let update_success = run_visible_orb(vm_name, &["sudo", "apt-get", "update"]).await;
         if !update_success {
             ui::remark(ctx, "Package update failed, skipping upgrade");
@@ -434,7 +434,10 @@ async fn check_rootless_mode_in_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &
 
     if !has_subuid {
         // Add subuid entry
-        let subuid_cmd = format!("echo '{}:100000:65536' | sudo tee -a /etc/subuid", username);
+        let subuid_cmd = format!(
+            "echo '{}' | sudo tee -a /etc/subuid",
+            super::helpers::generate_subid_entry(&username)
+        );
         let subuid_result = run_visible_orb(vm_name, &["sh", "-c", &subuid_cmd]).await;
         if !subuid_result {
             ui::step_error(ctx, "Failed to configure /etc/subuid");
@@ -444,7 +447,10 @@ async fn check_rootless_mode_in_vm(ctx: &UiContext, args: &SetupArgs, vm_name: &
 
     if !has_subgid {
         // Add subgid entry
-        let subgid_cmd = format!("echo '{}:100000:65536' | sudo tee -a /etc/subgid", username);
+        let subgid_cmd = format!(
+            "echo '{}' | sudo tee -a /etc/subgid",
+            super::helpers::generate_subid_entry(&username)
+        );
         let subgid_result = run_visible_orb(vm_name, &["sh", "-c", &subgid_cmd]).await;
         if !subgid_result {
             ui::step_error(ctx, "Failed to configure /etc/subgid");

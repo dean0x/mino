@@ -11,6 +11,8 @@ mod container_macos;
 mod native_linux;
 mod native_macos;
 
+mod helpers;
+
 use crate::cli::args::SetupArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};

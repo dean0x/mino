@@ -367,7 +367,7 @@ async fn configure_pf_anchor(ctx: &UiContext, args: &SetupArgs, sandbox_user: &s
 
     if let Ok(output) = pf_check {
         let anchors = String::from_utf8_lossy(&output.stdout);
-        if anchors.lines().any(|l| l.trim() == "mino") {
+        if super::helpers::anchor_registered(&anchors) {
             ui::step_ok(ctx, "pf anchor configured");
             return StepResult::AlreadyOk;
         }

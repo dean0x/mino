@@ -60,7 +60,7 @@ async fn check_native_podman(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     match output {
         Ok(out) if out.status.success() => {
             let version = String::from_utf8_lossy(&out.stdout);
-            let first_line = version.lines().next().unwrap_or("unknown");
+            let first_line = super::helpers::parse_first_line(&version);
             ui::step_ok_detail(ctx, "Podman", first_line.trim());
 
             // Upgrade if requested
@@ -92,7 +92,7 @@ async fn check_native_podman(ctx: &UiContext, args: &SetupArgs) -> StepResult {
                             if out.status.success() {
                                 let new_version = String::from_utf8_lossy(&out.stdout);
                                 let new_first_line =
-                                    new_version.lines().next().unwrap_or("unknown");
+                                    super::helpers::parse_first_line(&new_version);
                                 ui::step_ok_detail(ctx, "Podman upgraded", new_first_line.trim());
                             }
                         }
@@ -158,7 +158,7 @@ async fn check_rootless_mode(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            if stdout.trim() == "true" {
+            if super::helpers::is_rootless_mode(&stdout) {
                 ui::step_ok(ctx, "Rootless mode enabled");
                 StepResult::AlreadyOk
             } else {
