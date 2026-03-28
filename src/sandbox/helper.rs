@@ -72,6 +72,41 @@ pub fn build_child_env(
     env
 }
 
+/// Parse UID and GID from combined dscl output.
+///
+/// Expects output format from `dscl . -read /Users/<name> UniqueID PrimaryGroupID`:
+/// ```text
+/// UniqueID: 502
+/// PrimaryGroupID: 20
+/// ```
+pub fn parse_dscl_ids(output: &str) -> Result<(u32, u32), String> {
+    let mut uid: Option<u32> = None;
+    let mut gid: Option<u32> = None;
+
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("UniqueID:") {
+            uid = Some(
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("Non-numeric UniqueID: {}", value.trim()))?,
+            );
+        } else if let Some(value) = line.strip_prefix("PrimaryGroupID:") {
+            gid = Some(
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("Non-numeric PrimaryGroupID: {}", value.trim()))?,
+            );
+        }
+    }
+
+    let uid = uid.ok_or_else(|| "Missing UniqueID in dscl output".to_string())?;
+    let gid = gid.ok_or_else(|| "Missing PrimaryGroupID in dscl output".to_string())?;
+    Ok((uid, gid))
+}
+
 /// Build a minimal environment for exec into an existing sandbox session.
 ///
 /// Unlike `build_child_env`, this does not inherit the original request env.
@@ -192,6 +227,66 @@ mod tests {
     fn child_env_sandbox_user_in_user() {
         let env = build_child_env(&HashMap::new(), Path::new("/tmp"), "my-user");
         assert_eq!(env.get("USER").unwrap(), "my-user");
+    }
+
+    // ---- parse_dscl_ids tests ----
+
+    #[test]
+    fn parse_dscl_ids_valid() {
+        let output = "UniqueID: 502\nPrimaryGroupID: 20\n";
+        let (uid, gid) = parse_dscl_ids(output).unwrap();
+        assert_eq!(uid, 502);
+        assert_eq!(gid, 20);
+    }
+
+    #[test]
+    fn parse_dscl_ids_reversed_order() {
+        let output = "PrimaryGroupID: 20\nUniqueID: 502\n";
+        let (uid, gid) = parse_dscl_ids(output).unwrap();
+        assert_eq!(uid, 502);
+        assert_eq!(gid, 20);
+    }
+
+    #[test]
+    fn parse_dscl_ids_missing_uid() {
+        let output = "PrimaryGroupID: 20\n";
+        let err = parse_dscl_ids(output).unwrap_err();
+        assert!(err.contains("Missing UniqueID"));
+    }
+
+    #[test]
+    fn parse_dscl_ids_missing_gid() {
+        let output = "UniqueID: 502\n";
+        let err = parse_dscl_ids(output).unwrap_err();
+        assert!(err.contains("Missing PrimaryGroupID"));
+    }
+
+    #[test]
+    fn parse_dscl_ids_non_numeric_uid() {
+        let output = "UniqueID: abc\nPrimaryGroupID: 20\n";
+        let err = parse_dscl_ids(output).unwrap_err();
+        assert!(err.contains("Non-numeric UniqueID"));
+    }
+
+    #[test]
+    fn parse_dscl_ids_non_numeric_gid() {
+        let output = "UniqueID: 502\nPrimaryGroupID: xyz\n";
+        let err = parse_dscl_ids(output).unwrap_err();
+        assert!(err.contains("Non-numeric PrimaryGroupID"));
+    }
+
+    #[test]
+    fn parse_dscl_ids_empty_output() {
+        let err = parse_dscl_ids("").unwrap_err();
+        assert!(err.contains("Missing UniqueID"));
+    }
+
+    #[test]
+    fn parse_dscl_ids_extra_whitespace() {
+        let output = "UniqueID:   502  \n  PrimaryGroupID:   20  \n";
+        let (uid, gid) = parse_dscl_ids(output).unwrap();
+        assert_eq!(uid, 502);
+        assert_eq!(gid, 20);
     }
 
     // ---- build_exec_env tests ----

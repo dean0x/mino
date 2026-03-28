@@ -49,6 +49,86 @@ struct ChildArgs<'a> {
     sandbox_user: &'a str,
 }
 
+/// Load a HelperRequest from the --request-file argument.
+///
+/// Reads and parses the JSON file, then deletes it immediately to minimize
+/// the time credentials sit on disk.
+fn load_request(args: &[String]) -> Result<HelperRequest, String> {
+    let request_file = args
+        .iter()
+        .position(|a| a == "--request-file")
+        .and_then(|i| args.get(i + 1))
+        .ok_or_else(|| "Missing --request-file argument".to_string())?;
+    let content = std::fs::read_to_string(request_file)
+        .map_err(|e| format!("Failed to read request file '{}': {}", request_file, e))?;
+    // Delete credential file immediately after reading — shortest time on disk
+    std::fs::remove_file(request_file).ok();
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse request: {}", e))
+}
+
+/// Parsed arguments for the exec subcommand.
+struct ExecArgs<'a> {
+    session_id: &'a str,
+    sandbox_user: &'a str,
+    command: &'a [String],
+}
+
+/// Parse exec subcommand arguments into an ExecArgs struct.
+fn parse_exec_args(args: &[String]) -> Result<ExecArgs<'_>, String> {
+    let mut session_id: Option<&str> = None;
+    let mut sandbox_user: Option<&str> = None;
+    let mut command_start: Option<usize> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--session-id" => {
+                session_id = args.get(i + 1).map(|s| s.as_str());
+                i += 2;
+            }
+            "--sandbox-user" => {
+                sandbox_user = args.get(i + 1).map(|s| s.as_str());
+                i += 2;
+            }
+            "--pid" => {
+                i += 2; // Accepted for compat, not used for exec
+            }
+            "--" => {
+                command_start = Some(i + 1);
+                break;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    let session_id = match session_id {
+        Some(id) if !id.is_empty() => id,
+        _ => return Err("Missing --session-id argument".to_string()),
+    };
+
+    let sandbox_user = match sandbox_user {
+        Some(u) if !u.is_empty() => u,
+        _ => return Err("Missing --sandbox-user argument".to_string()),
+    };
+
+    let command: &[String] = match command_start {
+        Some(idx) if idx < args.len() => &args[idx..],
+        _ => return Err("Missing command after '--'".to_string()),
+    };
+
+    if command.is_empty() {
+        return Err("Empty command".to_string());
+    }
+
+    Ok(ExecArgs {
+        session_id,
+        sandbox_user,
+        command,
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -65,35 +145,12 @@ fn main() {
 
     let action = &args[1];
 
-    // Find --request-file arg
-    let request_file = args
-        .iter()
-        .position(|a| a == "--request-file")
-        .and_then(|i| args.get(i + 1))
-        .map(PathBuf::from);
-
     let result: Result<i32, String> = match action.as_str() {
         "spawn" | "cleanup" => {
-            let request_file = match request_file {
-                Some(f) => f,
-                None => {
-                    print_error("Missing --request-file argument");
-                    process::exit(1);
-                }
-            };
-
-            let request_json = match std::fs::read_to_string(&request_file) {
-                Ok(s) => s,
-                Err(e) => {
-                    print_error(&format!("Failed to read request file: {}", e));
-                    process::exit(1);
-                }
-            };
-
-            let request: HelperRequest = match serde_json::from_str(&request_json) {
+            let request = match load_request(&args) {
                 Ok(r) => r,
-                Err(e) => {
-                    print_error(&format!("Failed to parse request: {}", e));
+                Err(msg) => {
+                    print_error(&msg);
                     process::exit(1);
                 }
             };
@@ -166,18 +223,11 @@ fn prepare_spawn(
     mino::sandbox::config::validate_sandbox_user(sandbox_user)
         .map_err(|e| e.to_string())?;
 
-    let uid = match get_user_uid(sandbox_user) {
-        Some(uid) => uid,
-        None => {
+    let (uid, gid) = match get_user_ids(sandbox_user) {
+        Ok(ids) => ids,
+        Err(e) => {
             cleanup_acls(acl_paths, Some(home_dir), sandbox_user);
-            return Err(format!("User '{}' not found", sandbox_user));
-        }
-    };
-    let gid = match get_user_gid(sandbox_user) {
-        Some(gid) => gid,
-        None => {
-            cleanup_acls(acl_paths, Some(home_dir), sandbox_user);
-            return Err(format!("GID for user '{}' not found", sandbox_user));
+            return Err(e);
         }
     };
 
@@ -221,27 +271,32 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
 
     // 5. Fork + setgid + setuid + exec
     #[cfg(unix)]
-    unsafe {
-        let pid = libc::fork();
+    {
+        // SAFETY: fork() is the only FFI call here
+        let pid = unsafe { libc::fork() };
         if pid < 0 {
             return Err("fork() failed".to_string());
         }
 
         if pid == 0 {
-            // Child process — never returns
-            child_process(ChildArgs {
-                uid: ready.uid,
-                gid: ready.gid,
-                resource_limits: &resource_limits,
-                env: &env,
-                home_dir: &home_dir,
-                project_dir: &project_dir,
-                command: &command,
-                sandbox_user: &sandbox_user,
-            });
+            // SAFETY: child process after fork — single-threaded, owned resources
+            unsafe {
+                child_process(ChildArgs {
+                    uid: ready.uid,
+                    gid: ready.gid,
+                    resource_limits: &resource_limits,
+                    env: &env,
+                    home_dir: &home_dir,
+                    project_dir: &project_dir,
+                    command: &command,
+                    sandbox_user: &sandbox_user,
+                });
+            }
         } else {
-            // Parent process — never returns
-            parent_process(pid, &acl_paths, &home_dir, &session_id, &sandbox_user);
+            // SAFETY: parent process — monitors child, handles signals
+            unsafe {
+                parent_process(pid, &acl_paths, &home_dir, &session_id, &sandbox_user);
+            }
         }
     }
 
@@ -260,69 +315,25 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
 ///
 /// Usage: mino-sandbox-helper exec --session-id <id> --sandbox-user <user> [--pid <pid>] -- <command...>
 fn handle_exec(args: &[String]) -> Result<i32, String> {
-    let mut session_id: Option<&str> = None;
-    let mut sandbox_user: Option<&str> = None;
-    let mut command_start: Option<usize> = None;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--session-id" => {
-                session_id = args.get(i + 1).map(|s| s.as_str());
-                i += 2;
-            }
-            "--sandbox-user" => {
-                sandbox_user = args.get(i + 1).map(|s| s.as_str());
-                i += 2;
-            }
-            "--pid" => {
-                // Accepted for logging but not used for exec
-                i += 2;
-            }
-            "--" => {
-                command_start = Some(i + 1);
-                break;
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
-
-    let session_id = match session_id {
-        Some(id) if !id.is_empty() => id,
-        _ => return Err("Missing --session-id argument".to_string()),
-    };
+    let parsed = parse_exec_args(args)?;
 
     // Validate session_id using the library function
-    validate_session_name(session_id).map_err(|e| format!("Invalid session_id: {}", e))?;
+    validate_session_name(parsed.session_id)
+        .map_err(|e| format!("Invalid session_id: {}", e))?;
 
-    let sandbox_user = match sandbox_user {
-        Some(u) if !u.is_empty() => u,
-        _ => return Err("Missing --sandbox-user argument".to_string()),
-    };
-
-    mino::sandbox::config::validate_sandbox_user(sandbox_user)
+    mino::sandbox::config::validate_sandbox_user(parsed.sandbox_user)
         .map_err(|e| format!("Invalid sandbox_user: {}", e))?;
-
-    let command: &[String] = match command_start {
-        Some(idx) if idx < args.len() => &args[idx..],
-        _ => return Err("Missing command after '--'".to_string()),
-    };
-
-    if command.is_empty() {
-        return Err("Empty command".to_string());
-    }
 
     eprintln!(
         "[mino-helper] exec session={} command={:?}",
-        session_id, &command[0]
+        parsed.session_id, &parsed.command[0]
     );
 
-    let uid =
-        get_user_uid(sandbox_user).ok_or_else(|| format!("User '{}' not found", sandbox_user))?;
-    let gid = get_user_gid(sandbox_user)
-        .ok_or_else(|| format!("GID for user '{}' not found", sandbox_user))?;
+    let (uid, gid) = get_user_ids(parsed.sandbox_user)?;
+
+    let sandbox_user = parsed.sandbox_user;
+    let session_id = parsed.session_id;
+    let command = parsed.command;
 
     #[cfg(unix)]
     unsafe {
@@ -498,7 +509,9 @@ fn cleanup_acls(acl_paths: &[AclEntry], home_dir: Option<&Path>, sandbox_user: &
 }
 
 fn remove_acl(path: &Path, sandbox_user: &str) -> Result<(), String> {
-    let path_str = path.to_str().unwrap_or("");
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| format!("Path contains invalid UTF-8: {:?}", path))?;
 
     // Remove read-write ACL
     let rw_args = helper::build_remove_acl_args(path_str, sandbox_user, true);
@@ -511,39 +524,25 @@ fn remove_acl(path: &Path, sandbox_user: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn get_user_uid(username: &str) -> Option<u32> {
-    let output = std::process::Command::new("dscl")
-        .args([".", "-read", &format!("/Users/{}", username), "UniqueID"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Output format: "UniqueID: 502"
-    stdout.split_whitespace().last()?.parse().ok()
-}
-
-fn get_user_gid(username: &str) -> Option<u32> {
+/// Look up both UID and GID for a macOS user in a single dscl call.
+fn get_user_ids(username: &str) -> Result<(u32, u32), String> {
     let output = std::process::Command::new("dscl")
         .args([
             ".",
             "-read",
             &format!("/Users/{}", username),
+            "UniqueID",
             "PrimaryGroupID",
         ])
         .output()
-        .ok()?;
+        .map_err(|e| format!("dscl failed: {}", e))?;
 
     if !output.status.success() {
-        return None;
+        return Err(format!("User '{}' not found", username));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Output format: "PrimaryGroupID: 20"
-    stdout.split_whitespace().last()?.parse().ok()
+    helper::parse_dscl_ids(&stdout)
 }
 
 /// Apply POSIX resource limits via setrlimit
