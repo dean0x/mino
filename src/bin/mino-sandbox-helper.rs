@@ -130,6 +130,48 @@ fn parse_exec_args(args: &[String]) -> Result<ExecArgs<'_>, String> {
     })
 }
 
+/// Parsed arguments for the cleanup subcommand.
+#[derive(Debug)]
+struct CleanupArgs<'a> {
+    session_id: &'a str,
+    project_dir: PathBuf,
+    sandbox_user: &'a str,
+}
+
+/// Parse cleanup subcommand arguments into a CleanupArgs struct.
+fn parse_cleanup_args(args: &[String]) -> Result<CleanupArgs<'_>, String> {
+    let mut session_id: Option<&str> = None;
+    let mut project_dir: Option<&str> = None;
+    let mut sandbox_user: Option<&str> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--session-id" => {
+                session_id = args.get(i + 1).map(|s| s.as_str());
+                i += 2;
+            }
+            "--project-dir" => {
+                project_dir = args.get(i + 1).map(|s| s.as_str());
+                i += 2;
+            }
+            "--sandbox-user" => {
+                sandbox_user = args.get(i + 1).map(|s| s.as_str());
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    Ok(CleanupArgs {
+        session_id: session_id.ok_or("Missing --session-id")?,
+        project_dir: PathBuf::from(project_dir.ok_or("Missing --project-dir")?),
+        sandbox_user: sandbox_user.ok_or("Missing --sandbox-user")?,
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -147,7 +189,7 @@ fn main() {
     let action = &args[1];
 
     let result: Result<i32, String> = match action.as_str() {
-        "spawn" | "cleanup" => {
+        "spawn" => {
             let request = match load_request(&args) {
                 Ok(r) => r,
                 Err(msg) => {
@@ -178,12 +220,34 @@ fn main() {
                     home_dir,
                     sandbox_user,
                 }),
-                HelperRequest::Cleanup {
-                    session_id,
-                    project_dir,
-                    sandbox_user,
-                } => handle_cleanup(&session_id, &project_dir, &sandbox_user).map(|()| 0),
-                HelperRequest::HealthCheck => respond_healthy(),
+                _ => Err("Expected Spawn request".into()),
+            }
+        }
+        "cleanup" => {
+            // Try CLI args first, fall back to request file for backward compat
+            match parse_cleanup_args(&args[2..]) {
+                Ok(parsed) => {
+                    handle_cleanup(parsed.session_id, &parsed.project_dir, parsed.sandbox_user)
+                        .map(|()| 0)
+                }
+                Err(_) => {
+                    // Fallback: try loading from request file
+                    let request = match load_request(&args) {
+                        Ok(r) => r,
+                        Err(msg) => {
+                            print_error(&msg);
+                            process::exit(1);
+                        }
+                    };
+                    match request {
+                        HelperRequest::Cleanup {
+                            session_id,
+                            project_dir,
+                            sandbox_user,
+                        } => handle_cleanup(&session_id, &project_dir, &sandbox_user).map(|()| 0),
+                        _ => Err("Expected Cleanup request".into()),
+                    }
+                }
             }
         }
         "exec" => handle_exec(&args[2..]),

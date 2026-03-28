@@ -260,17 +260,24 @@ fn escape_path_str(s: &str) -> MinoResult<String> {
 /// unexpected content. `|| :` prevents `set -e` from aborting if the path
 /// doesn't exist — readlink returns empty, `[ -d "" ]` is false, and the
 /// `&&` chain skips the mount.
-fn append_bind_mount(script: &mut String, root: &str, path_str: &str, readonly: bool) -> MinoResult<()> {
+fn append_bind_mount(
+    script: &mut String,
+    root: &str,
+    path_str: &str,
+    readonly: bool,
+) -> MinoResult<()> {
     let mount_point = path_str.trim_start_matches('/');
     let quoted = escape_path_str(path_str)?;
     let quoted_mount = escape_path_str(mount_point)?;
     let ro_flag = if readonly { "ro," } else { "" };
     use std::fmt::Write;
-    writeln!(script,
+    writeln!(
+        script,
         "REAL=$(readlink -f {quoted} 2>/dev/null || :) && [ -d \"$REAL\" ] && \
          mkdir -p {root}/{quoted_mount} && mount --bind \"$REAL\" {root}/{quoted_mount} && \
          mount -o remount,{ro_flag}nosuid,nodev,bind {root}/{quoted_mount}"
-    ).unwrap();
+    )
+    .unwrap();
     Ok(())
 }
 
@@ -721,12 +728,10 @@ mod tests {
 
         assert!(script.contains("readlink -f '/opt/toolchain'"));
         assert!(script.contains("mount --bind \"$REAL\" /tmp/mino-root-$$/'opt/toolchain'"));
-        assert!(script
-            .contains("remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'opt/toolchain'"));
+        assert!(script.contains("remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'opt/toolchain'"));
         assert!(script.contains("readlink -f '/usr/local/go'"));
         assert!(script.contains("mount --bind \"$REAL\" /tmp/mino-root-$$/'usr/local/go'"));
-        assert!(script
-            .contains("remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'usr/local/go'"));
+        assert!(script.contains("remount,ro,nosuid,nodev,bind /tmp/mino-root-$$/'usr/local/go'"));
     }
 
     #[test]

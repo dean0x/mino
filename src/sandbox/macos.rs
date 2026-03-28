@@ -11,9 +11,9 @@ use tokio::process::Command;
 use tracing::debug;
 
 use crate::error::{MinoError, MinoResult};
-use crate::sandbox::helper_protocol::{AclEntry, HelperRequest, ResourceLimitsDto};
 #[cfg(test)]
 use crate::sandbox::helper_protocol::HelperResponse;
+use crate::sandbox::helper_protocol::{AclEntry, HelperRequest, ResourceLimitsDto};
 use crate::sandbox::native::{SandboxPlatform, SandboxSpawnConfig};
 use crate::sandbox::process::SandboxProcess;
 use crate::sandbox::resource_limits::ResourceLimits;
@@ -174,25 +174,28 @@ pub(crate) fn build_acl_entries(config: &SandboxSpawnConfig) -> Vec<AclEntry> {
 pub(crate) async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResult<SandboxProcess> {
     let resource_limits = ResourceLimits::from_config(&config.sandbox_config);
     let acl_paths = build_acl_entries(&config);
+    let interactive = config.interactive;
 
-    // Prepare home directory path
+    // session_id needs one clone for SandboxProcess::new() after child is spawned
+    let session_id_for_process = config.session_id.clone();
+
     let home_dir = std::env::temp_dir().join(format!("mino-home-{}", config.session_id));
+    let request_file = std::env::temp_dir().join(format!("mino-helper-{}.json", config.session_id));
 
     let request = HelperRequest::Spawn {
-        session_id: config.session_id.clone(),
-        project_dir: config.project_dir.clone(),
-        env: config.env.clone(),
-        command: config.command.clone(),
+        session_id: config.session_id,
+        project_dir: config.project_dir,
+        env: config.env,
+        command: config.command,
         resource_limits: ResourceLimitsDto::from(&resource_limits),
         acl_paths,
-        dotfile_dir: config.dotfile_dir.clone(),
+        dotfile_dir: config.dotfile_dir,
         home_dir,
-        sandbox_user: config.sandbox_config.sandbox_user.clone(),
+        sandbox_user: config.sandbox_config.sandbox_user,
     };
 
     // Write request to temp file with restricted permissions from the start
     // to avoid TOCTOU race where the file is world-readable before chmod.
-    let request_file = std::env::temp_dir().join(format!("mino-helper-{}.json", config.session_id));
     let request_json = serde_json::to_string(&request)?;
     write_restricted_file(&request_file, &request_json).await?;
 
@@ -207,7 +210,7 @@ pub(crate) async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResul
     cmd.arg("--request-file");
     cmd.arg(&request_file);
 
-    if config.interactive {
+    if interactive {
         cmd.stdin(Stdio::inherit());
         cmd.stdout(Stdio::inherit());
         cmd.stderr(Stdio::inherit());
@@ -221,13 +224,38 @@ pub(crate) async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResul
         .spawn()
         .map_err(|e| MinoError::SandboxHelper(format!("Failed to spawn helper: {}", e)))?;
 
-    // NOTE: We intentionally do NOT delete request_file here. The helper
-    // process may not have read it yet (spawn() returns as soon as the child
-    // is created, before it calls read_to_string). The file is mode 0o600 so
-    // only the owning user and root can read it. It will be cleaned up on
-    // the next OS tmpdir purge or when mino cleanup runs.
+    // Clean up the request file when the helper process exits (normal or crash).
+    // Capture child PID before moving child into SandboxProcess.
+    let request_file_cleanup = request_file.clone();
+    let child_id = child.id();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if let Some(pid) = child_id {
+                #[cfg(unix)]
+                {
+                    // SAFETY: kill(pid, 0) checks if process is alive without
+                    // sending a signal. Safe with any valid pid value.
+                    let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+                    if !alive {
+                        break;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = pid;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    break;
+                }
+            } else {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                break;
+            }
+        }
+        let _ = tokio::fs::remove_file(&request_file_cleanup).await;
+    });
 
-    Ok(SandboxProcess::new(child, config.session_id))
+    Ok(SandboxProcess::new(child, session_id_for_process))
 }
 
 /// Clean up a macOS sandbox session (ACLs, pf rules)
@@ -236,28 +264,20 @@ pub(crate) async fn cleanup_macos_sandbox(
     project_dir: &Path,
     sandbox_user: &str,
 ) -> MinoResult<()> {
-    let request = HelperRequest::Cleanup {
-        session_id: session_id.to_string(),
-        project_dir: project_dir.to_path_buf(),
-        sandbox_user: sandbox_user.to_string(),
-    };
-
-    let request_file = std::env::temp_dir().join(format!("mino-cleanup-{}.json", session_id));
-    let request_json = serde_json::to_string(&request)?;
-    write_restricted_file(&request_file, &request_json).await?;
-
     let output = Command::new("sudo")
         .arg(HELPER_BINARY)
         .arg("cleanup")
-        .arg("--request-file")
-        .arg(&request_file)
+        .arg("--session-id")
+        .arg(session_id)
+        .arg("--project-dir")
+        .arg(project_dir)
+        .arg("--sandbox-user")
+        .arg(sandbox_user)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
         .map_err(|e| MinoError::SandboxHelper(format!("Failed to run cleanup: {}", e)))?;
-
-    let _ = tokio::fs::remove_file(&request_file).await;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

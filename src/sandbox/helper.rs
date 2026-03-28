@@ -117,10 +117,7 @@ pub fn parse_dscl_ids(output: &str) -> MinoResult<(u32, u32)> {
 /// Unlike `build_child_env`, this does not inherit the original request env.
 /// Instead it provides only the essentials: HOME, USER, PATH, and TERM
 /// (from the host process if available).
-pub fn build_exec_env(
-    home_dir: &Path,
-    sandbox_user: &str,
-) -> MinoResult<HashMap<String, String>> {
+pub fn build_exec_env(home_dir: &Path, sandbox_user: &str) -> MinoResult<HashMap<String, String>> {
     let home = home_dir_to_str(home_dir)?;
     let mut env = HashMap::new();
     env.insert("HOME".to_string(), home.to_string());

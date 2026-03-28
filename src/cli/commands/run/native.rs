@@ -228,11 +228,13 @@ async fn create_session_and_audit(
         }
     }
 
-    match crate::cli::commands::status::cleanup_stale_native_sessions().await {
-        Ok(n) if n > 0 => debug!("Cleaned up {} stale native session(s)", n),
-        Err(e) => debug!("Stale session cleanup failed (non-fatal): {}", e),
-        _ => {}
-    }
+    tokio::spawn(async {
+        match crate::cli::commands::status::cleanup_stale_native_sessions().await {
+            Ok(n) if n > 0 => debug!("Cleaned up {} stale native session(s)", n),
+            Err(e) => debug!("Stale session cleanup failed (non-fatal): {}", e),
+            _ => {}
+        }
+    });
 
     let mut session = Session::new(
         session_name.clone(),
@@ -459,8 +461,9 @@ fn build_sandbox_env(
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
-    // Basic env vars — derive USER from the configured sandbox user so that
-    // tools checking USER against /etc/passwd see a consistent value.
+    // HOME is set to /home/agent for both platforms. On Linux, this becomes
+    // the real home inside the namespace. On macOS, the helper binary overrides
+    // this to /tmp/mino-home-{session_id} in build_child_env().
     env.insert("HOME".to_string(), "/home/agent".to_string());
     env.insert("USER".to_string(), config.sandbox.sandbox_user.clone());
     env.insert("MINO_SANDBOX".to_string(), "native".to_string());
