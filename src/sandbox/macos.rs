@@ -11,8 +11,6 @@ use tokio::process::Command;
 use tracing::debug;
 
 use crate::error::{MinoError, MinoResult};
-#[cfg(test)]
-use crate::sandbox::helper_protocol::HelperResponse;
 use crate::sandbox::helper_protocol::{AclEntry, HelperRequest, ResourceLimitsDto};
 use crate::sandbox::native::{SandboxPlatform, SandboxSpawnConfig};
 use crate::sandbox::process::SandboxProcess;
@@ -179,7 +177,9 @@ pub(crate) async fn spawn_macos_sandbox(config: SandboxSpawnConfig) -> MinoResul
     // session_id needs one clone for SandboxProcess::new() after child is spawned
     let session_id_for_process = config.session_id.clone();
 
-    let home_dir = std::env::temp_dir().join(format!("mino-home-{}", config.session_id));
+    // Use /tmp/ (not std::env::temp_dir()) because macOS per-user temp dirs
+    // under /var/folders/ are 0700 and inaccessible to _mino_agent after setuid.
+    let home_dir = PathBuf::from(format!("/tmp/mino-home-{}", config.session_id));
     let request_file = std::env::temp_dir().join(format!("mino-helper-{}.json", config.session_id));
 
     let request = HelperRequest::Spawn {
@@ -261,18 +261,6 @@ pub(crate) async fn cleanup_macos_sandbox(
     }
 
     Ok(())
-}
-
-/// Parse JSON response from helper stdout
-#[cfg(test)]
-fn parse_helper_response(stdout: &[u8]) -> MinoResult<HelperResponse> {
-    let text = String::from_utf8_lossy(stdout);
-    serde_json::from_str(text.trim()).map_err(|e| {
-        MinoError::SandboxHelper(format!(
-            "Failed to parse helper response: {} (raw: {})",
-            e, text
-        ))
-    })
 }
 
 /// Generate pf anchor rules for the sandbox
@@ -516,34 +504,6 @@ mod tests {
         assert!(json.contains("/opt/data"));
         assert!(json.contains("/tmp/dots"));
         assert!(json.contains("/tmp/mino-home-serialize-test"));
-    }
-
-    #[test]
-    fn parse_helper_response_spawned() {
-        let json = r#"{"status":"Spawned","pid":42}"#;
-        let resp = parse_helper_response(json.as_bytes()).unwrap();
-        match resp {
-            HelperResponse::Spawned { pid } => assert_eq!(pid, 42),
-            _ => panic!("expected Spawned"),
-        }
-    }
-
-    #[test]
-    fn parse_helper_response_error() {
-        let json = r#"{"status":"Error","message":"fork failed"}"#;
-        let resp = parse_helper_response(json.as_bytes()).unwrap();
-        match resp {
-            HelperResponse::Error { message } => assert_eq!(message, "fork failed"),
-            _ => panic!("expected Error"),
-        }
-    }
-
-    #[test]
-    fn parse_helper_response_invalid_json() {
-        let result = parse_helper_response(b"not json");
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("Failed to parse helper response"));
     }
 
     // ---- pf_rules injection safety tests ----

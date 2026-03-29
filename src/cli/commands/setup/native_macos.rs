@@ -9,6 +9,7 @@ use super::{
 use crate::cli::args::SetupArgs;
 use crate::error::MinoResult;
 use crate::ui::{self, UiContext};
+use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -232,16 +233,29 @@ async fn install_helper_binary(ctx: &UiContext, args: &SetupArgs) -> StepResult 
 
     if let Some(version) = current_version {
         if version == mino_version {
-            ui::step_ok_detail(ctx, "Helper binary", &format!("v{}", version));
-            return StepResult::AlreadyOk;
+            // Version matches — but the binary might have been rebuilt from source
+            // with code changes (same Cargo.toml version, different binary content).
+            // Compare SHA256 checksums to detect stale binaries reliably.
+            let needs_update = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("mino-sandbox-helper")))
+                .map(|src| !binary_checksums_match(&src, Path::new(HELPER_BINARY_PATH)))
+                .unwrap_or(false);
+
+            if !needs_update {
+                ui::step_ok_detail(ctx, "Helper binary", &format!("v{}", version));
+                return StepResult::AlreadyOk;
+            }
+            ui::remark(ctx, "Helper binary changed, reinstalling...");
+        } else {
+            ui::remark(
+                ctx,
+                &format!(
+                    "Helper version mismatch (v{} vs v{}), upgrading...",
+                    version, mino_version
+                ),
+            );
         }
-        ui::remark(
-            ctx,
-            &format!(
-                "Helper version mismatch (v{} vs v{}), upgrading...",
-                version, mino_version
-            ),
-        );
     }
 
     if args.check {
@@ -448,6 +462,21 @@ async fn remove_if_exists(ctx: &UiContext, path: &str, description: &str) {
 // =============================================================================
 // Pure functions (testable without root or system state)
 // =============================================================================
+
+/// Compare SHA256 checksums of two binary files.
+///
+/// Returns `true` if both files exist and have identical content hashes.
+/// Returns `false` if either file is missing, unreadable, or has different content.
+fn binary_checksums_match(src: &std::path::Path, dst: &std::path::Path) -> bool {
+    use sha2::{Digest, Sha256};
+    let Ok(src_bytes) = std::fs::read(src) else {
+        return false;
+    };
+    let Ok(dst_bytes) = std::fs::read(dst) else {
+        return false;
+    };
+    Sha256::digest(&src_bytes) == Sha256::digest(&dst_bytes)
+}
 
 /// The path where the sudoers drop-in is installed.
 const SUDOERS_PATH: &str = "/etc/sudoers.d/mino";
@@ -678,5 +707,42 @@ mod tests {
     #[test]
     fn count_issues_empty() {
         assert_eq!(count_setup_issues(&[]), 0);
+    }
+
+    // ---- binary checksum comparison ----
+
+    #[test]
+    fn binary_checksums_match_identical_files() {
+        let dir = std::env::temp_dir();
+        let a = dir.join("mino-test-cksum-a");
+        let b = dir.join("mino-test-cksum-b");
+        std::fs::write(&a, b"same content here").unwrap();
+        std::fs::write(&b, b"same content here").unwrap();
+        assert!(binary_checksums_match(&a, &b));
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
+    #[test]
+    fn binary_checksums_match_different_files() {
+        let dir = std::env::temp_dir();
+        let a = dir.join("mino-test-cksum-diff-a");
+        let b = dir.join("mino-test-cksum-diff-b");
+        std::fs::write(&a, b"content version 1").unwrap();
+        std::fs::write(&b, b"content version 2").unwrap();
+        assert!(!binary_checksums_match(&a, &b));
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+    }
+
+    #[test]
+    fn binary_checksums_match_missing_file() {
+        let dir = std::env::temp_dir();
+        let a = dir.join("mino-test-cksum-exists");
+        let b = dir.join("mino-test-cksum-missing-9999");
+        std::fs::write(&a, b"exists").unwrap();
+        assert!(!binary_checksums_match(&a, &b));
+        assert!(!binary_checksums_match(&b, &a));
+        let _ = std::fs::remove_file(&a);
     }
 }

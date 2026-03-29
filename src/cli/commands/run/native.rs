@@ -55,7 +55,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     let mut env = cred_result.env;
     let (_proxy_handle, _denial_task) =
         start_proxy_if_needed(&network_mode, &mut env, config, &mut spinner).await?;
-    let dotfile_dir = prepare_dotfiles(config).await?;
+    let dotfile_dir = prepare_dotfiles(config, &project_dir).await?;
     let command = if args.command.is_empty() {
         vec!["/bin/zsh".to_string()]
     } else {
@@ -71,7 +71,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     )
     .await?;
 
-    // Auto-passthrough common shell directories (read-only)
+    // Auto-mount common host directories (read-only) when present
     let mut sandbox_config = config.sandbox.clone();
     if let Some(ref host_home) = dirs::home_dir() {
         for dir_name in dotfiles::AUTO_PASSTHROUGH_DIRS {
@@ -483,8 +483,8 @@ fn build_sandbox_env(
     env.insert("USER".to_string(), config.sandbox.sandbox_user.clone());
     env.insert("MINO_SANDBOX".to_string(), "native".to_string());
 
-    // Inherit locale/terminal from host
-    for key in &["LANG", "LC_ALL", "TZ", "TERM"] {
+    // Inherit locale, terminal, and AI agent API keys from host
+    for key in &["LANG", "LC_ALL", "TZ", "TERM", "ANTHROPIC_API_KEY"] {
         if let Ok(val) = std::env::var(key) {
             env.insert(key.to_string(), val);
         }
@@ -577,6 +577,95 @@ async fn wait_with_signal_forwarding(
     process.wait().await
 }
 
+/// Copy essential files from `.claude` into the sandbox.
+///
+/// Uses an allowlist to copy only configuration files the agent needs
+/// (CLAUDE.md, settings, agents, commands, skills, and the current project's
+/// memory). This avoids copying multi-GB state directories (sessions, debug,
+/// telemetry, file-history, etc.) that are not needed inside the sandbox.
+async fn copy_claude_dir(src: &Path, dest: &Path, project_dir: &Path) -> MinoResult<()> {
+    /// Top-level entries to copy from ~/.claude (allowlist)
+    const ALLOW_ENTRIES: &[&str] = &[
+        "CLAUDE.md",
+        "settings.json",
+        "agents",
+        "commands",
+        "skills",
+    ];
+
+    tokio::fs::create_dir_all(dest)
+        .await
+        .map_err(|e| MinoError::io("creating .claude copy dir", e))?;
+
+    // Copy allowlisted top-level entries
+    for name in ALLOW_ENTRIES {
+        let src_path = src.join(name);
+        let dest_path = dest.join(name);
+        let metadata = match tokio::fs::symlink_metadata(&src_path).await {
+            Ok(m) => m,
+            Err(_) => continue, // Entry doesn't exist, skip
+        };
+        if metadata.is_file() {
+            tokio::fs::copy(&src_path, &dest_path)
+                .await
+                .map_err(|e| MinoError::io(format!("copying .claude/{}", name), e))?;
+        } else if metadata.is_dir() {
+            copy_dir_recursive(&src_path, &dest_path).await?;
+        }
+    }
+
+    // Copy only the current project's memory directory from projects/
+    // Project dirs are named by path with slashes replaced by dashes,
+    // e.g. /Users/dean/Sandbox/minotaur -> -Users-dean-Sandbox-minotaur
+    let project_key = project_dir
+        .to_string_lossy()
+        .replace('/', "-");
+    let projects_src = src.join("projects").join(&project_key);
+    if projects_src.is_dir() {
+        let projects_dest = dest.join("projects").join(&project_key);
+        copy_dir_recursive(&projects_src, &projects_dest).await?;
+    }
+
+    Ok(())
+}
+
+/// Recursively copy a directory (all files and subdirectories).
+///
+/// Symlinks within the source are skipped (only regular files and dirs are copied).
+async fn copy_dir_recursive(src: &Path, dest: &Path) -> MinoResult<()> {
+    tokio::fs::create_dir_all(dest)
+        .await
+        .map_err(|e| MinoError::io("creating copy dir", e))?;
+
+    let mut entries = tokio::fs::read_dir(src)
+        .await
+        .map_err(|e| MinoError::io("reading dir", e))?;
+
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| MinoError::io("reading dir entry", e))?
+    {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let src_path = entry.path();
+        let dest_path = dest.join(&name);
+        let metadata = tokio::fs::symlink_metadata(&src_path)
+            .await
+            .map_err(|e| MinoError::io("stat", e))?;
+
+        if metadata.is_dir() {
+            Box::pin(copy_dir_recursive(&src_path, &dest_path)).await?;
+        } else if metadata.is_file() {
+            tokio::fs::copy(&src_path, &dest_path)
+                .await
+                .map_err(|e| MinoError::io(format!("copying {}", name_str), e))?;
+        }
+        // Skip symlinks — don't follow them into the copy
+    }
+    Ok(())
+}
+
 /// Collect and deduplicate dotfile names from defaults and user config.
 fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -594,7 +683,7 @@ fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
 }
 
 /// Prepare dotfiles for the sandbox by copying and sanitizing them into a temp dir
-async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
+async fn prepare_dotfiles(config: &Config, project_dir: &Path) -> MinoResult<Option<PathBuf>> {
     let home_dir = match dirs::home_dir() {
         Some(h) => h,
         None => return Ok(None),
@@ -630,7 +719,7 @@ async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
         let content = tokio::fs::read_to_string(&source)
             .await
             .map_err(|e| MinoError::io(format!("reading {}", dotfile), e))?;
-        let cleaned = dotfiles::prepare_dotfile_content(&dotfile, &content, Some(&home_dir));
+        let cleaned = dotfiles::prepare_dotfile_content(&dotfile, &content);
 
         let dest = tmp_dir.join(&dotfile);
         if let Some(parent) = dest.parent() {
@@ -641,6 +730,36 @@ async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
         tokio::fs::write(&dest, cleaned)
             .await
             .map_err(|e| MinoError::io(format!("writing {}", dotfile), e))?;
+    }
+
+    // Create symlinks to host directories so shell configs that reference
+    // ~/.oh-my-zsh, ~/.nvm etc. resolve correctly via the sandbox home.
+    // These are recreated in the sandbox home by copy_dotfiles in the helper.
+    for dir_name in dotfiles::AUTO_PASSTHROUGH_DIRS {
+        let host_dir = home_dir.join(dir_name);
+        if host_dir.is_dir() {
+            let link_path = tmp_dir.join(dir_name);
+            #[cfg(unix)]
+            {
+                if let Err(e) = std::os::unix::fs::symlink(&host_dir, &link_path) {
+                    tracing::debug!("Failed to create symlink for {}: {}", dir_name, e);
+                }
+            }
+        }
+    }
+
+    // Copy directories that need sandbox-local mutability (not symlinked to host).
+    // For .claude, use allowlist-based copy to avoid multi-GB state directories.
+    for dir_name in dotfiles::AUTO_COPY_DIRS {
+        let host_dir = home_dir.join(dir_name);
+        if host_dir.is_dir() {
+            let dest_dir = tmp_dir.join(dir_name);
+            if dir_name == &".claude" {
+                copy_claude_dir(&host_dir, &dest_dir, project_dir).await?;
+            } else {
+                copy_dir_recursive(&host_dir, &dest_dir).await?;
+            }
+        }
     }
 
     Ok(Some(tmp_dir))
@@ -876,5 +995,130 @@ mod tests {
         // sandbox.env is None (default)
         let env = build_sandbox_env(&config, &HashMap::new());
         assert_eq!(env.get("FROM_CONTAINER").unwrap(), "hello");
+    }
+
+    // ---- copy_dir_recursive tests ----
+
+    #[tokio::test]
+    async fn copy_dir_recursive_copies_files_and_subdirs() {
+        let src = std::env::temp_dir().join("mino-test-copy-src");
+        let dest = std::env::temp_dir().join("mino-test-copy-dest");
+        let _ = tokio::fs::remove_dir_all(&src).await;
+        let _ = tokio::fs::remove_dir_all(&dest).await;
+
+        tokio::fs::create_dir_all(&src).await.unwrap();
+        tokio::fs::write(src.join("file.txt"), b"hello").await.unwrap();
+        tokio::fs::create_dir_all(src.join("subdir")).await.unwrap();
+        tokio::fs::write(src.join("subdir").join("nested.txt"), b"world")
+            .await
+            .unwrap();
+
+        copy_dir_recursive(&src, &dest).await.unwrap();
+
+        assert!(dest.join("file.txt").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("file.txt")).await.unwrap(),
+            "hello"
+        );
+        assert!(dest.join("subdir").join("nested.txt").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(dest.join("subdir").join("nested.txt"))
+                .await
+                .unwrap(),
+            "world"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&src).await;
+        let _ = tokio::fs::remove_dir_all(&dest).await;
+    }
+
+    // ---- copy_claude_dir tests ----
+
+    #[tokio::test]
+    async fn copy_claude_dir_copies_allowlisted_entries() {
+        let src = std::env::temp_dir().join("mino-test-claude-src");
+        let dest = std::env::temp_dir().join("mino-test-claude-dest");
+        let _ = tokio::fs::remove_dir_all(&src).await;
+        let _ = tokio::fs::remove_dir_all(&dest).await;
+
+        // Create allowlisted files and dirs
+        tokio::fs::create_dir_all(&src).await.unwrap();
+        tokio::fs::write(src.join("CLAUDE.md"), b"# Config").await.unwrap();
+        tokio::fs::write(src.join("settings.json"), b"{}").await.unwrap();
+        tokio::fs::create_dir_all(src.join("skills").join("review"))
+            .await
+            .unwrap();
+        tokio::fs::write(src.join("skills").join("review").join("skill.md"), b"skill")
+            .await
+            .unwrap();
+
+        // Create non-allowlisted dirs that should NOT be copied
+        for skip_dir in &["debug", "sessions", "telemetry", "file-history", "downloads"] {
+            tokio::fs::create_dir_all(src.join(skip_dir)).await.unwrap();
+            tokio::fs::write(src.join(skip_dir).join("data.bin"), b"big data")
+                .await
+                .unwrap();
+        }
+
+        let project_dir = PathBuf::from("/Users/test/my-project");
+        copy_claude_dir(&src, &dest, &project_dir).await.unwrap();
+
+        // Allowlisted entries should be copied
+        assert!(dest.join("CLAUDE.md").exists());
+        assert!(dest.join("settings.json").exists());
+        assert!(dest.join("skills").join("review").join("skill.md").exists());
+
+        // Non-allowlisted dirs should NOT be copied
+        assert!(!dest.join("debug").exists());
+        assert!(!dest.join("sessions").exists());
+        assert!(!dest.join("telemetry").exists());
+        assert!(!dest.join("file-history").exists());
+        assert!(!dest.join("downloads").exists());
+
+        let _ = tokio::fs::remove_dir_all(&src).await;
+        let _ = tokio::fs::remove_dir_all(&dest).await;
+    }
+
+    #[tokio::test]
+    async fn copy_claude_dir_copies_current_project_memory() {
+        let src = std::env::temp_dir().join("mino-test-claude-proj-src");
+        let dest = std::env::temp_dir().join("mino-test-claude-proj-dest");
+        let _ = tokio::fs::remove_dir_all(&src).await;
+        let _ = tokio::fs::remove_dir_all(&dest).await;
+
+        tokio::fs::create_dir_all(&src).await.unwrap();
+
+        // Create project dirs: one matching, one not
+        let matching = src.join("projects").join("-Users-test-my-project");
+        let other = src.join("projects").join("-Users-test-other-project");
+        tokio::fs::create_dir_all(&matching).await.unwrap();
+        tokio::fs::create_dir_all(matching.join("memory")).await.unwrap();
+        tokio::fs::write(matching.join("memory").join("MEMORY.md"), b"memory")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(&other).await.unwrap();
+        tokio::fs::write(other.join("data.json"), b"other project")
+            .await
+            .unwrap();
+
+        let project_dir = PathBuf::from("/Users/test/my-project");
+        copy_claude_dir(&src, &dest, &project_dir).await.unwrap();
+
+        // Current project's memory should be copied
+        assert!(dest
+            .join("projects")
+            .join("-Users-test-my-project")
+            .join("memory")
+            .join("MEMORY.md")
+            .exists());
+
+        // Other project should NOT be copied
+        assert!(!dest
+            .join("projects")
+            .join("-Users-test-other-project")
+            .exists());
+
+        let _ = tokio::fs::remove_dir_all(&src).await;
+        let _ = tokio::fs::remove_dir_all(&dest).await;
     }
 }

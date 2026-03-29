@@ -289,8 +289,8 @@ fn prepare_spawn(
 
 /// Recursively set ownership of all files and directories under a path.
 ///
-/// Uses libc::chown (not lchown) because symlinks are already filtered
-/// out during copy_dotfiles(). Errors are logged but non-fatal.
+/// Uses libc::chown (not lchown) and explicitly skips symlinks so that
+/// only regular files and directories are chowned. Errors are logged but non-fatal.
 #[cfg(unix)]
 fn chown_recursive(path: &Path, uid: u32, gid: u32) {
     fn chown_path(path: &Path, uid: u32, gid: u32) {
@@ -559,7 +559,6 @@ unsafe fn parent_process(
     cleanup_acls(acl_paths, Some(home_dir), sandbox_user);
     let _ = std::fs::remove_dir_all(home_dir);
 
-    print_response(&HelperResponse::Spawned { pid: pid as u32 });
     process::exit(exit_code);
 }
 
@@ -577,7 +576,6 @@ fn handle_cleanup(session_id: &str, project_dir: &Path, sandbox_user: &str) -> R
         let _ = std::process::Command::new("pfctl").args(&pf_args).output();
     }
 
-    print_response(&HelperResponse::Cleaned);
     Ok(())
 }
 
@@ -769,8 +767,8 @@ fn copy_dotfiles(src: &Path, dest: &Path) {
             let file_name = entry.file_name();
             let dest_path = dest.join(&file_name);
 
-            // Skip symlinks to prevent data exfiltration when running as root.
-            // symlink_metadata() does NOT follow symlinks, unlike metadata().
+            // Use symlink_metadata() (not metadata()) to detect symlinks without
+            // following them. Symlinks are recreated, not dereferenced.
             let metadata = match std::fs::symlink_metadata(&src_path) {
                 Ok(m) => m,
                 Err(e) => {
@@ -784,10 +782,31 @@ fn copy_dotfiles(src: &Path, dest: &Path) {
             };
 
             if metadata.file_type().is_symlink() {
-                eprintln!(
-                    "[mino-helper] skipping symlink in dotfiles: {}",
-                    src_path.display()
-                );
+                // Recreate symlinks from the staging dir — these are created by the
+                // mino CLI to bridge host directories (e.g., ~/.oh-my-zsh → /Users/X/.oh-my-zsh).
+                // The staging dir is 0700 and CLI-controlled, so these are trusted.
+                #[cfg(unix)]
+                {
+                    match std::fs::read_link(&src_path) {
+                        Ok(target) => {
+                            if let Err(e) = std::os::unix::fs::symlink(&target, &dest_path) {
+                                eprintln!(
+                                    "[mino-helper] failed to create symlink {} -> {}: {}",
+                                    dest_path.display(),
+                                    target.display(),
+                                    e
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[mino-helper] failed to read symlink {}: {}",
+                                src_path.display(),
+                                e
+                            );
+                        }
+                    }
+                }
                 continue;
             }
 
@@ -827,9 +846,7 @@ fn print_response(response: &HelperResponse) {
 }
 
 fn print_error(message: &str) {
-    print_response(&HelperResponse::Error {
-        message: message.to_string(),
-    });
+    eprintln!("[mino-helper] {}", message);
 }
 
 #[cfg(test)]
@@ -1174,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_dotfiles_skips_symlinks() {
+    fn copy_dotfiles_recreates_symlinks() {
         let src = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
 
@@ -1183,7 +1200,7 @@ mod tests {
 
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink("/etc/passwd", src.path().join("dangerous-link")).unwrap();
+            std::os::unix::fs::symlink("/usr/share/data", src.path().join("data-link")).unwrap();
         }
 
         copy_dotfiles(src.path(), dest.path());
@@ -1191,12 +1208,17 @@ mod tests {
         // Regular file should be copied
         assert!(dest.path().join("regular.txt").exists());
 
-        // Symlink should NOT be copied (security: prevent data exfiltration)
+        // Symlink should be recreated pointing to the same target
         #[cfg(unix)]
-        assert!(
-            !dest.path().join("dangerous-link").exists(),
-            "symlinks must be skipped for security"
-        );
+        {
+            let dest_link = dest.path().join("data-link");
+            let meta = std::fs::symlink_metadata(&dest_link).unwrap();
+            assert!(meta.file_type().is_symlink(), "should be recreated as symlink");
+            assert_eq!(
+                std::fs::read_link(&dest_link).unwrap(),
+                PathBuf::from("/usr/share/data")
+            );
+        }
     }
 
     #[test]
@@ -1268,7 +1290,7 @@ mod tests {
         )
         .unwrap();
 
-        // Symlink (should be skipped)
+        // Symlink (should be recreated as symlink, not followed)
         #[cfg(unix)]
         std::os::unix::fs::symlink("/etc/hosts", src.path().join(".hosts-link")).unwrap();
 
@@ -1284,21 +1306,26 @@ mod tests {
         // Directory and its content copied
         assert!(dest.path().join(".ssh").join("config").exists());
 
-        // Symlink not copied
+        // Symlink recreated as symlink pointing to original target
         #[cfg(unix)]
-        assert!(!dest.path().join(".hosts-link").exists());
+        {
+            let link = dest.path().join(".hosts-link");
+            let meta = std::fs::symlink_metadata(&link).unwrap();
+            assert!(meta.file_type().is_symlink());
+            assert_eq!(std::fs::read_link(&link).unwrap(), PathBuf::from("/etc/hosts"));
+        }
     }
 
     #[cfg(unix)]
     #[test]
-    fn copy_dotfiles_skips_symlink_in_nested_dir() {
+    fn copy_dotfiles_recreates_symlink_in_nested_dir() {
         let src = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
 
         // Create a directory with a symlink inside it
         std::fs::create_dir(src.path().join("subdir")).unwrap();
         std::fs::write(src.path().join("subdir").join("real.txt"), "content").unwrap();
-        std::os::unix::fs::symlink("/etc/shadow", src.path().join("subdir").join("sneaky"))
+        std::os::unix::fs::symlink("/usr/share/data", src.path().join("subdir").join("link"))
             .unwrap();
 
         copy_dotfiles(src.path(), dest.path());
@@ -1306,10 +1333,13 @@ mod tests {
         // Real file should be copied
         assert!(dest.path().join("subdir").join("real.txt").exists());
 
-        // Symlink in subdirectory should be skipped
-        assert!(
-            !dest.path().join("subdir").join("sneaky").exists(),
-            "symlinks in nested dirs must also be skipped"
+        // Symlink in subdirectory should be recreated pointing to same target
+        let dest_link = dest.path().join("subdir").join("link");
+        let meta = std::fs::symlink_metadata(&dest_link).unwrap();
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(&dest_link).unwrap(),
+            PathBuf::from("/usr/share/data")
         );
     }
 }

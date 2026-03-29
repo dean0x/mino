@@ -3,8 +3,6 @@
 //! Copies dotfiles into the sandbox home directory with secret stripping.
 //! Known credential-bearing files have their secrets removed before copying.
 
-use std::path::Path;
-
 /// Dotfiles that are always copied (safe defaults)
 pub const DEFAULT_DOTFILES: &[&str] = &[
     ".gitconfig",
@@ -15,9 +13,13 @@ pub const DEFAULT_DOTFILES: &[&str] = &[
     ".tmux.conf",
 ];
 
-/// Host directories auto-mounted read-only when present, so shell configs
-/// that reference `$HOME/.oh-my-zsh` or `$HOME/.nvm` work inside the sandbox.
-pub const AUTO_PASSTHROUGH_DIRS: &[&str] = &[".oh-my-zsh", ".nvm"];
+/// Host directories auto-mounted read-only when present. Enables shell configs
+/// (Oh My Zsh, nvm, zsh plugins) to work inside the sandbox.
+pub const AUTO_PASSTHROUGH_DIRS: &[&str] = &[".oh-my-zsh", ".nvm", ".zsh"];
+
+/// Host directories copied (not symlinked) into the sandbox home.
+/// The sandbox gets a mutable copy; the host directory is untouched.
+pub const AUTO_COPY_DIRS: &[&str] = &[".claude"];
 
 /// Known-risky dotfiles that trigger warnings
 const RISKY_DOTFILES: &[&str] = &[
@@ -77,48 +79,20 @@ pub(crate) fn is_risky_dotfile(path: &str) -> bool {
     RISKY_DOTFILES.iter().any(|risky| path.ends_with(risky))
 }
 
-/// Replace `$HOME` and `${HOME}` references in shell dotfile content with the
-/// absolute host home path. This ensures paths like `$HOME/.oh-my-zsh` resolve
-/// correctly inside the sandbox where `$HOME` points to a temp directory.
-///
-/// Only literal string occurrences are replaced — shell tilde expansion (`~`)
-/// is left alone. Note that escaped forms (`\$HOME`) will also be rewritten;
-/// this is acceptable because `\$HOME` is extremely rare in dotfiles.
-pub(crate) fn rewrite_home_references(content: &str, host_home: &Path) -> String {
-    let home_str = host_home.to_string_lossy();
-    // Replace `${HOME}` before `$HOME` so the braced form doesn't get
-    // partially matched by the unbraced replacement.
-    content
-        .replace("${HOME}", &home_str)
-        .replace("$HOME", &home_str)
-}
-
 /// Prepare dotfile content for sandbox (strip secrets from known files).
 ///
 /// Dispatches to the appropriate secret-stripping function based on the
-/// dotfile path. Shell config files (`.zshrc`, `.zshenv`, `.zprofile`) have
-/// `$HOME` references rewritten when `host_home` is provided. Unknown files
-/// are returned as-is.
-pub(crate) fn prepare_dotfile_content(
-    dotfile_path: &str,
-    content: &str,
-    host_home: Option<&Path>,
-) -> String {
+/// dotfile path. Unknown files are returned as-is.
+///
+/// Note: `$HOME`/`~` references in shell configs are NOT rewritten here.
+/// Instead, symlinks in the sandbox home bridge to host directories, so
+/// both read paths (config) and write paths (state) work correctly.
+pub(crate) fn prepare_dotfile_content(dotfile_path: &str, content: &str) -> String {
     if dotfile_path.ends_with(".gitconfig") {
-        return strip_gitconfig_secrets(content);
+        strip_gitconfig_secrets(content)
+    } else {
+        content.to_string()
     }
-
-    let is_shell_config = dotfile_path.ends_with(".zshrc")
-        || dotfile_path.ends_with(".zshenv")
-        || dotfile_path.ends_with(".zprofile");
-
-    if is_shell_config {
-        if let Some(home) = host_home {
-            return rewrite_home_references(content, home);
-        }
-    }
-
-    content.to_string()
 }
 
 #[cfg(test)]
@@ -291,7 +265,7 @@ mod tests {
 [credential]
     helper = store
 "#;
-        let output = prepare_dotfile_content(".gitconfig", input, None);
+        let output = prepare_dotfile_content(".gitconfig", input);
         assert!(output.contains("[user]"));
         assert!(!output.contains("[credential]"));
     }
@@ -304,7 +278,7 @@ mod tests {
 [user]
     name = Test
 "#;
-        let output = prepare_dotfile_content("/home/user/.gitconfig", input, None);
+        let output = prepare_dotfile_content("/home/user/.gitconfig", input);
         assert!(!output.contains("[credential]"));
         assert!(output.contains("[user]"));
     }
@@ -312,50 +286,22 @@ mod tests {
     #[test]
     fn prepare_dotfile_passes_through_unknown() {
         let input = "some content\nmore lines\n";
-        let output = prepare_dotfile_content(".bashrc", input, None);
+        let output = prepare_dotfile_content(".bashrc", input);
         assert_eq!(output, input);
     }
 
     #[test]
-    fn default_dotfiles_includes_shell_configs() {
-        assert!(DEFAULT_DOTFILES.contains(&".zshrc"));
-        assert!(DEFAULT_DOTFILES.contains(&".zshenv"));
-        assert!(DEFAULT_DOTFILES.contains(&".zprofile"));
-        assert!(DEFAULT_DOTFILES.contains(&".tmux.conf"));
-    }
-
-    #[test]
-    fn rewrite_home_replaces_dollar_home() {
-        let content = "source $HOME/.oh-my-zsh/oh-my-zsh.sh\n";
-        let result = rewrite_home_references(content, Path::new("/Users/test"));
-        assert_eq!(result, "source /Users/test/.oh-my-zsh/oh-my-zsh.sh\n");
-    }
-
-    #[test]
-    fn rewrite_home_replaces_braced_home() {
-        let content = "export NVM_DIR=\"${HOME}/.nvm\"\n";
-        let result = rewrite_home_references(content, Path::new("/Users/test"));
-        assert_eq!(result, "export NVM_DIR=\"/Users/test/.nvm\"\n");
-    }
-
-    #[test]
-    fn rewrite_home_preserves_non_home_lines() {
-        let content = "export EDITOR=vim\nalias ll='ls -la'\n";
-        let result = rewrite_home_references(content, Path::new("/Users/test"));
-        assert_eq!(result, content);
-    }
-
-    #[test]
-    fn prepare_dotfile_rewrites_zshrc() {
+    fn prepare_dotfile_passes_through_zshrc() {
+        // Shell configs are NOT rewritten — symlinks in sandbox home handle $HOME paths
         let input = "source $HOME/.oh-my-zsh/oh-my-zsh.sh\n";
-        let output = prepare_dotfile_content(".zshrc", input, Some(Path::new("/Users/test")));
-        assert_eq!(output, "source /Users/test/.oh-my-zsh/oh-my-zsh.sh\n");
+        let output = prepare_dotfile_content(".zshrc", input);
+        assert_eq!(output, input);
     }
 
     #[test]
-    fn prepare_dotfile_rewrites_zshenv() {
+    fn prepare_dotfile_passes_through_zshenv() {
         let input = "export NVM_DIR=\"$HOME/.nvm\"\n";
-        let output = prepare_dotfile_content(".zshenv", input, Some(Path::new("/Users/test")));
-        assert_eq!(output, "export NVM_DIR=\"/Users/test/.nvm\"\n");
+        let output = prepare_dotfile_content(".zshenv", input);
+        assert_eq!(output, input);
     }
 }
