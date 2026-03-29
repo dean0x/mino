@@ -21,8 +21,8 @@ ENV LC_ALL=C.UTF-8
 RUN dnf install -y --setopt=install_weak_deps=False \
     # Core utilities
     git curl wget jq openssh-clients ca-certificates tar gzip unzip which \
-    # Shell
-    zsh \
+    # Shell & terminal multiplexer
+    zsh tmux \
     # Networking & capabilities
     procps-ng httpie libcap \
     # Build essentials for native modules
@@ -304,6 +304,29 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 ZSHRC
 
+# Tmux Plugin Manager + config
+RUN git clone --depth=1 https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm \
+    && git clone --depth=1 https://github.com/tmux-plugins/tmux-resurrect ~/.tmux/plugins/tmux-resurrect \
+    && git clone --depth=1 https://github.com/tmux-plugins/tmux-continuum ~/.tmux/plugins/tmux-continuum
+RUN cat > ~/.tmux.conf << 'TMUXCONF'
+bind -n C-k clear-history
+
+set -g mouse on
+
+setw -g mode-keys vi
+
+# List of plugins
+set -g @plugin 'tmux-plugins/tpm'
+set -g @plugin 'tmux-plugins/tmux-resurrect'
+set -g @plugin 'tmux-plugins/tmux-continuum'
+
+# Automatic restore when tmux starts
+set -g @continuum-restore 'on'
+
+# Initialize TMUX plugin manager (keep this line at the very bottom)
+run '~/.tmux/plugins/tpm/tpm'
+TMUXCONF
+
 # Claude Code CLI (native installer, auto-updates)
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
@@ -312,6 +335,8 @@ USER root
 RUN cp -a /home/developer/.oh-my-zsh /etc/skel/.oh-my-zsh \
     && cp -a /home/developer/.nvm /etc/skel/.nvm \
     && cp -a /home/developer/.claude /etc/skel/.claude \
+    && cp -a /home/developer/.tmux /etc/skel/.tmux \
+    && cp /home/developer/.tmux.conf /etc/skel/.tmux.conf \
     && cp /home/developer/.zshrc /etc/skel/.zshrc \
     && touch /etc/skel/.zsh_history
 

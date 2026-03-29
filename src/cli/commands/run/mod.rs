@@ -48,7 +48,9 @@ struct ImageResolution {
 }
 
 /// Execute the run command
-pub async fn execute(args: RunArgs, config: &Config) -> MinoResult<()> {
+pub async fn execute(mut args: RunArgs, config: &Config) -> MinoResult<()> {
+    crate::cli::args::strip_separator(&mut args.command);
+
     // Dispatch to native sandbox if requested
     let runtime_mode =
         crate::sandbox::resolve_runtime_mode(args.runtime.as_deref(), &config.general.runtime)?;
