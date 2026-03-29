@@ -9,6 +9,11 @@ use crate::session::validate_session_name;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Default PATH for sandbox processes. Includes Homebrew paths (macOS) and
+/// standard system directories.
+pub const SANDBOX_PATH: &str =
+    "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
 /// Convert a home directory path to a UTF-8 string, returning an error
 /// if the path contains non-UTF-8 bytes.
 fn home_dir_to_str(home_dir: &Path) -> MinoResult<&str> {
@@ -122,11 +127,7 @@ pub fn build_exec_env(home_dir: &Path, sandbox_user: &str) -> MinoResult<HashMap
     let mut env = HashMap::new();
     env.insert("HOME".to_string(), home.to_string());
     env.insert("USER".to_string(), sandbox_user.to_string());
-    env.insert(
-        "PATH".to_string(),
-        "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-            .to_string(),
-    );
+    env.insert("PATH".to_string(), SANDBOX_PATH.to_string());
     if let Ok(term) = std::env::var("TERM") {
         env.insert("TERM".to_string(), term);
     }

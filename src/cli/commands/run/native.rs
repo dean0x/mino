@@ -74,7 +74,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     // Auto-passthrough common shell directories (read-only)
     let mut sandbox_config = config.sandbox.clone();
     if let Some(ref host_home) = dirs::home_dir() {
-        for dir_name in &[".oh-my-zsh", ".nvm"] {
+        for dir_name in dotfiles::AUTO_PASSTHROUGH_DIRS {
             let dir = host_home.join(dir_name);
             if dir.is_dir() {
                 sandbox_config
@@ -493,8 +493,7 @@ fn build_sandbox_env(
     // PATH: Homebrew + system paths (toolchain paths added later based on passthrough mounts)
     env.insert(
         "PATH".to_string(),
-        "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-            .to_string(),
+        crate::sandbox::helper::SANDBOX_PATH.to_string(),
     );
 
     // Credential env vars

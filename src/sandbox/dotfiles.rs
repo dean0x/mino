@@ -15,6 +15,10 @@ pub const DEFAULT_DOTFILES: &[&str] = &[
     ".tmux.conf",
 ];
 
+/// Host directories auto-mounted read-only when present, so shell configs
+/// that reference `$HOME/.oh-my-zsh` or `$HOME/.nvm` work inside the sandbox.
+pub const AUTO_PASSTHROUGH_DIRS: &[&str] = &[".oh-my-zsh", ".nvm"];
+
 /// Known-risky dotfiles that trigger warnings
 const RISKY_DOTFILES: &[&str] = &[
     ".npmrc",
@@ -77,10 +81,13 @@ pub(crate) fn is_risky_dotfile(path: &str) -> bool {
 /// absolute host home path. This ensures paths like `$HOME/.oh-my-zsh` resolve
 /// correctly inside the sandbox where `$HOME` points to a temp directory.
 ///
-/// Only literal string occurrences are replaced — shell expansion (`~`) and
-/// escaped forms (`\$HOME`) are intentionally left alone.
+/// Only literal string occurrences are replaced — shell tilde expansion (`~`)
+/// is left alone. Note that escaped forms (`\$HOME`) will also be rewritten;
+/// this is acceptable because `\$HOME` is extremely rare in dotfiles.
 pub(crate) fn rewrite_home_references(content: &str, host_home: &Path) -> String {
     let home_str = host_home.to_string_lossy();
+    // Replace `${HOME}` before `$HOME` so the braced form doesn't get
+    // partially matched by the unbraced replacement.
     content
         .replace("${HOME}", &home_str)
         .replace("$HOME", &home_str)
@@ -98,19 +105,20 @@ pub(crate) fn prepare_dotfile_content(
     host_home: Option<&Path>,
 ) -> String {
     if dotfile_path.ends_with(".gitconfig") {
-        strip_gitconfig_secrets(content)
-    } else if let Some(home) = host_home {
-        let is_shell_config = dotfile_path.ends_with(".zshrc")
-            || dotfile_path.ends_with(".zshenv")
-            || dotfile_path.ends_with(".zprofile");
-        if is_shell_config {
-            rewrite_home_references(content, home)
-        } else {
-            content.to_string()
-        }
-    } else {
-        content.to_string()
+        return strip_gitconfig_secrets(content);
     }
+
+    let is_shell_config = dotfile_path.ends_with(".zshrc")
+        || dotfile_path.ends_with(".zshenv")
+        || dotfile_path.ends_with(".zprofile");
+
+    if is_shell_config {
+        if let Some(home) = host_home {
+            return rewrite_home_references(content, home);
+        }
+    }
+
+    content.to_string()
 }
 
 #[cfg(test)]
