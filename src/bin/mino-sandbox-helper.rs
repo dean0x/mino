@@ -287,6 +287,46 @@ fn prepare_spawn(
     Ok(SpawnReady { uid, gid })
 }
 
+/// Recursively set ownership of all files and directories under a path.
+///
+/// Uses libc::chown (not lchown) because symlinks are already filtered
+/// out during copy_dotfiles(). Errors are logged but non-fatal.
+#[cfg(unix)]
+fn chown_recursive(path: &Path, uid: u32, gid: u32) {
+    fn chown_path(path: &Path, uid: u32, gid: u32) {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        if let Ok(cpath) = CString::new(path.as_os_str().as_bytes()) {
+            // SAFETY: valid CString, uid/gid from dscl lookup
+            if unsafe { libc::chown(cpath.as_ptr(), uid, gid) } != 0 {
+                eprintln!(
+                    "[mino-helper] chown failed on {}: {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
+
+    chown_path(path, uid, gid);
+
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            let metadata = match std::fs::symlink_metadata(&entry_path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if metadata.is_dir() {
+                chown_recursive(&entry_path, uid, gid);
+            } else if !metadata.file_type().is_symlink() {
+                chown_path(&entry_path, uid, gid);
+            }
+        }
+    }
+}
+
 fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     let SpawnParams {
         session_id,
@@ -307,26 +347,29 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     // 1. Create home directory
     std::fs::create_dir_all(&home_dir).map_err(|e| format!("Failed to create home dir: {}", e))?;
 
-    // 2. Copy dotfiles to home
+    // 2. Set ACL on home dir (before dotfile copy so file_inherit applies)
+    if let Err(e) = set_acl(&home_dir, true, &sandbox_user) {
+        return Err(format!("ACL setup failed on home dir: {}", e));
+    }
+
+    // 3. Look up sandbox user UID/GID (needed for chown after dotfile copy)
+    let ready = prepare_spawn(&sandbox_user, &acl_paths, &home_dir)?;
+
+    // 4. Copy dotfiles to home
     if let Some(dotfile_src) = &dotfile_dir {
         copy_dotfiles(dotfile_src, &home_dir);
     }
 
-    // 3. Set ACLs for sandbox user on all paths
+    // 5. chown all files in home to sandbox user (belt-and-suspenders)
+    #[cfg(unix)]
+    chown_recursive(&home_dir, ready.uid, ready.gid);
+
+    // 6. Set ACLs for sandbox user on all paths (project, passthrough)
     for acl in &acl_paths {
         set_acl(&acl.path, acl.writable, &sandbox_user)?;
     }
 
-    // Set ACL on home dir
-    if let Err(e) = set_acl(&home_dir, true, &sandbox_user) {
-        cleanup_acls(&acl_paths, None, &sandbox_user);
-        return Err(format!("ACL setup failed on home dir: {}", e));
-    }
-
-    // 4. Look up sandbox user UID and GID
-    let ready = prepare_spawn(&sandbox_user, &acl_paths, &home_dir)?;
-
-    // 5. Fork + setgid + setuid + exec
+    // 7. Fork + setgid + setuid + exec
     #[cfg(unix)]
     {
         // SAFETY: fork() duplicates the process. The helper binary is single-threaded
@@ -614,6 +657,7 @@ fn get_user_ids(username: &str) -> Result<(u32, u32), String> {
 /// runs with default OS limits for the failed resource.
 #[cfg(unix)]
 unsafe fn apply_resource_limits(limits: &ResourceLimitsDto) {
+    #[cfg(target_os = "linux")]
     set_rlimit(libc::RLIMIT_AS, limits.max_memory_bytes, "RLIMIT_AS");
     set_rlimit(
         libc::RLIMIT_NPROC,

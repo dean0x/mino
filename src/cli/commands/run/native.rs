@@ -57,7 +57,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         start_proxy_if_needed(&network_mode, &mut env, config, &mut spinner).await?;
     let dotfile_dir = prepare_dotfiles(config).await?;
     let command = if args.command.is_empty() {
-        vec!["/bin/bash".to_string()]
+        vec!["/bin/zsh".to_string()]
     } else {
         args.command.clone()
     };
@@ -71,6 +71,19 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     )
     .await?;
 
+    // Auto-passthrough common shell directories (read-only)
+    let mut sandbox_config = config.sandbox.clone();
+    if let Some(ref host_home) = dirs::home_dir() {
+        for dir_name in &[".oh-my-zsh", ".nvm"] {
+            let dir = host_home.join(dir_name);
+            if dir.is_dir() {
+                sandbox_config
+                    .passthrough_paths
+                    .push(dir.to_string_lossy().to_string());
+            }
+        }
+    }
+
     // Phase 4: Spawn sandbox and monitor
     let spawn_config = SandboxSpawnConfig {
         session_id: session_ctx.session_name.clone(),
@@ -78,7 +91,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         command,
         env,
         network_mode,
-        sandbox_config: config.sandbox.clone(),
+        sandbox_config,
         dotfile_dir: dotfile_dir.clone(),
         interactive: !args.detach,
     };
@@ -477,10 +490,11 @@ fn build_sandbox_env(
         }
     }
 
-    // PATH: system paths (toolchain paths added later based on passthrough mounts)
+    // PATH: Homebrew + system paths (toolchain paths added later based on passthrough mounts)
     env.insert(
         "PATH".to_string(),
-        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+        "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            .to_string(),
     );
 
     // Credential env vars
@@ -617,7 +631,7 @@ async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
         let content = tokio::fs::read_to_string(&source)
             .await
             .map_err(|e| MinoError::io(format!("reading {}", dotfile), e))?;
-        let cleaned = dotfiles::prepare_dotfile_content(&dotfile, &content);
+        let cleaned = dotfiles::prepare_dotfile_content(&dotfile, &content, Some(&home_dir));
 
         let dest = tmp_dir.join(&dotfile);
         if let Some(parent) = dest.parent() {
@@ -718,6 +732,7 @@ mod tests {
         assert_eq!(env.get("USER").unwrap(), "_mino_agent");
         assert_eq!(env.get("MINO_SANDBOX").unwrap(), "native");
         let path = env.get("PATH").unwrap();
+        assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/bin"));
         assert!(path.contains("/bin"));
     }
@@ -812,6 +827,10 @@ mod tests {
         let names = collect_dotfile_names(&[]);
         assert!(names.contains(&".gitconfig".to_string()));
         assert!(names.contains(&".config/git/ignore".to_string()));
+        assert!(names.contains(&".zshrc".to_string()));
+        assert!(names.contains(&".zshenv".to_string()));
+        assert!(names.contains(&".zprofile".to_string()));
+        assert!(names.contains(&".tmux.conf".to_string()));
     }
 
     #[test]

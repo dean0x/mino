@@ -124,7 +124,8 @@ pub fn build_exec_env(home_dir: &Path, sandbox_user: &str) -> MinoResult<HashMap
     env.insert("USER".to_string(), sandbox_user.to_string());
     env.insert(
         "PATH".to_string(),
-        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+        "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            .to_string(),
     );
     if let Ok(term) = std::env::var("TERM") {
         env.insert("TERM".to_string(), term);
@@ -299,6 +300,7 @@ mod tests {
         let env = build_exec_env(&PathBuf::from("/home/agent"), "_mino_agent").unwrap();
         assert_eq!(env.get("HOME").unwrap(), "/home/agent");
         assert_eq!(env.get("USER").unwrap(), "_mino_agent");
+        assert!(env.get("PATH").unwrap().contains("/opt/homebrew/bin"));
         assert!(env.get("PATH").unwrap().contains("/usr/bin"));
     }
 
