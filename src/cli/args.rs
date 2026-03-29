@@ -216,6 +216,14 @@ pub struct RunArgs {
     pub command: Vec<String>,
 }
 
+/// Strip bare `--` separators that clap's `last = true` leaks into the command vec.
+/// This happens when the user runs `mino run --` without a trailing command.
+pub fn strip_separator(command: &mut Vec<String>) {
+    if command.len() == 1 && command[0] == "--" {
+        command.clear();
+    }
+}
+
 /// Arguments for the list command
 #[derive(Parser, Debug)]
 pub struct ListArgs {
@@ -768,5 +776,33 @@ mod tests {
             Commands::Completions(args) => assert_eq!(args.shell, Shell::Fish),
             _ => panic!("expected Completions command"),
         }
+    }
+
+    #[test]
+    fn strip_separator_removes_bare_double_dash() {
+        let mut cmd = vec!["--".to_string()];
+        strip_separator(&mut cmd);
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn strip_separator_preserves_real_commands() {
+        let mut cmd = vec!["echo".to_string(), "hello".to_string()];
+        strip_separator(&mut cmd);
+        assert_eq!(cmd, vec!["echo", "hello"]);
+    }
+
+    #[test]
+    fn strip_separator_handles_empty_vec() {
+        let mut cmd: Vec<String> = vec![];
+        strip_separator(&mut cmd);
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn strip_separator_preserves_double_dash_in_args() {
+        let mut cmd = vec!["echo".to_string(), "--".to_string(), "hello".to_string()];
+        strip_separator(&mut cmd);
+        assert_eq!(cmd, vec!["echo", "--", "hello"]);
     }
 }

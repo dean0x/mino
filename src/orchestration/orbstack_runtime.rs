@@ -574,7 +574,6 @@ impl ContainerRuntime for OrbStackRuntime {
             args.push("-t");
         }
         args.push(container_id);
-        args.push("--");
         args.extend(command.iter().map(String::as_str));
         self.orbstack.exec_interactive(&args).await
     }
