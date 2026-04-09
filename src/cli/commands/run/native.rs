@@ -324,7 +324,7 @@ async fn spawn_and_monitor(
         audit,
     } = session_ctx;
 
-    spinner.message("Starting native sandbox...");
+    spinner.message("Starting native sandbox (setting permissions)...");
 
     let mut process = match platform.spawn(spawn_config).await {
         Ok(p) => p,

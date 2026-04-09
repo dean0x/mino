@@ -39,6 +39,7 @@ fn acl_perms(writable: bool) -> &'static str {
 /// Returns the full argument list for `std::process::Command::new("chmod").args(...)`.
 pub fn build_acl_args(path: &str, username: &str, writable: bool) -> Vec<String> {
     vec![
+        "-R".to_string(),
         "+a".to_string(),
         format!("{} {}", username, acl_perms(writable)),
         path.to_string(),
@@ -50,6 +51,7 @@ pub fn build_acl_args(path: &str, username: &str, writable: bool) -> Vec<String>
 /// Returns the full argument list for `std::process::Command::new("chmod").args(...)`.
 pub fn build_remove_acl_args(path: &str, username: &str, writable: bool) -> Vec<String> {
     vec![
+        "-R".to_string(),
         "-a".to_string(),
         format!("{} {}", username, acl_perms(writable)),
         path.to_string(),
@@ -144,25 +146,28 @@ mod tests {
     #[test]
     fn acl_args_readonly() {
         let args = build_acl_args("/tmp/project", "_mino_agent", false);
-        assert_eq!(args[0], "+a");
-        assert!(args[1].contains("_mino_agent"));
-        assert!(args[1].contains("read,execute"));
-        assert!(!args[1].contains("write"));
-        assert_eq!(args[2], "/tmp/project");
+        assert_eq!(args[0], "-R");
+        assert_eq!(args[1], "+a");
+        assert!(args[2].contains("_mino_agent"));
+        assert!(args[2].contains("read,execute"));
+        assert!(!args[2].contains("write"));
+        assert_eq!(args[3], "/tmp/project");
     }
 
     #[test]
     fn acl_args_writable() {
         let args = build_acl_args("/tmp/project", "_mino_agent", true);
-        assert_eq!(args[0], "+a");
-        assert!(args[1].contains("read,write,execute"));
-        assert_eq!(args[2], "/tmp/project");
+        assert_eq!(args[0], "-R");
+        assert_eq!(args[1], "+a");
+        assert!(args[2].contains("read,write,execute"));
+        assert_eq!(args[3], "/tmp/project");
     }
 
     #[test]
     fn acl_args_custom_username() {
         let args = build_acl_args("/tmp/p", "custom-user", false);
-        assert!(args[1].starts_with("custom-user "));
+        assert_eq!(args[0], "-R");
+        assert!(args[2].starts_with("custom-user "));
     }
 
     // ---- build_remove_acl_args tests ----
@@ -170,16 +175,18 @@ mod tests {
     #[test]
     fn remove_acl_args_readonly() {
         let args = build_remove_acl_args("/tmp/project", "_mino_agent", false);
-        assert_eq!(args[0], "-a");
-        assert!(args[1].contains("read,execute"));
-        assert!(!args[1].contains("write"));
+        assert_eq!(args[0], "-R");
+        assert_eq!(args[1], "-a");
+        assert!(args[2].contains("read,execute"));
+        assert!(!args[2].contains("write"));
     }
 
     #[test]
     fn remove_acl_args_writable() {
         let args = build_remove_acl_args("/tmp/project", "_mino_agent", true);
-        assert_eq!(args[0], "-a");
-        assert!(args[1].contains("read,write,execute"));
+        assert_eq!(args[0], "-R");
+        assert_eq!(args[1], "-a");
+        assert!(args[2].contains("read,write,execute"));
     }
 
     // ---- build_pf_cleanup_args tests ----
