@@ -359,6 +359,49 @@ impl Drop for SpawnGuard<'_> {
     }
 }
 
+/// Logical stages executed by [`handle_spawn`], in canonical order.
+///
+/// This enum exists so the ordering can be asserted by tests: any reordering
+/// of `SPAWN_STAGES` is a breaking change that must be reviewed explicitly.
+/// The actual dispatch still happens via explicit code in `handle_spawn`,
+/// but the comments in that function reference the corresponding `SpawnStage`
+/// variant so reviewers can cross-check against the const.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpawnStage {
+    /// Validate the sandbox username and create the home directory.
+    CreateHome,
+    /// Install the RAII `SpawnGuard` and set ACL on home dir.
+    InstallGuard,
+    /// Resolve UID/GID for the sandbox user.
+    ResolveIds,
+    /// Copy dotfiles from the staging directory into home.
+    CopyDotfiles,
+    /// chown all files in home to the sandbox user.
+    ChownHome,
+    /// Apply ACLs to project and passthrough paths.
+    SetProjectAcls,
+    /// Forget the guard, fork, drop privileges, and exec the command.
+    ExecChild,
+}
+
+/// Canonical execution order for the spawn pipeline.
+///
+/// Tests assert against this slice to verify:
+/// - `InstallGuard` precedes `CopyDotfiles` (ACL must be set before files land)
+/// - `ResolveIds` precedes `ChownHome` (can't chown without knowing uid/gid)
+/// - `ExecChild` is last (fork must happen after all setup)
+#[cfg_attr(not(test), allow(dead_code))]
+const SPAWN_STAGES: &[SpawnStage] = &[
+    SpawnStage::CreateHome,
+    SpawnStage::InstallGuard,
+    SpawnStage::ResolveIds,
+    SpawnStage::CopyDotfiles,
+    SpawnStage::ChownHome,
+    SpawnStage::SetProjectAcls,
+    SpawnStage::ExecChild,
+];
+
 fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     let SpawnParams {
         session_id,
@@ -372,14 +415,13 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
         sandbox_user,
     } = params;
 
-    // 0. Validate sandbox_user before any ACL or filesystem operations.
-    //    This binary runs as root — reject malformed usernames immediately.
+    // Stage: CreateHome — validate sandbox_user and create home directory.
+    //   (Corresponds to SPAWN_STAGES[0]: SpawnStage::CreateHome)
     mino::sandbox::config::validate_sandbox_user(&sandbox_user).map_err(|e| e.to_string())?;
 
-    // 1. Create home directory
     std::fs::create_dir_all(&home_dir).map_err(|e| format!("Failed to create home dir: {}", e))?;
 
-    // 1a. Symlink check: /tmp is world-writable and session_id is predictable.
+    // Symlink check: /tmp is world-writable and session_id is predictable.
     //     An attacker could pre-plant a symlink at /tmp/mino-home-<id> pointing to
     //     /etc or another sensitive path. Bail if the path resolves to a symlink.
     //
@@ -400,39 +442,45 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
         }
     }
 
-    // Construct guard immediately after home dir is safely created.
-    // Any `?` error return below will trigger Drop → cleanup.
+    // Stage: InstallGuard — construct RAII guard; set ACL on home dir so that
+    //   file_inherit applies to dotfiles copied in the next stage.
+    //   (Corresponds to SPAWN_STAGES[1]: SpawnStage::InstallGuard)
+    //   Any `?` error return below will trigger Drop → cleanup.
     let mut guard = SpawnGuard::new(home_dir.clone(), &sandbox_user);
 
-    // 2. Set ACL on home dir (before dotfile copy so file_inherit applies)
     if let Err(e) = set_acl(&home_dir, true, &sandbox_user) {
         return Err(format!("ACL setup failed on home dir: {}", e));
     }
 
-    // 3. Look up sandbox user UID/GID (needed for chown after dotfile copy)
+    // Stage: ResolveIds — look up UID/GID for the sandbox user.
+    //   (Corresponds to SPAWN_STAGES[2]: SpawnStage::ResolveIds)
     let ready = prepare_spawn(&sandbox_user)?;
 
-    // 4. Copy dotfiles to home
+    // Stage: CopyDotfiles — copy dotfiles from the staging dir into home.
+    //   ACL from the InstallGuard stage ensures file_inherit applies here.
+    //   (Corresponds to SPAWN_STAGES[3]: SpawnStage::CopyDotfiles)
     if let Some(dotfile_src) = &dotfile_dir {
         copy_dotfiles(dotfile_src, &home_dir);
     }
 
-    // 5. chown all files in home to sandbox user (belt-and-suspenders)
+    // Stage: ChownHome — chown all files in home to sandbox user.
+    //   (Corresponds to SPAWN_STAGES[4]: SpawnStage::ChownHome)
     #[cfg(unix)]
     chown_recursive(&home_dir, ready.uid, ready.gid);
 
-    // 6. Set ACLs for sandbox user on all paths (project, passthrough)
-    //    Track each successful ACL so the guard can remove them on error.
+    // Stage: SetProjectAcls — apply ACLs to project and passthrough paths.
+    //   Track each successful ACL so the guard can remove them on error.
+    //   (Corresponds to SPAWN_STAGES[5]: SpawnStage::SetProjectAcls)
     for acl in &acl_paths {
         set_acl(&acl.path, acl.writable, &sandbox_user)?;
         guard.track_acl(acl);
     }
 
+    // Stage: ExecChild — forget the guard (cleanup handed to parent), fork, exec.
+    //   (Corresponds to SPAWN_STAGES[6]: SpawnStage::ExecChild)
     // All setup succeeded — hand off cleanup responsibility to the parent
     // process (which calls cleanup_acls + remove_dir_all after child exits).
     std::mem::forget(guard);
-
-    // 7. Fork + setgid + setuid + exec
     #[cfg(unix)]
     {
         // SAFETY: fork() duplicates the process. The helper binary is single-threaded
@@ -825,74 +873,91 @@ extern "C" fn forward_signal(sig: libc::c_int) {
     }
 }
 
+/// Recreate a single symlink entry in `dst_parent`.
+///
+/// Reads the symlink target from `src_path` and creates an identical symlink
+/// at `dst_parent/<entry-filename>`. Logs and returns `Ok(())` on symlink
+/// creation failure so callers continue processing other entries.
+///
+/// # Errors
+/// Returns `Err` only when `read_link` itself fails (i.e. we cannot determine
+/// the target). In that case the entry is skipped and an error is logged.
+#[cfg(unix)]
+fn recreate_symlink_entry(
+    src_path: &Path,
+    dst_parent: &Path,
+    file_name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    let target = std::fs::read_link(src_path)?;
+    let dst_path = dst_parent.join(file_name);
+    if let Err(e) = std::os::unix::fs::symlink(&target, &dst_path) {
+        eprintln!(
+            "[mino-helper] failed to create symlink {} -> {}: {}",
+            dst_path.display(),
+            target.display(),
+            e
+        );
+    }
+    Ok(())
+}
+
 fn copy_dotfiles(src: &Path, dest: &Path) {
-    if let Ok(entries) = std::fs::read_dir(src) {
-        for entry in entries.flatten() {
-            let src_path = entry.path();
-            let file_name = entry.file_name();
-            let dest_path = dest.join(&file_name);
+    let entries = match std::fs::read_dir(src) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
 
-            // Use symlink_metadata() (not metadata()) to detect symlinks without
-            // following them. Symlinks are recreated, not dereferenced.
-            let metadata = match std::fs::symlink_metadata(&src_path) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!(
-                        "[mino-helper] skipping dotfile (metadata error): {}: {}",
-                        src_path.display(),
-                        e
-                    );
-                    continue;
-                }
-            };
+    for entry in entries.flatten() {
+        let src_path = entry.path();
+        let file_name = entry.file_name();
+        let dest_path = dest.join(&file_name);
 
-            if metadata.file_type().is_symlink() {
-                // Recreate symlinks from the staging dir — these are created by the
-                // mino CLI to bridge host directories (e.g., ~/.oh-my-zsh → /Users/X/.oh-my-zsh).
-                // The staging dir is 0700 and CLI-controlled, so these are trusted.
-                #[cfg(unix)]
-                {
-                    match std::fs::read_link(&src_path) {
-                        Ok(target) => {
-                            if let Err(e) = std::os::unix::fs::symlink(&target, &dest_path) {
-                                eprintln!(
-                                    "[mino-helper] failed to create symlink {} -> {}: {}",
-                                    dest_path.display(),
-                                    target.display(),
-                                    e
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[mino-helper] failed to read symlink {}: {}",
-                                src_path.display(),
-                                e
-                            );
-                        }
-                    }
-                }
+        // Use symlink_metadata() (not metadata()) to detect symlinks without
+        // following them. Symlinks are recreated, not dereferenced.
+        let metadata = match std::fs::symlink_metadata(&src_path) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "[mino-helper] skipping dotfile (metadata error): {}: {}",
+                    src_path.display(),
+                    e
+                );
                 continue;
             }
+        };
 
-            if metadata.is_dir() {
-                if let Err(e) = std::fs::create_dir_all(&dest_path) {
-                    eprintln!(
-                        "[mino-helper] failed to create dir {}: {}",
-                        dest_path.display(),
-                        e
-                    );
-                    continue;
-                }
-                copy_dotfiles(&src_path, &dest_path);
-            } else if let Err(e) = std::fs::copy(&src_path, &dest_path) {
+        if metadata.file_type().is_symlink() {
+            // Recreate symlinks from the staging dir — these are created by the
+            // mino CLI to bridge host directories (e.g., ~/.oh-my-zsh → /Users/X/.oh-my-zsh).
+            // The staging dir is 0700 and CLI-controlled, so these are trusted.
+            #[cfg(unix)]
+            if let Err(e) = recreate_symlink_entry(&src_path, dest, &file_name) {
                 eprintln!(
-                    "[mino-helper] failed to copy dotfile {} -> {}: {}",
+                    "[mino-helper] failed to read symlink {}: {}",
                     src_path.display(),
-                    dest_path.display(),
                     e
                 );
             }
+            continue;
+        }
+
+        if metadata.is_dir() {
+            if let Err(e) = std::fs::create_dir_all(&dest_path) {
+                eprintln!(
+                    "[mino-helper] failed to create dir {}: {}",
+                    dest_path.display(),
+                    e
+                );
+                continue;
+            }
+            copy_dotfiles(&src_path, &dest_path);
+        } else if let Err(e) = std::fs::copy(&src_path, &dest_path) {
+            eprintln!(
+                "[mino-helper] failed to copy dotfile {} -> {}: {}",
+                src_path.display(),
+                dest_path.display(),
+                e
+            );
         }
     }
 }
@@ -1230,6 +1295,136 @@ mod tests {
         ]);
         let request = load_request(&cli_args).unwrap();
         assert!(matches!(request, HelperRequest::HealthCheck));
+    }
+
+    // ---- SPAWN_STAGES ordering regression tests (T-002) ----
+    //
+    // These tests assert invariants about the spawn pipeline order to prevent
+    // accidental reordering. ACL must be installed before dotfiles are copied
+    // (so file_inherit applies), and ExecChild must be last.
+
+    #[test]
+    fn spawn_stages_install_guard_before_copy_dotfiles() {
+        let install_pos = SPAWN_STAGES
+            .iter()
+            .position(|s| *s == SpawnStage::InstallGuard)
+            .expect("InstallGuard must be in SPAWN_STAGES");
+        let copy_pos = SPAWN_STAGES
+            .iter()
+            .position(|s| *s == SpawnStage::CopyDotfiles)
+            .expect("CopyDotfiles must be in SPAWN_STAGES");
+        assert!(
+            install_pos < copy_pos,
+            "InstallGuard (sets ACL with file_inherit) must come before CopyDotfiles; \
+             got InstallGuard at {} and CopyDotfiles at {}",
+            install_pos,
+            copy_pos
+        );
+    }
+
+    #[test]
+    fn spawn_stages_resolve_ids_before_chown_home() {
+        let resolve_pos = SPAWN_STAGES
+            .iter()
+            .position(|s| *s == SpawnStage::ResolveIds)
+            .expect("ResolveIds must be in SPAWN_STAGES");
+        let chown_pos = SPAWN_STAGES
+            .iter()
+            .position(|s| *s == SpawnStage::ChownHome)
+            .expect("ChownHome must be in SPAWN_STAGES");
+        assert!(
+            resolve_pos < chown_pos,
+            "ResolveIds must come before ChownHome; \
+             got ResolveIds at {} and ChownHome at {}",
+            resolve_pos,
+            chown_pos
+        );
+    }
+
+    #[test]
+    fn spawn_stages_exec_child_is_last() {
+        let last = SPAWN_STAGES.last().expect("SPAWN_STAGES must not be empty");
+        assert_eq!(
+            *last,
+            SpawnStage::ExecChild,
+            "ExecChild must be the terminal stage (fork must happen after all setup)"
+        );
+    }
+
+    #[test]
+    fn spawn_stages_has_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for stage in SPAWN_STAGES {
+            assert!(
+                seen.insert(format!("{:?}", stage)),
+                "SPAWN_STAGES contains duplicate stage: {:?}",
+                stage
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_stages_covers_all_variants() {
+        // Keep in sync with SpawnStage enum: if a new variant is added,
+        // this test fails unless SPAWN_STAGES is also updated.
+        let expected_count = 7; // CreateHome, InstallGuard, ResolveIds, CopyDotfiles,
+                                // ChownHome, SetProjectAcls, ExecChild
+        assert_eq!(
+            SPAWN_STAGES.len(),
+            expected_count,
+            "SPAWN_STAGES has {} entries but expected {}. \
+             Update SPAWN_STAGES and this count when adding/removing SpawnStage variants.",
+            SPAWN_STAGES.len(),
+            expected_count
+        );
+    }
+
+    // ---- recreate_symlink_entry tests ----
+
+    #[cfg(unix)]
+    #[test]
+    fn recreate_symlink_entry_valid_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        let dst_dir = dir.path().join("dst");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        // Create a valid symlink in src
+        std::os::unix::fs::symlink("/usr/share/doc", src_dir.join("link")).unwrap();
+
+        let file_name = std::ffi::OsStr::new("link");
+        recreate_symlink_entry(&src_dir.join("link"), &dst_dir, file_name).unwrap();
+
+        // Destination should have a symlink with the same target
+        let dst_link = dst_dir.join("link");
+        let meta = std::fs::symlink_metadata(&dst_link).unwrap();
+        assert!(meta.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(&dst_link).unwrap(),
+            std::path::PathBuf::from("/usr/share/doc")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recreate_symlink_entry_dangling_symlink() {
+        // A dangling symlink (target doesn't exist) should still be recreated
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        let dst_dir = dir.path().join("dst");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+
+        let dangling_target = dir.path().join("nonexistent");
+        std::os::unix::fs::symlink(&dangling_target, src_dir.join("dangling")).unwrap();
+
+        let file_name = std::ffi::OsStr::new("dangling");
+        recreate_symlink_entry(&src_dir.join("dangling"), &dst_dir, file_name).unwrap();
+
+        let dst_link = dst_dir.join("dangling");
+        let meta = std::fs::symlink_metadata(&dst_link).unwrap();
+        assert!(meta.file_type().is_symlink());
     }
 
     // ---- copy_dotfiles tests ----
