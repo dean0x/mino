@@ -133,6 +133,62 @@ impl Default for SandboxConfig {
     }
 }
 
+impl SandboxConfig {
+    /// Validate that `auto_passthrough_dirs` and `auto_copy_dirs` do not overlap
+    /// with the default dotfile list or each other.
+    ///
+    /// Overlapping entries would cause two independent preparation stages to write
+    /// to the same staging-directory entry, producing non-deterministic results when
+    /// the stages run concurrently. This check must pass before parallelizing
+    /// `prepare_dotfiles`.
+    ///
+    /// # Errors
+    /// Returns an error naming the first conflicting entry when:
+    /// - `auto_passthrough_dirs` contains a name that appears in `DEFAULT_DOTFILES`
+    /// - `auto_copy_dirs` contains a name that appears in `DEFAULT_DOTFILES`
+    /// - `auto_passthrough_dirs` and `auto_copy_dirs` share a name
+    pub fn validate(&self) -> MinoResult<()> {
+        use crate::sandbox::dotfiles::DEFAULT_DOTFILES;
+        use std::collections::HashSet;
+
+        let defaults: HashSet<&str> = DEFAULT_DOTFILES.iter().copied().collect();
+
+        for name in &self.auto_passthrough_dirs {
+            if defaults.contains(name.as_str()) {
+                return Err(MinoError::User(format!(
+                    "auto_passthrough_dirs entry '{}' conflicts with a default dotfile. \
+                     Remove it from auto_passthrough_dirs or from the dotfiles list.",
+                    name
+                )));
+            }
+        }
+
+        for name in &self.auto_copy_dirs {
+            if defaults.contains(name.as_str()) {
+                return Err(MinoError::User(format!(
+                    "auto_copy_dirs entry '{}' conflicts with a default dotfile. \
+                     Remove it from auto_copy_dirs or from the dotfiles list.",
+                    name
+                )));
+            }
+        }
+
+        let passthrough_set: HashSet<&str> =
+            self.auto_passthrough_dirs.iter().map(|s| s.as_str()).collect();
+        for name in &self.auto_copy_dirs {
+            if passthrough_set.contains(name.as_str()) {
+                return Err(MinoError::User(format!(
+                    "auto_copy_dirs entry '{}' also appears in auto_passthrough_dirs. \
+                     A directory can only appear in one list.",
+                    name
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Validate that a path is not in the sensitive paths blocklist.
 /// Returns error if `allow_sensitive` is false and path matches.
 pub fn validate_path_not_sensitive(
@@ -611,5 +667,58 @@ mod tests {
         let env = config.env.unwrap();
         assert_eq!(env.get("MY_VAR").unwrap(), "my_value");
         assert_eq!(env.get("ANOTHER").unwrap(), "val2");
+    }
+
+    // ---- SandboxConfig::validate collision tests ----
+
+    #[test]
+    fn validate_accepts_disjoint_names() {
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".oh-my-zsh".to_string(), ".nvm".to_string()],
+            auto_copy_dirs: vec![".claude".to_string()],
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_passthrough_overlap_with_defaults() {
+        // ".gitconfig" is in DEFAULT_DOTFILES
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".gitconfig".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains(".gitconfig"));
+        assert!(err.to_string().contains("auto_passthrough_dirs"));
+    }
+
+    #[test]
+    fn validate_rejects_copy_overlap_with_defaults() {
+        // ".zshrc" is in DEFAULT_DOTFILES
+        let config = SandboxConfig {
+            auto_copy_dirs: vec![".zshrc".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains(".zshrc"));
+        assert!(err.to_string().contains("auto_copy_dirs"));
+    }
+
+    #[test]
+    fn validate_rejects_passthrough_and_copy_sharing_names() {
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".claude".to_string()],
+            auto_copy_dirs: vec![".claude".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains(".claude"));
+    }
+
+    #[test]
+    fn validate_accepts_empty_dirs() {
+        let config = SandboxConfig::default();
+        assert!(config.validate().is_ok());
     }
 }

@@ -180,10 +180,19 @@ impl ConfigManager {
             .await
             .map_err(|e| MinoError::io(format!("reading config from {}", path.display()), e))?;
 
-        toml::from_str(&content).map_err(|e| MinoError::ConfigInvalid {
+        let config: Config = toml::from_str(&content).map_err(|e| MinoError::ConfigInvalid {
             path: path.to_path_buf(),
             reason: e.to_string(),
-        })
+        })?;
+
+        // Validate sandbox config: reject overlapping auto_passthrough_dirs / auto_copy_dirs.
+        // This ensures prepare_dotfiles stages remain disjoint and can safely run in parallel.
+        config.sandbox.validate().map_err(|e| MinoError::ConfigInvalid {
+            path: path.to_path_buf(),
+            reason: e.to_string(),
+        })?;
+
+        Ok(config)
     }
 
     /// Save configuration to file

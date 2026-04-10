@@ -599,6 +599,109 @@ fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
     result
 }
 
+/// Stage sanitized dotfiles from `home_dir` into `staging`.
+///
+/// Reads each dotfile, strips secrets via [`dotfiles::prepare_dotfile_content`],
+/// and writes the cleaned content. Warns on known-risky files. Skips files that
+/// do not exist on the host.
+async fn write_sanitized_dotfiles(
+    staging: PathBuf,
+    home_dir: PathBuf,
+    dotfile_names: Vec<String>,
+) -> MinoResult<()> {
+    for dotfile in dotfile_names {
+        if dotfiles::is_risky_dotfile(&dotfile) {
+            tracing::warn!(
+                "{} may contain auth tokens. Secrets will be accessible to the agent.",
+                dotfile
+            );
+        }
+        let source = home_dir.join(&dotfile);
+        if !source.exists() {
+            continue;
+        }
+
+        let content = tokio::fs::read_to_string(&source)
+            .await
+            .map_err(|e| MinoError::io(format!("reading {}", dotfile), e))?;
+        let cleaned = dotfiles::prepare_dotfile_content(&dotfile, &content);
+
+        let dest = staging.join(&dotfile);
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| MinoError::io("creating dotfile subdir", e))?;
+        }
+        tokio::fs::write(&dest, cleaned)
+            .await
+            .map_err(|e| MinoError::io(format!("writing {}", dotfile), e))?;
+    }
+    Ok(())
+}
+
+/// Create passthrough symlinks in `staging` pointing to host directories.
+///
+/// For each directory in `passthrough_dirs` that exists on the host, a symlink
+/// is created in the staging directory. The helper binary recreates these links
+/// inside the sandbox home so shell configs (`.oh-my-zsh`, `.nvm`, etc.) resolve.
+#[cfg(unix)]
+async fn create_passthrough_symlinks(
+    staging: PathBuf,
+    home_dir: PathBuf,
+    passthrough_dirs: Vec<String>,
+) -> MinoResult<()> {
+    for dir_name in passthrough_dirs {
+        let host_dir = home_dir.join(&dir_name);
+        if host_dir.is_dir() {
+            let link_path = staging.join(&dir_name);
+            if let Err(e) = tokio::fs::symlink(&host_dir, &link_path).await {
+                tracing::debug!("Failed to create symlink for {}: {}", dir_name, e);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn create_passthrough_symlinks(
+    _staging: PathBuf,
+    _home_dir: PathBuf,
+    _passthrough_dirs: Vec<String>,
+) -> MinoResult<()> {
+    Ok(())
+}
+
+/// Copy user-configured directories into the sandbox staging area.
+///
+/// For `.claude`, uses the allowlist-based [`crate::sandbox::dotfiles::copy_claude_config_dir`]
+/// to avoid multi-GB state directories. All other entries use generic
+/// [`crate::sandbox::fs_copy::copy_dir_recursive`].
+async fn copy_auto_dirs(
+    staging: PathBuf,
+    home_dir: PathBuf,
+    copy_dirs: Vec<String>,
+    project_dir: PathBuf,
+) -> MinoResult<()> {
+    for dir_name in copy_dirs {
+        let host_dir = home_dir.join(&dir_name);
+        if host_dir.is_dir() {
+            let dest_dir = staging.join(&dir_name);
+            tracing::info!(dir = %dir_name, "auto-copying directory into sandbox");
+            if dir_name == ".claude" {
+                crate::sandbox::dotfiles::copy_claude_config_dir(
+                    &host_dir,
+                    &dest_dir,
+                    &project_dir,
+                )
+                .await?;
+            } else {
+                crate::sandbox::fs_copy::copy_dir_recursive(host_dir, dest_dir).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Prepare dotfiles for the native sandbox by building a staging directory containing:
 ///
 /// 1. **Sanitized dotfiles** — files listed in `config.sandbox.dotfiles` are read from the
@@ -613,13 +716,17 @@ fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
 ///
 /// 3. **Copied directories** — directories in `config.sandbox.auto_copy_dirs` are copied
 ///    rather than symlinked because the agent needs a writable, sandbox-local version.
-///    `.claude` uses an allowlist-based copy ([`copy_claude_dir`]) to avoid pulling in large
-///    state directories such as `sessions/` or `file-history/`. Empty by default (opt-in).
+///    `.claude` uses an allowlist-based copy to avoid pulling in large state directories
+///    such as `sessions/` or `file-history/`. Empty by default (opt-in).
 ///
-/// # Parameters
-/// - `config`: full Mino configuration; `sandbox.dotfiles` determines which dotfiles are staged.
-/// - `project_dir`: absolute path to the current project directory, used by [`copy_claude_dir`]
-///   to select the matching per-project memory directory.
+/// All three stages run concurrently via [`tokio::try_join!`]. The three helper functions
+/// take ownership of their inputs (cloned from `config`) so there are no shared references.
+/// The stages are safe to run in parallel because `config.sandbox.validate()` (called during
+/// config load) ensures no overlap between the sets.
+///
+/// # Partial failure
+/// If one stage fails after another has already written files, the staging directory will be
+/// in a partial state. The caller is responsible for cleanup via [`cleanup_dotfile_dir`].
 ///
 /// Returns `None` if the host home directory cannot be determined.
 async fn prepare_dotfiles(config: &Config, project_dir: &Path) -> MinoResult<Option<PathBuf>> {
@@ -644,69 +751,19 @@ async fn prepare_dotfiles(config: &Config, project_dir: &Path) -> MinoResult<Opt
             .map_err(|e| MinoError::io("setting dotfile temp dir permissions", e))?;
     }
 
-    for dotfile in collect_dotfile_names(&config.sandbox.dotfiles) {
-        if dotfiles::is_risky_dotfile(&dotfile) {
-            tracing::warn!(
-                "{} may contain auth tokens. Secrets will be accessible to the agent.",
-                dotfile
-            );
-        }
-        let source = home_dir.join(&dotfile);
-        if !source.exists() {
-            continue;
-        }
+    // Clone inputs once so each stage owns its data (required by tokio::try_join!)
+    let dotfile_names = collect_dotfile_names(&config.sandbox.dotfiles);
+    let passthrough_dirs = config.sandbox.auto_passthrough_dirs.clone();
+    let copy_dirs = config.sandbox.auto_copy_dirs.clone();
+    let project_dir_owned = project_dir.to_path_buf();
 
-        let content = tokio::fs::read_to_string(&source)
-            .await
-            .map_err(|e| MinoError::io(format!("reading {}", dotfile), e))?;
-        let cleaned = dotfiles::prepare_dotfile_content(&dotfile, &content);
-
-        let dest = tmp_dir.join(&dotfile);
-        if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| MinoError::io("creating dotfile subdir", e))?;
-        }
-        tokio::fs::write(&dest, cleaned)
-            .await
-            .map_err(|e| MinoError::io(format!("writing {}", dotfile), e))?;
-    }
-
-    // Create symlinks for user-configured passthrough directories so shell
-    // configs that reference ~/.oh-my-zsh, ~/.nvm etc. resolve correctly
-    // via the sandbox home. These are recreated by copy_dotfiles in the helper.
-    for dir_name in &config.sandbox.auto_passthrough_dirs {
-        let host_dir = home_dir.join(dir_name);
-        if host_dir.is_dir() {
-            let link_path = tmp_dir.join(dir_name);
-            #[cfg(unix)]
-            {
-                if let Err(e) = tokio::fs::symlink(&host_dir, &link_path).await {
-                    tracing::debug!("Failed to create symlink for {}: {}", dir_name, e);
-                }
-            }
-        }
-    }
-
-    // Copy user-configured directories that need sandbox-local mutability.
-    // For .claude, use allowlist-based copy to avoid multi-GB state directories.
-    for dir_name in &config.sandbox.auto_copy_dirs {
-        let host_dir = home_dir.join(dir_name);
-        if host_dir.is_dir() {
-            let dest_dir = tmp_dir.join(dir_name);
-            tracing::info!(dir = %dir_name, "auto-copying directory into sandbox");
-            if dir_name == ".claude" {
-                crate::sandbox::dotfiles::copy_claude_config_dir(
-                    &host_dir,
-                    &dest_dir,
-                    project_dir,
-                )
-                .await?;
-            } else {
-                crate::sandbox::fs_copy::copy_dir_recursive(host_dir, dest_dir).await?;
-            }
-        }
-    }
+    // Run the three independent stages concurrently.
+    // Disjointness of staging entries is guaranteed by SandboxConfig::validate().
+    tokio::try_join!(
+        write_sanitized_dotfiles(tmp_dir.clone(), home_dir.clone(), dotfile_names),
+        create_passthrough_symlinks(tmp_dir.clone(), home_dir.clone(), passthrough_dirs),
+        copy_auto_dirs(tmp_dir.clone(), home_dir, copy_dirs, project_dir_owned),
+    )?;
 
     Ok(Some(tmp_dir))
 }
