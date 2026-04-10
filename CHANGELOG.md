@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Native sandbox default shell changed from `/bin/bash` to `/bin/zsh` on macOS for consistency with the container image shell experience.
+- ACLs now applied recursively (`chmod +a -R`) so existing project files are accessible to the sandbox user — previously only newly created files inherited the ACL.
+- Dotfile rewriting now rewrites `$HOME` references to the host home path so shell plugins (oh-my-zsh, nvm) resolve correctly inside the sandbox.
+- Guard `RLIMIT_AS` memory limit behind `#[cfg(target_os = "linux")]` — macOS does not support `RLIMIT_AS`, so the limit is no longer enforced there.
+- `copy_claude_dir` now uses an allowlist (CLAUDE.md, settings, agents, commands, skills, current project memory) instead of a blocklist, preventing multi-GB state directories (sessions, debug, telemetry, file-history) from being copied into the sandbox.
+- Helper binary content drift detection — `mino setup` now computes a SHA256 checksum of the installed helper binary and rewrites it if it has drifted from the embedded version.
+
+### Changed
+
+- Auto-passthrough expanded: `.oh-my-zsh` and `.nvm` directories are now automatically passed through to the sandbox when present.
+- Homebrew paths added to `PATH` in both sandbox launch and exec environments on macOS.
+- DEFAULT_DOTFILES expanded to include `.zshrc`, `.zshenv`, `.zprofile`, and `.tmux.conf`.
+
 ## [1.6.0] - 2026-03-24
 
 ### Added
@@ -186,6 +203,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit logging and session cleanup.
 - Basic CLI: `run`, `list`, `stop`, `logs`, `status`, `setup`.
 
+[Unreleased]: https://github.com/dean0x/mino/compare/v1.6.0...HEAD
 [1.6.0]: https://github.com/dean0x/mino/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/dean0x/mino/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/dean0x/mino/compare/v1.4.1...v1.5.0
