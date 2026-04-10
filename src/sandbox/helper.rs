@@ -9,10 +9,18 @@ use crate::session::validate_session_name;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Default PATH for sandbox processes. Includes Homebrew paths (macOS) and
-/// standard system directories.
+/// Default PATH for sandbox processes.
+///
+/// On macOS, Homebrew directories are prepended so that tools installed via
+/// Homebrew are reachable inside the sandbox. On other platforms a standard
+/// set of system directories is used.
+#[cfg(target_os = "macos")]
 pub const SANDBOX_PATH: &str =
     "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// Default PATH for sandbox processes (Linux / non-macOS).
+#[cfg(not(target_os = "macos"))]
+pub const SANDBOX_PATH: &str = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// Convert a home directory path to a UTF-8 string, returning an error
 /// if the path contains non-UTF-8 bytes.
@@ -34,7 +42,12 @@ fn acl_perms(writable: bool) -> &'static str {
     }
 }
 
-/// Generate `chmod +a` arguments to add an ACL entry for a user.
+/// Generate `chmod -R +a` arguments to add an ACL entry for a user.
+///
+/// The `-R` flag is required so that newly created files and subdirectories
+/// inside `path` automatically inherit the ACL entry — without it only the
+/// top-level directory receives the permission, and files created later by
+/// the sandbox user would be inaccessible to the agent user.
 ///
 /// Returns the full argument list for `std::process::Command::new("chmod").args(...)`.
 pub fn build_acl_args(path: &str, username: &str, writable: bool) -> Vec<String> {
@@ -46,7 +59,11 @@ pub fn build_acl_args(path: &str, username: &str, writable: bool) -> Vec<String>
     ]
 }
 
-/// Generate `chmod -a` arguments to remove an ACL entry for a user.
+/// Generate `chmod -R -a` arguments to remove an ACL entry for a user.
+///
+/// The `-R` flag mirrors `build_acl_args`: it removes the ACL entry from the
+/// directory tree recursively so that cleanup is complete regardless of which
+/// files were created during the session.
 ///
 /// Returns the full argument list for `std::process::Command::new("chmod").args(...)`.
 pub fn build_remove_acl_args(path: &str, username: &str, writable: bool) -> Vec<String> {
@@ -308,8 +325,10 @@ mod tests {
         let env = build_exec_env(&PathBuf::from("/home/agent"), "_mino_agent").unwrap();
         assert_eq!(env.get("HOME").unwrap(), "/home/agent");
         assert_eq!(env.get("USER").unwrap(), "_mino_agent");
-        assert!(env.get("PATH").unwrap().contains("/opt/homebrew/bin"));
+        // /usr/bin is present on all platforms; /opt/homebrew/bin only on macOS.
         assert!(env.get("PATH").unwrap().contains("/usr/bin"));
+        #[cfg(target_os = "macos")]
+        assert!(env.get("PATH").unwrap().contains("/opt/homebrew/bin"));
     }
 
     #[test]
