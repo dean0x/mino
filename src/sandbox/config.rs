@@ -628,10 +628,12 @@ mod tests {
     #[test]
     fn resolve_sandbox_network_falls_back_to_container() {
         let sandbox = SandboxConfig::default();
-        let mut container = crate::config::schema::ContainerConfig::default();
-        container.network = "host".to_string();
-        container.network_allow = vec!["api.example.com:443".to_string()];
-        container.network_preset = Some("registries".to_string());
+        let container = crate::config::schema::ContainerConfig {
+            network: "host".to_string(),
+            network_allow: vec!["api.example.com:443".to_string()],
+            network_preset: Some("registries".to_string()),
+            ..Default::default()
+        };
         let (network, allow, preset) = resolve_sandbox_network(&sandbox, &container);
         assert_eq!(network, "host");
         assert_eq!(allow, &["api.example.com:443".to_string()]);
@@ -645,9 +647,11 @@ mod tests {
             // network_allow and network_preset are None -> fall back
             ..Default::default()
         };
-        let mut container = crate::config::schema::ContainerConfig::default();
-        container.network_allow = vec!["fallback.com:80".to_string()];
-        container.network_preset = Some("dev".to_string());
+        let container = crate::config::schema::ContainerConfig {
+            network_allow: vec!["fallback.com:80".to_string()],
+            network_preset: Some("dev".to_string()),
+            ..Default::default()
+        };
         let (network, allow, preset) = resolve_sandbox_network(&sandbox, &container);
         assert_eq!(network, "none");
         assert_eq!(allow, &["fallback.com:80".to_string()]);
