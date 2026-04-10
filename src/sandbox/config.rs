@@ -298,6 +298,15 @@ pub(crate) fn path_conflicts(a: &str, b: &str) -> bool {
 ///
 /// Returns error if `allow_sensitive` is false and path matches a sensitive
 /// path that is NOT in `allow_sensitive_paths`.
+///
+/// # Allowlist semantics
+///
+/// `allow_sensitive_paths` is a narrow opt-in: only entries that exactly match
+/// a canonical name in [`SENSITIVE_PATHS`] (e.g., `.docker`, `.config/gh`) can
+/// unblock their corresponding sensitive directory. Entries that do not match
+/// any `SENSITIVE_PATHS` name are ignored. This prevents catastrophic bypass
+/// values like `""`, `"."`, or `".."` from granting access to unrelated
+/// sensitive directories.
 pub fn validate_path_not_sensitive(
     path: &Path,
     home_dir: &Path,
@@ -315,12 +324,11 @@ pub fn validate_path_not_sensitive(
         let resolved_sensitive =
             std::fs::canonicalize(&sensitive_path).unwrap_or_else(|_| sensitive_path.clone());
         if resolved == resolved_sensitive || resolved.starts_with(&resolved_sensitive) {
-            // Allow if this specific sensitive path is in the per-dir allowlist
-            if allow_sensitive_paths.iter().any(|a| {
-                let a_path = home_dir.join(a);
-                let resolved_a = std::fs::canonicalize(&a_path).unwrap_or(a_path);
-                resolved == resolved_a || resolved.starts_with(&resolved_a)
-            }) {
+            // Narrow allowlist: the per-directory opt-in only unblocks its
+            // exact SENSITIVE_PATHS name. Entries that do not match the
+            // current sensitive name are ignored — so `""`, `"."`, or `".."`
+            // cannot bypass unrelated sensitive directories.
+            if allow_sensitive_paths.iter().any(|a| a == *sensitive) {
                 return Ok(());
             }
             return Err(MinoError::User(format!(
@@ -503,6 +511,97 @@ mod tests {
         let home = PathBuf::from("/home/user");
         let path = PathBuf::from("/home/user/.ssh");
         assert!(validate_path_not_sensitive(&path, &home, true, &[]).is_ok());
+    }
+
+    #[test]
+    fn allow_sensitive_paths_permits_exact_match() {
+        // Narrow allowlist: `.docker` in allow_sensitive_paths permits .docker
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.docker");
+        let allow = vec![".docker".to_string()];
+        assert!(validate_path_not_sensitive(&path, &home, false, &allow).is_ok());
+    }
+
+    #[test]
+    fn allow_sensitive_paths_permits_subdirectory_of_allowed() {
+        // Subpaths of an allowed sensitive dir are also permitted
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.docker/config.json");
+        let allow = vec![".docker".to_string()];
+        assert!(validate_path_not_sensitive(&path, &home, false, &allow).is_ok());
+    }
+
+    #[test]
+    fn allow_sensitive_paths_does_not_permit_other_sensitive_dirs() {
+        // Allowing .docker must NOT unblock .ssh
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.ssh");
+        let allow = vec![".docker".to_string()];
+        let err = validate_path_not_sensitive(&path, &home, false, &allow).unwrap_err();
+        assert!(err.to_string().contains("sensitive credential store"));
+    }
+
+    #[test]
+    fn allow_sensitive_paths_empty_string_does_not_bypass() {
+        // Security-critical: `""` must NOT bypass the sensitive-path blocklist.
+        // Regression for HIGH severity bypass where `home.join("")` == home and
+        // starts_with(home) matched any path under home.
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.ssh");
+        let allow = vec!["".to_string()];
+        let err = validate_path_not_sensitive(&path, &home, false, &allow).unwrap_err();
+        assert!(err.to_string().contains("sensitive credential store"));
+    }
+
+    #[test]
+    fn allow_sensitive_paths_dot_does_not_bypass() {
+        // Security: `.` must not bypass — `home.join(".") == home` canonically.
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.aws");
+        let allow = vec![".".to_string()];
+        let err = validate_path_not_sensitive(&path, &home, false, &allow).unwrap_err();
+        assert!(err.to_string().contains("sensitive credential store"));
+    }
+
+    #[test]
+    fn allow_sensitive_paths_dotdot_does_not_bypass() {
+        // Security: `..` must not bypass.
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.aws");
+        let allow = vec!["..".to_string()];
+        let err = validate_path_not_sensitive(&path, &home, false, &allow).unwrap_err();
+        assert!(err.to_string().contains("sensitive credential store"));
+    }
+
+    #[test]
+    fn allow_sensitive_paths_unknown_entry_ignored() {
+        // Entries that don't match any SENSITIVE_PATHS name are silently ignored
+        // (not errors) so that future additions to SENSITIVE_PATHS don't break
+        // existing configs. Unknown entries also must not bypass any check.
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.ssh");
+        let allow = vec![".some-unknown-credential-store".to_string()];
+        let err = validate_path_not_sensitive(&path, &home, false, &allow).unwrap_err();
+        assert!(err.to_string().contains("sensitive credential store"));
+    }
+
+    #[test]
+    fn allow_sensitive_paths_multi_segment_permits_config_gh() {
+        // `.config/gh` is in SENSITIVE_PATHS; allow it via allow_sensitive_paths
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.config/gh");
+        let allow = vec![".config/gh".to_string()];
+        assert!(validate_path_not_sensitive(&path, &home, false, &allow).is_ok());
+    }
+
+    #[test]
+    fn allow_sensitive_paths_config_gh_does_not_permit_gcloud() {
+        // Two SENSITIVE_PATHS entries under .config are independent
+        let home = PathBuf::from("/home/user");
+        let path = PathBuf::from("/home/user/.config/gcloud");
+        let allow = vec![".config/gh".to_string()];
+        let err = validate_path_not_sensitive(&path, &home, false, &allow).unwrap_err();
+        assert!(err.to_string().contains("sensitive credential store"));
     }
 
     #[cfg(unix)]
