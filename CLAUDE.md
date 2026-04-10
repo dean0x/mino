@@ -118,9 +118,9 @@ match resolve_runtime_mode(cli_runtime, &config.runtime)? {
 - TOML at `~/.config/mino/config.toml`
 - All structs use `#[serde(default)]` for partial configs
 - State stored at `~/.local/share/mino/`
-- `SandboxConfig::validate()` is called by `ConfigManager::load_from_file` and rejects
-  configs where `auto_passthrough_dirs` and `auto_copy_dirs` overlap each other or
-  `DEFAULT_DOTFILES`
+- `SandboxConfig::validate()` is called by both `ConfigManager::load_from_file` and
+  `ConfigManager::load_merged` (the primary CLI load path) and rejects configs where
+  `auto_passthrough_dirs` and `auto_copy_dirs` overlap each other or `DEFAULT_DOTFILES`
 
 ## Cache System
 

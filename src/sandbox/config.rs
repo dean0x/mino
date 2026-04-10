@@ -165,19 +165,35 @@ impl SandboxConfig {
     /// the stages run concurrently. This check must pass before parallelizing
     /// `prepare_dotfiles`.
     ///
+    /// The collision check uses **top-level path segment** comparison, not literal
+    /// string equality. For example, a `DEFAULT_DOTFILES` entry like
+    /// `.config/git/ignore` has top segment `.config`, so putting `.config` in
+    /// `auto_copy_dirs` is rejected — both stages would otherwise race on writes
+    /// into `staging/.config/`.
+    ///
     /// # Errors
     /// Returns an error naming the first conflicting entry when:
-    /// - `auto_passthrough_dirs` contains a name that appears in `DEFAULT_DOTFILES`
-    /// - `auto_copy_dirs` contains a name that appears in `DEFAULT_DOTFILES`
-    /// - `auto_passthrough_dirs` and `auto_copy_dirs` share a name
+    /// - `auto_passthrough_dirs` contains a top-level segment that appears in any
+    ///   `DEFAULT_DOTFILES` entry
+    /// - `auto_copy_dirs` contains a top-level segment that appears in any
+    ///   `DEFAULT_DOTFILES` entry
+    /// - `auto_passthrough_dirs` and `auto_copy_dirs` share a top-level segment
     pub fn validate(&self) -> MinoResult<()> {
         use crate::sandbox::dotfiles::DEFAULT_DOTFILES;
         use std::collections::HashSet;
 
-        let defaults: HashSet<&str> = DEFAULT_DOTFILES.iter().copied().collect();
+        // Extract the top-level path segment from each DEFAULT_DOTFILES entry.
+        // `.config/git/ignore` -> `.config`; `.gitconfig` -> `.gitconfig`.
+        // This ensures a user's `auto_copy_dirs = [".config"]` collides with the
+        // built-in `.config/git/ignore` dotfile.
+        let default_tops: HashSet<&str> = DEFAULT_DOTFILES
+            .iter()
+            .map(|entry| entry.split('/').next().unwrap_or(entry))
+            .collect();
 
         for name in &self.auto_passthrough_dirs {
-            if defaults.contains(name.as_str()) {
+            let top = name.split('/').next().unwrap_or(name);
+            if default_tops.contains(top) {
                 return Err(MinoError::User(format!(
                     "auto_passthrough_dirs entry '{}' conflicts with a default dotfile. \
                      Remove it from auto_passthrough_dirs or from the dotfiles list.",
@@ -187,7 +203,8 @@ impl SandboxConfig {
         }
 
         for name in &self.auto_copy_dirs {
-            if defaults.contains(name.as_str()) {
+            let top = name.split('/').next().unwrap_or(name);
+            if default_tops.contains(top) {
                 return Err(MinoError::User(format!(
                     "auto_copy_dirs entry '{}' conflicts with a default dotfile. \
                      Remove it from auto_copy_dirs or from the dotfiles list.",
@@ -196,10 +213,14 @@ impl SandboxConfig {
             }
         }
 
-        let passthrough_set: HashSet<&str> =
-            self.auto_passthrough_dirs.iter().map(|s| s.as_str()).collect();
+        let passthrough_tops: HashSet<&str> = self
+            .auto_passthrough_dirs
+            .iter()
+            .map(|s| s.split('/').next().unwrap_or(s.as_str()))
+            .collect();
         for name in &self.auto_copy_dirs {
-            if passthrough_set.contains(name.as_str()) {
+            let top = name.split('/').next().unwrap_or(name);
+            if passthrough_tops.contains(top) {
                 return Err(MinoError::User(format!(
                     "auto_copy_dirs entry '{}' also appears in auto_passthrough_dirs. \
                      A directory can only appear in one list.",
@@ -660,11 +681,17 @@ mod tests {
 
     #[test]
     fn sandbox_config_new_fields_default_to_none() {
+        // Invariant: the fallback-to-[container] behavior in resolve_sandbox_network
+        // and build_sandbox_env relies on these fields being Option::None by default.
+        // If any of these fields changes to a non-Option type (or a Some default),
+        // the fallback silently breaks and users who set values only under [container]
+        // will get unexpected behavior. This test guards that invariant.
         let config = SandboxConfig::default();
         assert!(config.network.is_none());
         assert!(config.network_allow.is_none());
         assert!(config.network_preset.is_none());
         assert!(config.env.is_none());
+        assert!(config.env_passthrough.is_none());
     }
 
     #[test]
@@ -746,6 +773,54 @@ mod tests {
     #[test]
     fn validate_accepts_empty_dirs() {
         let config = SandboxConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_top_segment_collision_with_default_dotfile() {
+        // `.config/git/ignore` is in DEFAULT_DOTFILES; top segment is `.config`.
+        // Putting `.config` in auto_copy_dirs would race against
+        // write_sanitized_dotfiles writing into `staging/.config/git/ignore`.
+        let config = SandboxConfig {
+            auto_copy_dirs: vec![".config".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains(".config"));
+    }
+
+    #[test]
+    fn validate_rejects_passthrough_top_segment_collision_with_default_dotfile() {
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".config".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains(".config"));
+    }
+
+    #[test]
+    fn validate_rejects_top_segment_collision_between_lists() {
+        // Same top-level segment in both lists is a conflict even when the
+        // full paths differ. This guards against .config/a and .config/b
+        // writing concurrently into the same staging subdir.
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".myapp/a".to_string()],
+            auto_copy_dirs: vec![".myapp/b".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains(".myapp"));
+    }
+
+    #[test]
+    fn validate_accepts_non_overlapping_nested_entries() {
+        // Different top segments should be allowed even if the paths look similar.
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".localshare".to_string()],
+            auto_copy_dirs: vec![".localcache".to_string()],
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 }

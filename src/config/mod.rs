@@ -156,12 +156,27 @@ impl ConfigManager {
             None => self.config_path.display().to_string(),
         };
 
-        merged_value
-            .try_into()
-            .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
+        let config: Config =
+            merged_value
+                .try_into()
+                .map_err(|e: toml::de::Error| MinoError::ConfigInvalid {
+                    path: local_path.unwrap_or(&self.config_path).to_path_buf(),
+                    reason: format!("{} (source: {})", e, config_source),
+                })?;
+
+        // Validate sandbox config: reject overlapping auto_passthrough_dirs / auto_copy_dirs.
+        // This mirrors `load_from_file`. Without it, the main CLI path (which uses
+        // `load_merged`) would accept overlapping entries and fail at runtime when
+        // `prepare_dotfiles` stages collide on the same staging-directory entry.
+        config
+            .sandbox
+            .validate()
+            .map_err(|e| MinoError::ConfigInvalid {
                 path: local_path.unwrap_or(&self.config_path).to_path_buf(),
-                reason: format!("{} (source: {})", e, config_source),
-            })
+                reason: e.to_string(),
+            })?;
+
+        Ok(config)
     }
 
     /// Load configuration, creating default if not exists
@@ -530,5 +545,54 @@ mod tests {
         assert_eq!(config.container.image, "typescript");
         // Defaults fill in the rest
         assert_eq!(config.vm.name, "mino");
+    }
+
+    #[tokio::test]
+    async fn load_merged_rejects_overlapping_sandbox_dirs() {
+        // Regression: load_merged() is the primary config-load entry point
+        // (used by main.rs). It must call SandboxConfig::validate() so that
+        // overlapping auto_passthrough_dirs / auto_copy_dirs are rejected at
+        // load time — not silently accepted and caught at runtime by
+        // prepare_dotfiles.
+        let temp = TempDir::new().unwrap();
+        let global_path = temp.path().join("global.toml");
+        std::fs::write(
+            &global_path,
+            r#"
+            [sandbox]
+            auto_passthrough_dirs = [".claude"]
+            auto_copy_dirs = [".claude"]
+            "#,
+        )
+        .unwrap();
+
+        let manager = ConfigManager::with_path(global_path);
+        let err = manager.load_merged(None).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(".claude"),
+            "expected conflict message to name '.claude', got: {}",
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn load_merged_rejects_default_dotfile_collision() {
+        // Collision against a name in DEFAULT_DOTFILES (.gitconfig) must also
+        // be rejected on the merged-load path.
+        let temp = TempDir::new().unwrap();
+        let global_path = temp.path().join("global.toml");
+        std::fs::write(
+            &global_path,
+            r#"
+            [sandbox]
+            auto_passthrough_dirs = [".gitconfig"]
+            "#,
+        )
+        .unwrap();
+
+        let manager = ConfigManager::with_path(global_path);
+        let err = manager.load_merged(None).await.unwrap_err();
+        assert!(err.to_string().contains(".gitconfig"));
     }
 }
