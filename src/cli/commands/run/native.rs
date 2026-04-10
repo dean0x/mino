@@ -44,7 +44,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     // Phase 1: Validate prerequisites and resolve configuration
     let platform = create_sandbox_platform()?;
-    let (project_dir, network_mode) =
+    let (project_dir, network_mode, home_dir) =
         validate_and_resolve(&args, config, &*platform, &mut spinner).await?;
 
     // Phase 2: Gather credentials and build environment
@@ -57,14 +57,8 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         start_proxy_if_needed(&network_mode, &mut env, config, &mut spinner).await?;
     let dotfile_dir = prepare_dotfiles(config, &project_dir).await?;
     let command = if args.command.is_empty() {
-        #[cfg(target_os = "macos")]
-        {
-            vec!["/bin/zsh".to_string()]
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            vec!["/bin/bash".to_string()]
-        }
+        let shell = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/bash" };
+        vec![shell.to_string()]
     } else {
         args.command.clone()
     };
@@ -81,23 +75,18 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     // Auto-mount user-configured host directories (read-only) when present.
     // This runs after validate_and_resolve so we re-validate with the augmented paths.
     let mut sandbox_config = config.sandbox.clone();
-    if let Some(ref host_home) = dirs::home_dir() {
-        for dir_name in &config.sandbox.auto_passthrough_dirs {
-            let dir = host_home.join(dir_name);
-            if dir.is_dir() {
-                tracing::info!(dir = %dir.display(), "auto-mounting passthrough directory");
-                sandbox_config
-                    .passthrough_paths
-                    .push(dir.to_string_lossy().to_string());
-            }
+    for dir_name in &config.sandbox.auto_passthrough_dirs {
+        let dir = home_dir.join(dir_name);
+        if dir.is_dir() {
+            tracing::info!(dir = %dir.display(), "auto-mounting passthrough directory");
+            sandbox_config
+                .passthrough_paths
+                .push(dir.to_string_lossy().to_string());
         }
     }
     // Re-validate after augmenting passthrough_paths so auto-mounted dirs
     // are subject to the same sensitive-path checks as user-specified paths.
-    {
-        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
-        crate::sandbox::config::validate_sandbox_paths(&sandbox_config, &home_dir)?;
-    }
+    crate::sandbox::config::validate_sandbox_paths(&sandbox_config, &home_dir)?;
 
     // Phase 4: Spawn sandbox and monitor
     let spawn_config = SandboxSpawnConfig {
@@ -126,13 +115,13 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     .await
 }
 
-/// Validate native sandbox prerequisites and resolve project dir + network mode.
+/// Validate native sandbox prerequisites and resolve project dir, network mode, and home dir.
 async fn validate_and_resolve(
     args: &RunArgs,
     config: &Config,
     platform: &dyn SandboxPlatform,
     _spinner: &mut TaskSpinner,
-) -> MinoResult<(PathBuf, NetworkMode)> {
+) -> MinoResult<(PathBuf, NetworkMode, PathBuf)> {
     platform.validate_setup().await?;
     validate_native_flags(args)?;
 
@@ -154,7 +143,7 @@ async fn validate_and_resolve(
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     validate_sandbox_paths(&config.sandbox, &home_dir)?;
 
-    Ok((project_dir, network_mode))
+    Ok((project_dir, network_mode, home_dir))
 }
 
 /// Gather cloud credentials and build the sandbox environment variables.
@@ -791,9 +780,9 @@ async fn prepare_dotfiles(config: &Config, project_dir: &Path) -> MinoResult<Opt
     // Copy user-configured directories that need sandbox-local mutability.
     // For .claude, use allowlist-based copy to avoid multi-GB state directories.
     for dir_name in &config.sandbox.auto_copy_dirs {
-        let host_dir = home_dir.join(dir_name.as_str());
+        let host_dir = home_dir.join(dir_name);
         if host_dir.is_dir() {
-            let dest_dir = tmp_dir.join(dir_name.as_str());
+            let dest_dir = tmp_dir.join(dir_name);
             tracing::info!(dir = %dir_name, "auto-copying directory into sandbox");
             if dir_name == ".claude" {
                 copy_claude_dir(&host_dir, &dest_dir, project_dir).await?;
