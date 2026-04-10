@@ -602,6 +602,15 @@ sandbox_user = "_mino_agent"          # default
 max_memory_mb = 4096                  # 0 = no limit
 max_processes = 256
 max_cpu_seconds = 0                   # 0 = no limit
+max_file_size_mb = 0                  # max size of a single file, 0 = no limit
+
+# Cache access mode for build caches mounted from the host
+# "read-only" (default), "read-write", or "none"
+cache_mode = "read-only"
+
+# Allow mounting paths from the built-in sensitive blocklist
+# (e.g. ~/.ssh, ~/.aws). Leave false unless you have a specific reason.
+allow_sensitive = false
 
 # Network isolation (falls back to [container] values if not set)
 network = "bridge"                    # host | none | bridge
