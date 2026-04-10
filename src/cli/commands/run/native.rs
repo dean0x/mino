@@ -78,17 +78,25 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     )
     .await?;
 
-    // Auto-mount common host directories (read-only) when present
+    // Auto-mount user-configured host directories (read-only) when present.
+    // This runs after validate_and_resolve so we re-validate with the augmented paths.
     let mut sandbox_config = config.sandbox.clone();
     if let Some(ref host_home) = dirs::home_dir() {
-        for dir_name in dotfiles::AUTO_PASSTHROUGH_DIRS {
+        for dir_name in &config.sandbox.auto_passthrough_dirs {
             let dir = host_home.join(dir_name);
             if dir.is_dir() {
+                tracing::info!(dir = %dir.display(), "auto-mounting passthrough directory");
                 sandbox_config
                     .passthrough_paths
                     .push(dir.to_string_lossy().to_string());
             }
         }
+    }
+    // Re-validate after augmenting passthrough_paths so auto-mounted dirs
+    // are subject to the same sensitive-path checks as user-specified paths.
+    {
+        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+        crate::sandbox::config::validate_sandbox_paths(&sandbox_config, &home_dir)?;
     }
 
     // Phase 4: Spawn sandbox and monitor
@@ -698,15 +706,15 @@ fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
 ///    [`dotfiles::prepare_dotfile_content`], and written into a process-scoped temp dir.
 ///    The temp dir is created with mode `0o700` to prevent TOCTOU symlink attacks.
 ///
-/// 2. **Passthrough symlinks** — for each directory in [`dotfiles::AUTO_PASSTHROUGH_DIRS`]
-///    (e.g. `.oh-my-zsh`, `.nvm`) that exists on the host, a symlink pointing to the host
-///    path is created inside the staging dir. The helper binary re-creates these links inside
-///    the sandbox home so shell configs resolve correctly.
+/// 2. **Passthrough symlinks** — for each directory in `config.sandbox.auto_passthrough_dirs`
+///    that exists on the host, a symlink pointing to the host path is created inside the
+///    staging dir. The helper binary re-creates these links inside the sandbox home so shell
+///    configs resolve correctly. Empty by default (opt-in via config).
 ///
-/// 3. **Copied directories** — directories in [`dotfiles::AUTO_COPY_DIRS`] (e.g. `.claude`)
-///    are copied rather than symlinked because the agent needs a writable, sandbox-local
-///    version. `.claude` uses an allowlist-based copy ([`copy_claude_dir`]) to avoid
-///    pulling in large state directories such as `sessions/` or `file-history/`.
+/// 3. **Copied directories** — directories in `config.sandbox.auto_copy_dirs` are copied
+///    rather than symlinked because the agent needs a writable, sandbox-local version.
+///    `.claude` uses an allowlist-based copy ([`copy_claude_dir`]) to avoid pulling in large
+///    state directories such as `sessions/` or `file-history/`. Empty by default (opt-in).
 ///
 /// # Parameters
 /// - `config`: full Mino configuration; `sandbox.dotfiles` determines which dotfiles are staged.
@@ -764,10 +772,10 @@ async fn prepare_dotfiles(config: &Config, project_dir: &Path) -> MinoResult<Opt
             .map_err(|e| MinoError::io(format!("writing {}", dotfile), e))?;
     }
 
-    // Create symlinks to host directories so shell configs that reference
-    // ~/.oh-my-zsh, ~/.nvm etc. resolve correctly via the sandbox home.
-    // These are recreated in the sandbox home by copy_dotfiles in the helper.
-    for dir_name in dotfiles::AUTO_PASSTHROUGH_DIRS {
+    // Create symlinks for user-configured passthrough directories so shell
+    // configs that reference ~/.oh-my-zsh, ~/.nvm etc. resolve correctly
+    // via the sandbox home. These are recreated by copy_dotfiles in the helper.
+    for dir_name in &config.sandbox.auto_passthrough_dirs {
         let host_dir = home_dir.join(dir_name);
         if host_dir.is_dir() {
             let link_path = tmp_dir.join(dir_name);
@@ -780,13 +788,14 @@ async fn prepare_dotfiles(config: &Config, project_dir: &Path) -> MinoResult<Opt
         }
     }
 
-    // Copy directories that need sandbox-local mutability (not symlinked to host).
+    // Copy user-configured directories that need sandbox-local mutability.
     // For .claude, use allowlist-based copy to avoid multi-GB state directories.
-    for dir_name in dotfiles::AUTO_COPY_DIRS {
-        let host_dir = home_dir.join(dir_name);
+    for dir_name in &config.sandbox.auto_copy_dirs {
+        let host_dir = home_dir.join(dir_name.as_str());
         if host_dir.is_dir() {
-            let dest_dir = tmp_dir.join(dir_name);
-            if dir_name == &".claude" {
+            let dest_dir = tmp_dir.join(dir_name.as_str());
+            tracing::info!(dir = %dir_name, "auto-copying directory into sandbox");
+            if dir_name == ".claude" {
                 copy_claude_dir(&host_dir, &dest_dir, project_dir).await?;
             } else {
                 copy_dir_recursive(&host_dir, &dest_dir).await?;

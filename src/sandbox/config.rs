@@ -82,6 +82,21 @@ pub struct SandboxConfig {
     /// Allow mounting sensitive paths (overrides block list)
     pub allow_sensitive: bool,
 
+    /// Host directories to auto-mount read-only on sandbox startup (opt-in).
+    ///
+    /// Example: to re-enable the previous defaults, set:
+    /// `auto_passthrough_dirs = [".oh-my-zsh", ".nvm", ".zsh"]`
+    pub auto_passthrough_dirs: Vec<String>,
+
+    /// Host directories to copy (not mount) into the sandbox HOME (opt-in).
+    ///
+    /// Directories are copied so the agent gets a mutable sandbox-local version.
+    /// For `.claude`, an allowlist-based copy is used to exclude large state dirs.
+    ///
+    /// Example: to re-enable the previous default, set:
+    /// `auto_copy_dirs = [".claude"]`
+    pub auto_copy_dirs: Vec<String>,
+
     /// Network mode for native sandbox (falls back to [container] network if None)
     pub network: Option<String>,
 
@@ -108,6 +123,8 @@ impl Default for SandboxConfig {
             writable_paths: vec![],
             dotfiles: vec![],
             allow_sensitive: false,
+            auto_passthrough_dirs: vec![],
+            auto_copy_dirs: vec![],
             network: None,
             network_allow: None,
             network_preset: None,
@@ -234,6 +251,8 @@ mod tests {
         assert!(config.writable_paths.is_empty());
         assert!(config.dotfiles.is_empty());
         assert!(!config.allow_sensitive);
+        assert!(config.auto_passthrough_dirs.is_empty());
+        assert!(config.auto_copy_dirs.is_empty());
     }
 
     #[test]
@@ -360,6 +379,31 @@ mod tests {
         let toml_str = r#"cache_mode = "read-write""#;
         let config: SandboxConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.cache_mode, CacheMode::ReadWrite);
+    }
+
+    #[test]
+    fn auto_dirs_default_empty() {
+        let config = SandboxConfig::default();
+        assert!(config.auto_passthrough_dirs.is_empty());
+        assert!(config.auto_copy_dirs.is_empty());
+    }
+
+    #[test]
+    fn auto_dirs_deserialize_from_toml() {
+        let toml = r#"
+            auto_passthrough_dirs = [".oh-my-zsh", ".nvm"]
+            auto_copy_dirs = [".claude"]
+        "#;
+        let config: SandboxConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.auto_passthrough_dirs, vec![".oh-my-zsh", ".nvm"]);
+        assert_eq!(config.auto_copy_dirs, vec![".claude"]);
+    }
+
+    #[test]
+    fn auto_dirs_empty_toml_defaults_empty() {
+        let config: SandboxConfig = toml::from_str("").unwrap();
+        assert!(config.auto_passthrough_dirs.is_empty());
+        assert!(config.auto_copy_dirs.is_empty());
     }
 
     #[test]
