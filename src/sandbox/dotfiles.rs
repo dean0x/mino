@@ -121,13 +121,8 @@ pub(crate) fn prepare_dotfile_content(dotfile_path: &str, content: &str) -> Stri
 /// **Source of truth**: These paths match the Claude Code layout as of the
 /// time this allowlist was written. If Claude Code restructures its home
 /// directory, this list must be updated.
-const CLAUDE_ALLOW_ENTRIES: &[&str] = &[
-    "CLAUDE.md",
-    "settings.json",
-    "agents",
-    "commands",
-    "skills",
-];
+const CLAUDE_ALLOW_ENTRIES: &[&str] =
+    &["CLAUDE.md", "settings.json", "agents", "commands", "skills"];
 
 /// Copy the user's `~/.claude` directory into the sandbox using an allowlist.
 ///
@@ -143,11 +138,7 @@ const CLAUDE_ALLOW_ENTRIES: &[&str] = &[
 /// - `src`: path to `~/.claude` on the host
 /// - `dst`: staging destination directory (created if absent)
 /// - `project_dir`: absolute path to the current project directory
-pub async fn copy_claude_config_dir(
-    src: &Path,
-    dst: &Path,
-    project_dir: &Path,
-) -> MinoResult<()> {
+pub async fn copy_claude_config_dir(src: &Path, dst: &Path, project_dir: &Path) -> MinoResult<()> {
     tokio::fs::create_dir_all(dst)
         .await
         .map_err(|e| MinoError::io("creating .claude copy dir", e))?;
@@ -402,8 +393,12 @@ mod tests {
         let dst = dst_guard.path().join("dest");
 
         // Create allowlisted files and dirs
-        tokio::fs::write(src.join("CLAUDE.md"), b"# Config").await.unwrap();
-        tokio::fs::write(src.join("settings.json"), b"{}").await.unwrap();
+        tokio::fs::write(src.join("CLAUDE.md"), b"# Config")
+            .await
+            .unwrap();
+        tokio::fs::write(src.join("settings.json"), b"{}")
+            .await
+            .unwrap();
         tokio::fs::create_dir_all(src.join("skills").join("review"))
             .await
             .unwrap();
@@ -412,11 +407,17 @@ mod tests {
             .unwrap();
 
         // Non-allowlisted (should be excluded)
-        tokio::fs::create_dir_all(src.join("sessions")).await.unwrap();
-        tokio::fs::write(src.join("sessions").join("big.json"), b"[]").await.unwrap();
+        tokio::fs::create_dir_all(src.join("sessions"))
+            .await
+            .unwrap();
+        tokio::fs::write(src.join("sessions").join("big.json"), b"[]")
+            .await
+            .unwrap();
 
         let project_dir = std::path::Path::new("/nonexistent/project");
-        copy_claude_config_dir(src, &dst, project_dir).await.unwrap();
+        copy_claude_config_dir(src, &dst, project_dir)
+            .await
+            .unwrap();
 
         assert!(dst.join("CLAUDE.md").exists());
         assert!(dst.join("settings.json").exists());
@@ -436,16 +437,26 @@ mod tests {
         let project_key = project_dir.to_string_lossy().replace('/', "-");
         let mem_dir = src.join("projects").join(&project_key);
         tokio::fs::create_dir_all(&mem_dir).await.unwrap();
-        tokio::fs::write(mem_dir.join("MEMORY.md"), b"# Memory").await.unwrap();
+        tokio::fs::write(mem_dir.join("MEMORY.md"), b"# Memory")
+            .await
+            .unwrap();
 
         // Another project that should NOT be copied
         let other_dir = src.join("projects").join("-other-project");
         tokio::fs::create_dir_all(&other_dir).await.unwrap();
-        tokio::fs::write(other_dir.join("MEMORY.md"), b"# Other").await.unwrap();
+        tokio::fs::write(other_dir.join("MEMORY.md"), b"# Other")
+            .await
+            .unwrap();
 
-        copy_claude_config_dir(src, &dst, &project_dir).await.unwrap();
+        copy_claude_config_dir(src, &dst, &project_dir)
+            .await
+            .unwrap();
 
-        assert!(dst.join("projects").join(&project_key).join("MEMORY.md").exists());
+        assert!(dst
+            .join("projects")
+            .join(&project_key)
+            .join("MEMORY.md")
+            .exists());
         assert!(!dst.join("projects").join("-other-project").exists());
     }
 
@@ -454,8 +465,12 @@ mod tests {
         let src_guard = tempfile::tempdir().unwrap();
         let dst_guard = tempfile::tempdir().unwrap();
         let project_dir = std::path::Path::new("/proj");
-        copy_claude_config_dir(src_guard.path(), &dst_guard.path().join("dest"), project_dir)
-            .await
-            .unwrap();
+        copy_claude_config_dir(
+            src_guard.path(),
+            &dst_guard.path().join("dest"),
+            project_dir,
+        )
+        .await
+        .unwrap();
     }
 }

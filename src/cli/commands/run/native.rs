@@ -60,7 +60,11 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         start_proxy_if_needed(&network_mode, &mut env, config, &mut spinner).await?;
     let dotfile_dir = prepare_dotfiles(config, &project_dir).await?;
     let command = if args.command.is_empty() {
-        let shell = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/bash" };
+        let shell = if cfg!(target_os = "macos") {
+            "/bin/zsh"
+        } else {
+            "/bin/bash"
+        };
         vec![shell.to_string()]
     } else {
         args.command.clone()
@@ -566,9 +570,7 @@ async fn cleanup_dotfile_dir(dir: &Option<PathBuf>) {
 /// Signal handling is integration-tested; the individual components
 /// (`terminate`, `wait`) are unit-tested independently in the process module.
 #[cfg(unix)]
-async fn wait_with_signal_forwarding(
-    process: &mut SandboxProcess,
-) -> MinoResult<i32> {
+async fn wait_with_signal_forwarding(process: &mut SandboxProcess) -> MinoResult<i32> {
     use tokio::signal::unix::{signal, SignalKind};
 
     let mut sigint = signal(SignalKind::interrupt())
@@ -596,9 +598,7 @@ async fn wait_with_signal_forwarding(
 
 /// Non-Unix fallback: just wait for the process.
 #[cfg(not(unix))]
-async fn wait_with_signal_forwarding(
-    process: &mut SandboxProcess,
-) -> MinoResult<i32> {
+async fn wait_with_signal_forwarding(process: &mut SandboxProcess) -> MinoResult<i32> {
     process.wait().await
 }
 
@@ -663,6 +663,9 @@ async fn write_sanitized_dotfiles(
 /// For each directory in `passthrough_dirs` that exists on the host, a symlink
 /// is created in the staging directory. The helper binary recreates these links
 /// inside the sandbox home so shell configs (`.oh-my-zsh`, `.nvm`, etc.) resolve.
+///
+/// Multi-segment entries (e.g., `.config/gh`) are supported: the parent directory
+/// is created in the staging area via `create_dir_all` before the symlink is placed.
 #[cfg(unix)]
 async fn create_passthrough_symlinks(
     staging: PathBuf,
@@ -673,6 +676,15 @@ async fn create_passthrough_symlinks(
         let host_dir = home_dir.join(&dir_name);
         if host_dir.is_dir() {
             let link_path = staging.join(&dir_name);
+            // Ensure parent directories exist in the staging tree for multi-segment
+            // entries (e.g., staging/.config/ must exist before placing staging/.config/gh).
+            if let Some(parent) = link_path.parent() {
+                if parent != staging {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                        MinoError::io("creating staging parent dir for passthrough", e)
+                    })?;
+                }
+            }
             if let Err(e) = tokio::fs::symlink(&host_dir, &link_path).await {
                 tracing::debug!("Failed to create symlink for {}: {}", dir_name, e);
             }
@@ -1063,5 +1075,74 @@ mod tests {
 
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
         unsafe { std::env::remove_var("LANG") };
+    }
+
+    // ---- create_passthrough_symlinks multi-segment tests ----
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_passthrough_symlinks_handles_multi_segment_entry() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        // Create .config/gh on the host
+        let config_gh = home.path().join(".config").join("gh");
+        tokio::fs::create_dir_all(&config_gh).await.unwrap();
+
+        create_passthrough_symlinks(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".config/gh".to_string()],
+        )
+        .await
+        .unwrap();
+
+        // staging/.config/ must be a real directory
+        let staging_config = staging.path().join(".config");
+        assert!(staging_config.is_dir(), "staging/.config should be a dir");
+
+        // staging/.config/gh must be a symlink
+        let staging_gh = staging_config.join("gh");
+        let meta = tokio::fs::symlink_metadata(&staging_gh).await.unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "staging/.config/gh should be a symlink"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_passthrough_symlinks_idempotent_parent_creation() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        // Create two dirs under .config on the host
+        tokio::fs::create_dir_all(home.path().join(".config").join("gh"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(home.path().join(".config").join("other"))
+            .await
+            .unwrap();
+
+        create_passthrough_symlinks(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".config/gh".to_string(), ".config/other".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let staging_config = staging.path().join(".config");
+        assert!(staging_config.is_dir(), "staging/.config should be a dir");
+
+        let meta_gh = tokio::fs::symlink_metadata(staging_config.join("gh"))
+            .await
+            .unwrap();
+        assert!(meta_gh.file_type().is_symlink());
+
+        let meta_other = tokio::fs::symlink_metadata(staging_config.join("other"))
+            .await
+            .unwrap();
+        assert!(meta_other.file_type().is_symlink());
     }
 }

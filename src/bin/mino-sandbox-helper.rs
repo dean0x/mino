@@ -1473,7 +1473,10 @@ mod tests {
         {
             let dest_link = dest.path().join("data-link");
             let meta = std::fs::symlink_metadata(&dest_link).unwrap();
-            assert!(meta.file_type().is_symlink(), "should be recreated as symlink");
+            assert!(
+                meta.file_type().is_symlink(),
+                "should be recreated as symlink"
+            );
             assert_eq!(
                 std::fs::read_link(&dest_link).unwrap(),
                 PathBuf::from("/usr/share/data")
@@ -1572,7 +1575,10 @@ mod tests {
             let link = dest.path().join(".hosts-link");
             let meta = std::fs::symlink_metadata(&link).unwrap();
             assert!(meta.file_type().is_symlink());
-            assert_eq!(std::fs::read_link(&link).unwrap(), PathBuf::from("/etc/hosts"));
+            assert_eq!(
+                std::fs::read_link(&link).unwrap(),
+                PathBuf::from("/etc/hosts")
+            );
         }
     }
 
@@ -1672,6 +1678,76 @@ mod tests {
 
         // Real file should still be accessible
         assert!(dir.path().join("real.txt").exists());
+    }
+
+    // ---- copy_dotfiles nested symlink tests (multi-segment passthrough) ----
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dotfiles_nested_symlink_entry() {
+        // Staging tree has .config/gh as a symlink (created by create_passthrough_symlinks).
+        // copy_dotfiles must recreate .config/ dir and gh symlink inside destination.
+        let staging = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Create staging/.config/ as a real directory
+        std::fs::create_dir_all(staging.path().join(".config")).unwrap();
+        // Create staging/.config/gh as a symlink pointing to the host gh dir
+        let host_gh = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(host_gh.path(), staging.path().join(".config").join("gh"))
+            .unwrap();
+
+        copy_dotfiles(staging.path(), dest.path());
+
+        // dest/.config/ should be a real directory
+        let dest_config = dest.path().join(".config");
+        assert!(dest_config.is_dir(), "dest/.config should be a directory");
+
+        // dest/.config/gh should be a symlink pointing to host_gh
+        let dest_gh = dest_config.join("gh");
+        let meta = std::fs::symlink_metadata(&dest_gh).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "dest/.config/gh should be a symlink"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dotfiles_nested_regular_file() {
+        // staging/.foo/bar/baz.txt should be copied to dest/.foo/bar/baz.txt
+        let staging = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir_all(staging.path().join(".foo").join("bar")).unwrap();
+        std::fs::write(
+            staging.path().join(".foo").join("bar").join("baz.txt"),
+            "hello",
+        )
+        .unwrap();
+
+        copy_dotfiles(staging.path(), dest.path());
+
+        let dest_baz = dest.path().join(".foo").join("bar").join("baz.txt");
+        assert!(dest_baz.exists(), "nested regular file should be copied");
+        assert_eq!(std::fs::read_to_string(&dest_baz).unwrap(), "hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dotfiles_flat_regression() {
+        // Verify that top-level entries still work after any changes.
+        let staging = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        std::fs::write(staging.path().join(".gitconfig"), "[user]\n  name = Test").unwrap();
+        std::os::unix::fs::symlink("/usr/local", staging.path().join(".local-link")).unwrap();
+
+        copy_dotfiles(staging.path(), dest.path());
+
+        assert!(dest.path().join(".gitconfig").exists());
+        let meta = std::fs::symlink_metadata(dest.path().join(".local-link")).unwrap();
+        assert!(meta.file_type().is_symlink());
     }
 
     #[cfg(unix)]

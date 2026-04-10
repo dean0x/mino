@@ -493,9 +493,14 @@ fn decide_helper_action(
     checksums_match: bool,
 ) -> HelperAction {
     match installed_version {
-        None => HelperAction::Install { reason: "not installed" },
+        None => HelperAction::Install {
+            reason: "not installed",
+        },
         Some(v) if v != mino_version => HelperAction::Upgrade {
-            reason: format!("Helper version mismatch (v{} vs v{}), upgrading...", v, mino_version),
+            reason: format!(
+                "Helper version mismatch (v{} vs v{}), upgrading...",
+                v, mino_version
+            ),
         },
         Some(_) => {
             // Same version — check if source binary changed (e.g. dev rebuild)

@@ -202,10 +202,13 @@ impl ConfigManager {
 
         // Validate sandbox config: reject overlapping auto_passthrough_dirs / auto_copy_dirs.
         // This ensures prepare_dotfiles stages remain disjoint and can safely run in parallel.
-        config.sandbox.validate().map_err(|e| MinoError::ConfigInvalid {
-            path: path.to_path_buf(),
-            reason: e.to_string(),
-        })?;
+        config
+            .sandbox
+            .validate()
+            .map_err(|e| MinoError::ConfigInvalid {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            })?;
 
         Ok(config)
     }

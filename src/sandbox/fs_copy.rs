@@ -58,12 +58,7 @@ pub async fn copy_dir_recursive(src: PathBuf, dst: PathBuf) -> MinoResult<()> {
             } else if meta.is_file() {
                 tokio::fs::copy(&src_path, &dst_path)
                     .await
-                    .map_err(|e| {
-                        MinoError::io(
-                            format!("copying {}", src_path.display()),
-                            e,
-                        )
-                    })?;
+                    .map_err(|e| MinoError::io(format!("copying {}", src_path.display()), e))?;
             }
         }
     }
@@ -85,16 +80,12 @@ mod tests {
         tokio::fs::write(src.join("file.txt"), b"hello")
             .await
             .unwrap();
-        tokio::fs::create_dir_all(src.join("subdir"))
-            .await
-            .unwrap();
+        tokio::fs::create_dir_all(src.join("subdir")).await.unwrap();
         tokio::fs::write(src.join("subdir").join("nested.txt"), b"world")
             .await
             .unwrap();
 
-        copy_dir_recursive(src.clone(), dst.clone())
-            .await
-            .unwrap();
+        copy_dir_recursive(src.clone(), dst.clone()).await.unwrap();
 
         assert!(dst.join("file.txt").exists());
         assert_eq!(
@@ -131,11 +122,12 @@ mod tests {
             symlink("/etc/passwd", src.join("sneaky.link")).unwrap();
         }
 
-        copy_dir_recursive(src.clone(), dst.clone())
-            .await
-            .unwrap();
+        copy_dir_recursive(src.clone(), dst.clone()).await.unwrap();
 
-        assert!(dst.join("real.txt").exists(), "regular file should be copied");
+        assert!(
+            dst.join("real.txt").exists(),
+            "regular file should be copied"
+        );
         assert!(
             !dst.join("sneaky.link").exists(),
             "symlink must not be copied into destination"
@@ -174,7 +166,9 @@ mod tests {
         // Build a/b/c/deep.txt
         let deep = src.join("a").join("b").join("c");
         tokio::fs::create_dir_all(&deep).await.unwrap();
-        tokio::fs::write(deep.join("deep.txt"), b"deep").await.unwrap();
+        tokio::fs::write(deep.join("deep.txt"), b"deep")
+            .await
+            .unwrap();
 
         copy_dir_recursive(src, dst.clone()).await.unwrap();
 

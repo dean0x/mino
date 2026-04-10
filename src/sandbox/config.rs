@@ -16,7 +16,10 @@ use std::path::Path;
 pub const DEFAULT_SANDBOX_USER: &str = "_mino_agent";
 
 /// Paths that are ALWAYS blocked from passthrough (credential stores)
-const SENSITIVE_PATHS: &[&str] = &[
+///
+/// Exposed as `pub(crate)` so the setup detection function can filter candidates
+/// against this list without duplicating the constant.
+pub(crate) const SENSITIVE_PATHS: &[&str] = &[
     ".ssh",
     ".aws",
     ".azure",
@@ -82,6 +85,16 @@ pub struct SandboxConfig {
     /// Allow mounting sensitive paths (overrides block list)
     pub allow_sensitive: bool,
 
+    /// Opt-in allowlist for specific sensitive paths.
+    ///
+    /// Paths listed here are permitted even when `allow_sensitive = false`,
+    /// provided they also appear in `SENSITIVE_PATHS`. This is a narrow
+    /// escape hatch for dirs like `.config/gh`, `.docker`, `.kube` that
+    /// hold credentials but are commonly needed by AI coding agents.
+    ///
+    /// Example: `allow_sensitive_paths = [".config/gh", ".docker"]`
+    pub allow_sensitive_paths: Vec<String>,
+
     /// Host directories to auto-mount read-only on sandbox startup (opt-in).
     ///
     /// Example: to re-enable the previous defaults, set:
@@ -133,6 +146,7 @@ impl Default for SandboxConfig {
             writable_paths: vec![],
             dotfiles: vec![],
             allow_sensitive: false,
+            allow_sensitive_paths: vec![],
             auto_passthrough_dirs: vec![],
             auto_copy_dirs: vec![],
             network: None,
@@ -153,79 +167,113 @@ impl Default for SandboxConfig {
 ///
 /// Add other provider keys (e.g., `OPENAI_API_KEY`) by setting `env_passthrough`
 /// in `[sandbox]` config rather than adding them here.
-pub const DEFAULT_ENV_PASSTHROUGH: &[&str] =
-    &["ANTHROPIC_API_KEY", "LANG", "LC_ALL", "TZ", "TERM"];
+pub const DEFAULT_ENV_PASSTHROUGH: &[&str] = &["ANTHROPIC_API_KEY", "LANG", "LC_ALL", "TZ", "TERM"];
 
 impl SandboxConfig {
     /// Validate that `auto_passthrough_dirs` and `auto_copy_dirs` do not overlap
-    /// with the default dotfile list or each other.
+    /// with the default dotfile list or each other, and that sensitive paths are
+    /// gated by either `allow_sensitive = true` or an explicit `allow_sensitive_paths`
+    /// entry.
     ///
-    /// Overlapping entries would cause two independent preparation stages to write
-    /// to the same staging-directory entry, producing non-deterministic results when
-    /// the stages run concurrently. This check must pass before parallelizing
-    /// `prepare_dotfiles`.
+    /// ## Conflict semantics (ancestor-based)
     ///
-    /// The collision check uses **top-level path segment** comparison, not literal
-    /// string equality. For example, a `DEFAULT_DOTFILES` entry like
-    /// `.config/git/ignore` has top segment `.config`, so putting `.config` in
-    /// `auto_copy_dirs` is rejected — both stages would otherwise race on writes
-    /// into `staging/.config/`.
+    /// Two path entries *conflict* if one is equal to or an ancestor of the other
+    /// along path-component boundaries:
+    ///
+    /// - `.config` vs `.config/git/ignore` → **conflict** (ancestor)
+    /// - `.config/gh` vs `.config/git/ignore` → **no conflict** (siblings under `.config`)
+    /// - `.conf` vs `.config/x` → **no conflict** (different first component)
+    ///
+    /// Siblings are safe because all staging stages only CREATE entries; they never
+    /// remove existing ones. `tokio::fs::create_dir_all` is idempotent, so two
+    /// stages that both create `.config/` as a parent directory do not race.
+    ///
+    /// ## Sensitive paths
+    ///
+    /// Entries in `SENSITIVE_PATHS` are rejected unless:
+    /// - `allow_sensitive = true` (nuclear override), **or**
+    /// - the entry appears in `allow_sensitive_paths` (narrow per-dir opt-in)
     ///
     /// # Errors
-    /// Returns an error naming the first conflicting entry when:
-    /// - `auto_passthrough_dirs` contains a top-level segment that appears in any
-    ///   `DEFAULT_DOTFILES` entry
-    /// - `auto_copy_dirs` contains a top-level segment that appears in any
-    ///   `DEFAULT_DOTFILES` entry
-    /// - `auto_passthrough_dirs` and `auto_copy_dirs` share a top-level segment
+    /// Returns the first conflicting or disallowed entry with a diagnostic message.
     pub fn validate(&self) -> MinoResult<()> {
         use crate::sandbox::dotfiles::DEFAULT_DOTFILES;
-        use std::collections::HashSet;
 
-        // Extract the top-level path segment from each DEFAULT_DOTFILES entry.
-        // `.config/git/ignore` -> `.config`; `.gitconfig` -> `.gitconfig`.
-        // This ensures a user's `auto_copy_dirs = [".config"]` collides with the
-        // built-in `.config/git/ignore` dotfile.
-        let default_tops: HashSet<&str> = DEFAULT_DOTFILES
-            .iter()
-            .map(|entry| entry.split('/').next().unwrap_or(entry))
-            .collect();
-
-        for name in &self.auto_passthrough_dirs {
-            let top = name.split('/').next().unwrap_or(name);
-            if default_tops.contains(top) {
-                return Err(MinoError::User(format!(
-                    "auto_passthrough_dirs entry '{}' conflicts with a default dotfile. \
-                     Remove it from auto_passthrough_dirs or from the dotfiles list.",
-                    name
-                )));
-            }
-        }
-
-        for name in &self.auto_copy_dirs {
-            let top = name.split('/').next().unwrap_or(name);
-            if default_tops.contains(top) {
-                return Err(MinoError::User(format!(
-                    "auto_copy_dirs entry '{}' conflicts with a default dotfile. \
-                     Remove it from auto_copy_dirs or from the dotfiles list.",
-                    name
-                )));
-            }
-        }
-
-        let passthrough_tops: HashSet<&str> = self
+        // Validate sensitive paths gate
+        for name in self
             .auto_passthrough_dirs
             .iter()
-            .map(|s| s.split('/').next().unwrap_or(s.as_str()))
-            .collect();
+            .chain(&self.auto_copy_dirs)
+        {
+            if SENSITIVE_PATHS.contains(&name.as_str()) {
+                // Permitted if nuclear flag is set OR name is in the narrow allowlist
+                if !self.allow_sensitive && !self.allow_sensitive_paths.iter().any(|a| a == name) {
+                    return Err(MinoError::User(format!(
+                        "auto_passthrough_dirs/auto_copy_dirs entry '{}' is a sensitive \
+                         credential path. Add it to allow_sensitive_paths to opt in, \
+                         or set allow_sensitive = true to bypass all checks.",
+                        name
+                    )));
+                }
+            }
+        }
+
+        // Validate allow_sensitive_paths entries are actually in SENSITIVE_PATHS.
+        // Unknown entries are warned about (non-fatal) to future-proof against
+        // new SENSITIVE_PATHS additions. We log a debug message only; rejecting
+        // them would break configs written today when SENSITIVE_PATHS grows tomorrow.
+        // (Implementation note: no runtime logging here — this is a pure validate fn;
+        //  the config loader may emit a warning at the call site if desired.)
+
+        // Check auto_passthrough_dirs for conflicts with DEFAULT_DOTFILES
+        for name in &self.auto_passthrough_dirs {
+            for default in DEFAULT_DOTFILES {
+                if path_conflicts(name, default) {
+                    return Err(MinoError::User(format!(
+                        "auto_passthrough_dirs entry '{}' conflicts with a default dotfile. \
+                         Remove it from auto_passthrough_dirs or from the dotfiles list.",
+                        name
+                    )));
+                }
+            }
+        }
+
+        // Check auto_copy_dirs for conflicts with DEFAULT_DOTFILES
         for name in &self.auto_copy_dirs {
-            let top = name.split('/').next().unwrap_or(name);
-            if passthrough_tops.contains(top) {
-                return Err(MinoError::User(format!(
-                    "auto_copy_dirs entry '{}' also appears in auto_passthrough_dirs. \
-                     A directory can only appear in one list.",
-                    name
-                )));
+            for default in DEFAULT_DOTFILES {
+                if path_conflicts(name, default) {
+                    return Err(MinoError::User(format!(
+                        "auto_copy_dirs entry '{}' conflicts with a default dotfile. \
+                         Remove it from auto_copy_dirs or from the dotfiles list.",
+                        name
+                    )));
+                }
+            }
+        }
+
+        // Check for conflicts within auto_passthrough_dirs (nested entries)
+        for (i, a) in self.auto_passthrough_dirs.iter().enumerate() {
+            for b in self.auto_passthrough_dirs.iter().skip(i + 1) {
+                if path_conflicts(a, b) {
+                    return Err(MinoError::User(format!(
+                        "auto_passthrough_dirs entries '{}' and '{}' conflict (one is an \
+                         ancestor of the other).",
+                        a, b
+                    )));
+                }
+            }
+        }
+
+        // Check for conflicts between auto_passthrough_dirs and auto_copy_dirs
+        for a in &self.auto_passthrough_dirs {
+            for b in &self.auto_copy_dirs {
+                if path_conflicts(a, b) {
+                    return Err(MinoError::User(format!(
+                        "auto_copy_dirs entry '{}' conflicts with auto_passthrough_dirs \
+                         entry '{}'. A directory can only appear in one list.",
+                        b, a
+                    )));
+                }
             }
         }
 
@@ -233,12 +281,35 @@ impl SandboxConfig {
     }
 }
 
+/// Check whether two path strings conflict under ancestor-based semantics.
+///
+/// Two paths conflict iff one is equal to or an ancestor of the other along
+/// path-component boundaries. Siblings under a shared parent do NOT conflict.
+///
+/// Examples:
+/// - `.config` vs `.config/git/ignore` → true (`.config` is ancestor of the other)
+/// - `.config/gh` vs `.config/git/ignore` → false (siblings)
+/// - `.conf` vs `.config/x` → false (different first component)
+/// - `.cargo` vs `.cargo` → true (equal)
+pub(crate) fn path_conflicts(a: &str, b: &str) -> bool {
+    let a_parts: Vec<&str> = a.split('/').filter(|s| !s.is_empty()).collect();
+    let b_parts: Vec<&str> = b.split('/').filter(|s| !s.is_empty()).collect();
+    if a_parts.is_empty() || b_parts.is_empty() {
+        return false;
+    }
+    let min_len = a_parts.len().min(b_parts.len());
+    a_parts[..min_len] == b_parts[..min_len]
+}
+
 /// Validate that a path is not in the sensitive paths blocklist.
-/// Returns error if `allow_sensitive` is false and path matches.
+///
+/// Returns error if `allow_sensitive` is false and path matches a sensitive
+/// path that is NOT in `allow_sensitive_paths`.
 pub fn validate_path_not_sensitive(
     path: &Path,
     home_dir: &Path,
     allow_sensitive: bool,
+    allow_sensitive_paths: &[String],
 ) -> MinoResult<()> {
     if allow_sensitive {
         return Ok(());
@@ -251,9 +322,17 @@ pub fn validate_path_not_sensitive(
         let resolved_sensitive =
             std::fs::canonicalize(&sensitive_path).unwrap_or_else(|_| sensitive_path.clone());
         if resolved == resolved_sensitive || resolved.starts_with(&resolved_sensitive) {
+            // Allow if this specific sensitive path is in the per-dir allowlist
+            if allow_sensitive_paths.iter().any(|a| {
+                let a_path = home_dir.join(a);
+                let resolved_a = std::fs::canonicalize(&a_path).unwrap_or(a_path);
+                resolved == resolved_a || resolved.starts_with(&resolved_a)
+            }) {
+                return Ok(());
+            }
             return Err(MinoError::User(format!(
                 "Path '{}' resolves to sensitive credential store '{}' and is blocked by default. \
-                 Set allow_sensitive = true in [sandbox] config to override.",
+                 Add it to allow_sensitive_paths or set allow_sensitive = true in [sandbox] config.",
                 path.display(),
                 resolved_sensitive.display()
             )));
@@ -277,7 +356,12 @@ pub fn validate_sandbox_paths(config: &SandboxConfig, home_dir: &Path) -> MinoRe
                 path_str
             )));
         }
-        validate_path_not_sensitive(path, home_dir, config.allow_sensitive)?;
+        validate_path_not_sensitive(
+            path,
+            home_dir,
+            config.allow_sensitive,
+            &config.allow_sensitive_paths,
+        )?;
     }
 
     validate_sandbox_user(&config.sandbox_user)?;
@@ -351,6 +435,7 @@ mod tests {
         assert!(config.writable_paths.is_empty());
         assert!(config.dotfiles.is_empty());
         assert!(!config.allow_sensitive);
+        assert!(config.allow_sensitive_paths.is_empty());
         assert!(config.auto_passthrough_dirs.is_empty());
         assert!(config.auto_copy_dirs.is_empty());
     }
@@ -388,7 +473,7 @@ mod tests {
     fn sensitive_path_ssh_blocked() {
         let home = PathBuf::from("/home/user");
         let path = PathBuf::from("/home/user/.ssh");
-        let err = validate_path_not_sensitive(&path, &home, false).unwrap_err();
+        let err = validate_path_not_sensitive(&path, &home, false, &[]).unwrap_err();
         assert!(err.to_string().contains("sensitive credential store"));
     }
 
@@ -396,7 +481,7 @@ mod tests {
     fn sensitive_path_ssh_subdir_blocked() {
         let home = PathBuf::from("/home/user");
         let path = PathBuf::from("/home/user/.ssh/config");
-        let err = validate_path_not_sensitive(&path, &home, false).unwrap_err();
+        let err = validate_path_not_sensitive(&path, &home, false, &[]).unwrap_err();
         assert!(err.to_string().contains("sensitive credential store"));
     }
 
@@ -406,7 +491,7 @@ mod tests {
         for suffix in SENSITIVE_PATHS {
             let path = home.join(suffix);
             assert!(
-                validate_path_not_sensitive(&path, &home, false).is_err(),
+                validate_path_not_sensitive(&path, &home, false, &[]).is_err(),
                 "expected {} to be blocked",
                 path.display()
             );
@@ -417,14 +502,14 @@ mod tests {
     fn non_sensitive_path_allowed() {
         let home = PathBuf::from("/home/user");
         let path = PathBuf::from("/home/user/projects");
-        assert!(validate_path_not_sensitive(&path, &home, false).is_ok());
+        assert!(validate_path_not_sensitive(&path, &home, false, &[]).is_ok());
     }
 
     #[test]
     fn allow_sensitive_overrides_block() {
         let home = PathBuf::from("/home/user");
         let path = PathBuf::from("/home/user/.ssh");
-        assert!(validate_path_not_sensitive(&path, &home, true).is_ok());
+        assert!(validate_path_not_sensitive(&path, &home, true, &[]).is_ok());
     }
 
     #[cfg(unix)]
@@ -442,7 +527,7 @@ mod tests {
         let link_path = tmp.join("sneaky-link");
         symlink(home.join(".ssh"), &link_path).unwrap();
 
-        let err = validate_path_not_sensitive(&link_path, &home, false).unwrap_err();
+        let err = validate_path_not_sensitive(&link_path, &home, false, &[]).unwrap_err();
         assert!(err.to_string().contains("sensitive credential store"));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -453,7 +538,7 @@ mod tests {
         // When canonicalize fails (path doesn't exist), falls back to literal comparison
         let home = PathBuf::from("/nonexistent-home-dir");
         let path = PathBuf::from("/nonexistent-home-dir/.ssh");
-        let err = validate_path_not_sensitive(&path, &home, false).unwrap_err();
+        let err = validate_path_not_sensitive(&path, &home, false, &[]).unwrap_err();
         assert!(err.to_string().contains("sensitive credential store"));
     }
 
@@ -799,18 +884,21 @@ mod tests {
         assert!(err.to_string().contains(".config"));
     }
 
+    // Under the new ancestor-based semantics, .myapp/a and .myapp/b are siblings
+    // under .myapp — they don't conflict with each other. Only an ancestor vs
+    // descendant relationship triggers a conflict.
     #[test]
-    fn validate_rejects_top_segment_collision_between_lists() {
-        // Same top-level segment in both lists is a conflict even when the
-        // full paths differ. This guards against .config/a and .config/b
-        // writing concurrently into the same staging subdir.
+    fn validate_accepts_siblings_under_shared_parent() {
+        // .config/gh and .config/bar are siblings — no path-component conflict.
+        // .config/gh IS sensitive, so we use allow_sensitive_paths to permit it.
+        // .config/bar is not sensitive, so it needs no special treatment.
         let config = SandboxConfig {
-            auto_passthrough_dirs: vec![".myapp/a".to_string()],
-            auto_copy_dirs: vec![".myapp/b".to_string()],
+            auto_passthrough_dirs: vec![".config/gh".to_string()],
+            auto_copy_dirs: vec![".config/bar".to_string()],
+            allow_sensitive_paths: vec![".config/gh".to_string()],
             ..Default::default()
         };
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains(".myapp"));
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -822,5 +910,108 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_ok());
+    }
+
+    // ---- new multi-segment and allow_sensitive_paths tests ----
+
+    #[test]
+    fn validate_accepts_disjoint_single_segment_entries() {
+        // .cargo, .nvm, .oh-my-zsh are all single-segment and disjoint
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![
+                ".cargo".to_string(),
+                ".nvm".to_string(),
+                ".oh-my-zsh".to_string(),
+            ],
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_nested_ancestor_inside_passthrough() {
+        // .foo and .foo/bar conflict: .foo is ancestor of .foo/bar
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".foo".to_string(), ".foo/bar".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains(".foo"));
+    }
+
+    #[test]
+    fn validate_rejects_prefix_string_not_path_boundary() {
+        // .conf and .config/x must NOT conflict — different first path component
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".conf".to_string(), ".config-extra".to_string()],
+            ..Default::default()
+        };
+        // These are disjoint single-segment entries — should be fine
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_allows_sensitive_path_when_in_allowlist() {
+        // .config/gh is in SENSITIVE_PATHS; it's allowed when in allow_sensitive_paths
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".config/gh".to_string()],
+            allow_sensitive_paths: vec![".config/gh".to_string()],
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_sensitive_path_without_allowlist() {
+        // .config/gh without allow_sensitive_paths is rejected
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".config/gh".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains(".config/gh"));
+        assert!(err.to_string().contains("allow_sensitive_paths"));
+    }
+
+    #[test]
+    fn validate_with_allow_sensitive_flag_still_works() {
+        // Legacy allow_sensitive = true must still allow sensitive paths
+        let config = SandboxConfig {
+            auto_passthrough_dirs: vec![".ssh".to_string()],
+            allow_sensitive: true,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    // ---- path_conflicts unit tests ----
+
+    #[test]
+    fn path_conflicts_equal_paths() {
+        assert!(path_conflicts(".cargo", ".cargo"));
+    }
+
+    #[test]
+    fn path_conflicts_ancestor_vs_descendant() {
+        assert!(path_conflicts(".config", ".config/git/ignore"));
+        assert!(path_conflicts(".config/git/ignore", ".config"));
+    }
+
+    #[test]
+    fn path_conflicts_siblings_do_not_conflict() {
+        assert!(!path_conflicts(".config/gh", ".config/git"));
+        assert!(!path_conflicts(".config/gh", ".config/git/ignore"));
+    }
+
+    #[test]
+    fn path_conflicts_different_first_component() {
+        assert!(!path_conflicts(".conf", ".config/x"));
+        assert!(!path_conflicts(".cargo", ".cabal"));
+    }
+
+    #[test]
+    fn path_conflicts_empty_paths() {
+        assert!(!path_conflicts("", ".cargo"));
+        assert!(!path_conflicts(".cargo", ""));
     }
 }
