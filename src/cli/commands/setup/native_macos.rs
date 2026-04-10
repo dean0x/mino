@@ -225,6 +225,13 @@ async fn setup_sandbox_user(ctx: &UiContext, args: &SetupArgs, username: &str) -
     StepResult::Installed
 }
 
+/// Install or update the `mino-sandbox-helper` privileged binary to
+/// `/usr/local/bin/mino-sandbox-helper`.
+///
+/// Skips installation if a matching version and checksum are already present.
+/// If the source helper binary is not co-located with the `mino` executable
+/// (e.g. in a Homebrew layout), the installed binary is treated as up-to-date.
+/// Uses `sudo cp` so this step requires the user to have sudo access.
 async fn install_helper_binary(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let mino_version = env!("CARGO_PKG_VERSION");
 
@@ -236,9 +243,14 @@ async fn install_helper_binary(ctx: &UiContext, args: &SetupArgs) -> StepResult 
             // Version matches — but the binary might have been rebuilt from source
             // with code changes (same Cargo.toml version, different binary content).
             // Compare SHA256 checksums to detect stale binaries reliably.
+            //
+            // If the source helper is not co-located (e.g. Homebrew install layout),
+            // treat the installed binary as up-to-date rather than forcing a reinstall
+            // that would fail anyway.
             let needs_update = std::env::current_exe()
                 .ok()
                 .and_then(|p| p.parent().map(|d| d.join("mino-sandbox-helper")))
+                .filter(|src| src.exists())
                 .map(|src| !binary_checksums_match(&src, Path::new(HELPER_BINARY_PATH)))
                 .unwrap_or(false);
 
@@ -465,17 +477,33 @@ async fn remove_if_exists(ctx: &UiContext, path: &str, description: &str) {
 
 /// Compare SHA256 checksums of two binary files.
 ///
-/// Returns `true` if both files exist and have identical content hashes.
-/// Returns `false` if either file is missing, unreadable, or has different content.
+/// Streams each file through a `BufReader` in 64 KiB chunks to avoid loading
+/// the full binary into memory. Returns `true` if both files exist and have
+/// identical content hashes; `false` if either is missing, unreadable, or differs.
 fn binary_checksums_match(src: &std::path::Path, dst: &std::path::Path) -> bool {
     use sha2::{Digest, Sha256};
-    let Ok(src_bytes) = std::fs::read(src) else {
-        return false;
-    };
-    let Ok(dst_bytes) = std::fs::read(dst) else {
-        return false;
-    };
-    Sha256::digest(&src_bytes) == Sha256::digest(&dst_bytes)
+    use std::io::{BufRead, BufReader};
+
+    fn hash_file(path: &std::path::Path) -> Option<[u8; 32]> {
+        let file = std::fs::File::open(path).ok()?;
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        let mut hasher = Sha256::new();
+        loop {
+            let buf = reader.fill_buf().ok()?;
+            if buf.is_empty() {
+                break;
+            }
+            hasher.update(buf);
+            let len = buf.len();
+            reader.consume(len);
+        }
+        Some(hasher.finalize().into())
+    }
+
+    match (hash_file(src), hash_file(dst)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// The path where the sudoers drop-in is installed.
@@ -713,36 +741,31 @@ mod tests {
 
     #[test]
     fn binary_checksums_match_identical_files() {
-        let dir = std::env::temp_dir();
-        let a = dir.join("mino-test-cksum-a");
-        let b = dir.join("mino-test-cksum-b");
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
         std::fs::write(&a, b"same content here").unwrap();
         std::fs::write(&b, b"same content here").unwrap();
         assert!(binary_checksums_match(&a, &b));
-        let _ = std::fs::remove_file(&a);
-        let _ = std::fs::remove_file(&b);
     }
 
     #[test]
     fn binary_checksums_match_different_files() {
-        let dir = std::env::temp_dir();
-        let a = dir.join("mino-test-cksum-diff-a");
-        let b = dir.join("mino-test-cksum-diff-b");
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
         std::fs::write(&a, b"content version 1").unwrap();
         std::fs::write(&b, b"content version 2").unwrap();
         assert!(!binary_checksums_match(&a, &b));
-        let _ = std::fs::remove_file(&a);
-        let _ = std::fs::remove_file(&b);
     }
 
     #[test]
     fn binary_checksums_match_missing_file() {
-        let dir = std::env::temp_dir();
-        let a = dir.join("mino-test-cksum-exists");
-        let b = dir.join("mino-test-cksum-missing-9999");
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("exists");
+        let b = dir.path().join("missing");
         std::fs::write(&a, b"exists").unwrap();
         assert!(!binary_checksums_match(&a, &b));
         assert!(!binary_checksums_match(&b, &a));
-        let _ = std::fs::remove_file(&a);
     }
 }
