@@ -298,7 +298,7 @@ Alternatively, add `eval "$(mino completions bash)"` or `eval "$(mino completion
 
 ## Configuration
 
-Configuration is stored at `~/.config/mino/config.toml`:
+Configuration is stored at `~/.config/mino/config.toml` on Linux and `~/Library/Application Support/mino/config.toml` on macOS:
 
 ```toml
 [general]
@@ -590,7 +590,8 @@ mino run --runtime native --network none -- claude
 
 ### Configuration
 
-All native sandbox settings live under `[sandbox]` in `~/.config/mino/config.toml`.
+All native sandbox settings live under `[sandbox]` in the mino config file
+(`~/.config/mino/config.toml` on Linux, `~/Library/Application Support/mino/config.toml` on macOS).
 Network and env fields fall back to `[container]` values when not set in `[sandbox]`.
 
 ```toml
@@ -668,16 +669,30 @@ Go (`.go`), Haskell (`.ghcup`, `.cabal`, `.stack`), shell plugins (`.oh-my-zsh`,
 **Credential directories (interactive-only, opt-in with warning):**
 `.config/gh` (GitHub CLI token), `.docker` (registry auth), `.kube` (Kubernetes config).
 These are added to both `auto_passthrough_dirs` AND `allow_sensitive_paths` so
-`SandboxConfig` validation allows them.
+`SandboxConfig` validation allows them. `--yes` / non-interactive mode **never**
+auto-accepts these — you must run setup interactively to opt in.
+
+**Strictly blocked directories (never offered by detection):**
+`.ssh`, `.aws`, `.azure`, `.gnupg`, `.config/gcloud`, `.netrc` — these are pure
+credential stores and remain on the `SENSITIVE_PATHS` blocklist. They can only
+be unblocked by setting the nuclear `allow_sensitive = true` flag, which
+bypasses the entire blocklist (power-user escape hatch, not recommended).
 
 **`.claude` auto-copy (interactive confirm):**
 If `~/.claude` exists, setup offers to add it to `auto_copy_dirs`. Only the allowlisted
 subset is copied (CLAUDE.md, settings.json, agents, commands, skills, current project memory).
 
-To re-run detection after installing new toolchains:
+**Opting out per-directory:** in the interactive multiselect you can deselect any
+detected entry with the space bar before confirming. Declined entries are not
+written to the config. To re-prompt after installing new toolchains (or after
+removing an entry from the config), re-run:
+
 ```bash
 mino setup --native
 ```
+
+Setup skips detection if `auto_passthrough_dirs` (or `auto_copy_dirs`) is already
+non-empty — clear the relevant key in your config file to force a re-prompt.
 
 ### Security Model
 
@@ -889,7 +904,9 @@ Credentials are cached with TTL awareness - Mino automatically refreshes expired
 ## State Storage
 
 ```
-~/.config/mino/config.toml           # User configuration
+# User configuration (platform-specific):
+#   Linux:  ~/.config/mino/config.toml
+#   macOS:  ~/Library/Application Support/mino/config.toml
 
 # State directory (platform-specific):
 #   Linux:  ~/.local/state/mino/
