@@ -684,15 +684,17 @@ subset is copied (CLAUDE.md, settings.json, agents, commands, skills, current pr
 
 **Opting out per-directory:** in the interactive multiselect you can deselect any
 detected entry with the space bar before confirming. Declined entries are not
-written to the config. To re-prompt after installing new toolchains (or after
-removing an entry from the config), re-run:
+written to the config. After installing a new toolchain, simply re-run:
 
 ```bash
 mino setup --native
 ```
 
-Setup skips detection if `auto_passthrough_dirs` (or `auto_copy_dirs`) is already
-non-empty — clear the relevant key in your config file to force a re-prompt.
+Setup always runs detection and merges any newly-detected entries into the
+existing `auto_passthrough_dirs` list — already-present entries are left
+untouched. To permanently remove an entry you previously accepted, edit the
+config file directly. The `.claude` auto-copy step is skipped outright if
+`auto_copy_dirs` is already non-empty.
 
 ### Security Model
 
