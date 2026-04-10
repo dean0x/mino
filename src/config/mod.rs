@@ -9,6 +9,7 @@ use crate::error::{MinoError, MinoResult};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use toml::Value;
+use toml_edit::DocumentMut;
 use tracing::debug;
 
 /// Local config filename
@@ -239,6 +240,157 @@ impl ConfigManager {
                     source: e,
                 })?;
         }
+        Ok(())
+    }
+
+    // ==========================================================================
+    // Surgical [sandbox] section edits via toml_edit (preserve comments/order)
+    // ==========================================================================
+
+    /// Read `[sandbox].auto_passthrough_dirs` from the config file.
+    ///
+    /// Returns `Ok(None)` if the file, section, or key is absent.
+    /// Returns `Err` if the key is present but not an array.
+    pub async fn read_sandbox_passthrough_dirs(&self) -> MinoResult<Option<Vec<String>>> {
+        self.read_sandbox_string_array("auto_passthrough_dirs")
+            .await
+    }
+
+    /// Write `[sandbox].auto_passthrough_dirs` to the config file.
+    ///
+    /// Preserves all other sections, keys, and comments. Atomic write.
+    pub async fn set_sandbox_passthrough_dirs(&self, dirs: &[String]) -> MinoResult<()> {
+        self.write_toml_keys(&[("auto_passthrough_dirs", dirs)])
+            .await
+    }
+
+    /// Read `[sandbox].auto_copy_dirs` from the config file.
+    pub async fn read_sandbox_copy_dirs(&self) -> MinoResult<Option<Vec<String>>> {
+        self.read_sandbox_string_array("auto_copy_dirs").await
+    }
+
+    /// Write `[sandbox].auto_copy_dirs` to the config file.
+    pub async fn set_sandbox_copy_dirs(&self, dirs: &[String]) -> MinoResult<()> {
+        self.write_toml_keys(&[("auto_copy_dirs", dirs)]).await
+    }
+
+    /// Read `[sandbox].allow_sensitive_paths` from the config file.
+    pub async fn read_sandbox_allow_sensitive_paths(&self) -> MinoResult<Option<Vec<String>>> {
+        self.read_sandbox_string_array("allow_sensitive_paths")
+            .await
+    }
+
+    /// Write `[sandbox].allow_sensitive_paths` to the config file.
+    pub async fn set_sandbox_allow_sensitive_paths(&self, paths: &[String]) -> MinoResult<()> {
+        self.write_toml_keys(&[("allow_sensitive_paths", paths)])
+            .await
+    }
+
+    /// Read a string array from `[sandbox].<key>`.
+    async fn read_sandbox_string_array(&self, key: &str) -> MinoResult<Option<Vec<String>>> {
+        if !self.config_path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&self.config_path).await.map_err(|e| {
+            MinoError::io(
+                format!("reading config from {}", self.config_path.display()),
+                e,
+            )
+        })?;
+
+        let doc = content
+            .parse::<DocumentMut>()
+            .map_err(|e| MinoError::User(format!("parsing config: {}", e)))?;
+
+        let sandbox = match doc.get("sandbox").and_then(|v| v.as_table()) {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let item = match sandbox.get(key) {
+            Some(i) => i,
+            None => return Ok(None),
+        };
+
+        let arr = item
+            .as_array()
+            .ok_or_else(|| MinoError::User(format!("[sandbox].{} must be an array", key)))?;
+
+        let values: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        Ok(Some(values))
+    }
+
+    /// Apply one or more `[sandbox].<key> = [...]` mutations atomically.
+    ///
+    /// Reads the current config (or starts from an empty document), applies all
+    /// mutations, then writes to a tempfile in the same directory and renames
+    /// over the target. This guarantees no partial writes are visible to readers.
+    ///
+    /// Sharing this helper across `set_sandbox_passthrough_dirs` and
+    /// `set_sandbox_allow_sensitive_paths` ensures that writing both keys
+    /// simultaneously (as the sensitive-path setup step requires) is a single
+    /// atomic file operation.
+    pub async fn write_toml_keys(&self, mutations: &[(&str, &[String])]) -> MinoResult<()> {
+        self.ensure_config_dir().await?;
+
+        // Load existing document or start empty
+        let mut doc = if self.config_path.exists() {
+            let content = fs::read_to_string(&self.config_path).await.map_err(|e| {
+                MinoError::io(
+                    format!("reading config from {}", self.config_path.display()),
+                    e,
+                )
+            })?;
+            if content.trim().is_empty() {
+                DocumentMut::new()
+            } else {
+                content
+                    .parse::<DocumentMut>()
+                    .map_err(|e| MinoError::User(format!("parsing config: {}", e)))?
+            }
+        } else {
+            DocumentMut::new()
+        };
+
+        // Ensure [sandbox] table exists
+        if !doc.contains_table("sandbox") {
+            doc["sandbox"] = toml_edit::table();
+        }
+
+        // Apply each mutation
+        for (key, values) in mutations {
+            let mut arr = toml_edit::Array::new();
+            for v in *values {
+                arr.push(v.as_str());
+            }
+            doc["sandbox"][key] = toml_edit::value(arr);
+        }
+
+        let new_content = doc.to_string();
+
+        // Atomic write: tempfile in same dir → rename
+        let parent = self
+            .config_path
+            .parent()
+            .ok_or_else(|| MinoError::User("config path has no parent directory".to_string()))?;
+
+        // Use a fixed-name temp file in the same directory for atomicity.
+        // (tempfile::NamedTempFile would be ideal but would require a new dep.)
+        let tmp_path = parent.join(format!(".mino-config-tmp-{}", std::process::id()));
+        fs::write(&tmp_path, &new_content)
+            .await
+            .map_err(|e| MinoError::io("writing config tempfile", e))?;
+        fs::rename(&tmp_path, &self.config_path)
+            .await
+            .map_err(|e| MinoError::io("renaming config tempfile", e))?;
+
+        debug!(
+            "Config updated via toml_edit: {:?}",
+            mutations.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        );
         Ok(())
     }
 
@@ -597,5 +749,300 @@ mod tests {
         let manager = ConfigManager::with_path(global_path);
         let err = manager.load_merged(None).await.unwrap_err();
         assert!(err.to_string().contains(".gitconfig"));
+    }
+
+    // ---- toml_edit config helpers ----
+
+    #[tokio::test]
+    async fn set_sandbox_passthrough_dirs_creates_file_when_missing() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let manager = ConfigManager::with_path(path.clone());
+
+        manager
+            .set_sandbox_passthrough_dirs(&[".cargo".to_string(), ".nvm".to_string()])
+            .await
+            .unwrap();
+
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("auto_passthrough_dirs"));
+        assert!(content.contains(".cargo"));
+        assert!(content.contains(".nvm"));
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_passthrough_dirs_preserves_other_sections() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+
+        // Pre-write config with [container] and [credentials.aws] sections
+        std::fs::write(
+            &path,
+            r#"[container]
+image = "fedora:43"
+network = "host"
+
+[credentials.aws]
+enabled = true
+region = "us-west-2"
+"#,
+        )
+        .unwrap();
+
+        let manager = ConfigManager::with_path(path.clone());
+        manager
+            .set_sandbox_passthrough_dirs(&[".cargo".to_string()])
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Pre-existing sections preserved
+        assert!(content.contains("[container]"));
+        assert!(content.contains("fedora:43"));
+        assert!(content.contains("us-west-2"));
+        // New key present
+        assert!(content.contains("auto_passthrough_dirs"));
+        assert!(content.contains(".cargo"));
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_passthrough_dirs_preserves_comments() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+
+        // Pre-write config with a comment
+        std::fs::write(
+            &path,
+            "# mino configuration file\n\n[container]\nimage = \"fedora:43\"\n",
+        )
+        .unwrap();
+
+        let manager = ConfigManager::with_path(path.clone());
+        manager
+            .set_sandbox_passthrough_dirs(&[".cargo".to_string()])
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Comment must survive
+        assert!(
+            content.contains("# mino configuration file"),
+            "comment should be preserved, got: {}",
+            content
+        );
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_passthrough_dirs_overwrites_existing_key() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+
+        std::fs::write(
+            &path,
+            "[sandbox]\nauto_passthrough_dirs = [\".oh-my-zsh\"]\n",
+        )
+        .unwrap();
+
+        let manager = ConfigManager::with_path(path.clone());
+        manager
+            .set_sandbox_passthrough_dirs(&[".cargo".to_string()])
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(".cargo"));
+        assert!(
+            !content.contains(".oh-my-zsh"),
+            "old value should be replaced"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_passthrough_dirs_creates_sandbox_section_when_missing() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+
+        std::fs::write(&path, "[container]\nimage = \"fedora:43\"\n").unwrap();
+
+        let manager = ConfigManager::with_path(path.clone());
+        manager
+            .set_sandbox_passthrough_dirs(&[".nvm".to_string()])
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[sandbox]") || content.contains("sandbox.auto_passthrough_dirs"));
+        assert!(content.contains(".nvm"));
+    }
+
+    #[tokio::test]
+    async fn read_sandbox_passthrough_dirs_missing_file_returns_none() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("nonexistent.toml");
+        let manager = ConfigManager::with_path(path);
+
+        let result = manager.read_sandbox_passthrough_dirs().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_sandbox_passthrough_dirs_missing_key_returns_none() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "[sandbox]\ncache_mode = \"read-write\"\n").unwrap();
+
+        let manager = ConfigManager::with_path(path);
+        let result = manager.read_sandbox_passthrough_dirs().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_sandbox_passthrough_dirs_present_empty_returns_some_empty() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "[sandbox]\nauto_passthrough_dirs = []\n").unwrap();
+
+        let manager = ConfigManager::with_path(path);
+        let result = manager.read_sandbox_passthrough_dirs().await.unwrap();
+        assert_eq!(result, Some(vec![]));
+    }
+
+    #[tokio::test]
+    async fn read_sandbox_passthrough_dirs_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let manager = ConfigManager::with_path(path);
+
+        let dirs = vec![".cargo".to_string(), ".nvm".to_string()];
+        manager.set_sandbox_passthrough_dirs(&dirs).await.unwrap();
+
+        let result = manager.read_sandbox_passthrough_dirs().await.unwrap();
+        assert_eq!(result, Some(dirs));
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_copy_dirs_creates_and_reads_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let manager = ConfigManager::with_path(path);
+
+        manager
+            .set_sandbox_copy_dirs(&[".claude".to_string()])
+            .await
+            .unwrap();
+
+        let result = manager.read_sandbox_copy_dirs().await.unwrap();
+        assert_eq!(result, Some(vec![".claude".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_copy_dirs_preserves_passthrough_dirs_when_set_second() {
+        // Critical non-clobber: set passthrough first, then set copy dirs,
+        // assert passthrough is still present.
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let manager = ConfigManager::with_path(path);
+
+        manager
+            .set_sandbox_passthrough_dirs(&[".cargo".to_string()])
+            .await
+            .unwrap();
+        manager
+            .set_sandbox_copy_dirs(&[".claude".to_string()])
+            .await
+            .unwrap();
+
+        let passthrough = manager.read_sandbox_passthrough_dirs().await.unwrap();
+        assert_eq!(passthrough, Some(vec![".cargo".to_string()]));
+        let copy = manager.read_sandbox_copy_dirs().await.unwrap();
+        assert_eq!(copy, Some(vec![".claude".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_allow_sensitive_paths_basic_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let manager = ConfigManager::with_path(path);
+
+        manager
+            .set_sandbox_allow_sensitive_paths(&[".config/gh".to_string()])
+            .await
+            .unwrap();
+
+        let result = manager.read_sandbox_allow_sensitive_paths().await.unwrap();
+        assert_eq!(result, Some(vec![".config/gh".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn set_both_passthrough_and_allow_sensitive_in_one_call() {
+        // Exercises the shared write_toml_keys path with two mutations in one atomic write.
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let manager = ConfigManager::with_path(path.clone());
+
+        let passthrough = vec![".config/gh".to_string()];
+        let allowlist = vec![".config/gh".to_string()];
+
+        manager
+            .write_toml_keys(&[
+                ("auto_passthrough_dirs", &passthrough),
+                ("allow_sensitive_paths", &allowlist),
+            ])
+            .await
+            .unwrap();
+
+        // Both keys present in the final file
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("auto_passthrough_dirs"));
+        assert!(content.contains("allow_sensitive_paths"));
+        assert_eq!(
+            manager.read_sandbox_passthrough_dirs().await.unwrap(),
+            Some(passthrough)
+        );
+        assert_eq!(
+            manager.read_sandbox_allow_sensitive_paths().await.unwrap(),
+            Some(allowlist)
+        );
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_passthrough_dirs_handles_preexisting_trailing_newlines_and_whitespace() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+
+        // File with trailing whitespace and extra newlines
+        std::fs::write(&path, "[container]\nimage = \"test\"\n\n\n  \n").unwrap();
+
+        let manager = ConfigManager::with_path(path.clone());
+        manager
+            .set_sandbox_passthrough_dirs(&[".cargo".to_string()])
+            .await
+            .unwrap();
+
+        let result = manager.read_sandbox_passthrough_dirs().await.unwrap();
+        assert_eq!(result, Some(vec![".cargo".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn set_sandbox_passthrough_dirs_with_utf8_content() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+
+        // Pre-write a UTF-8 comment
+        std::fs::write(&path, "# café ☕\n\n[container]\nimage = \"test\"\n").unwrap();
+
+        let manager = ConfigManager::with_path(path.clone());
+        manager
+            .set_sandbox_passthrough_dirs(&[".cargo".to_string()])
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("# café ☕"),
+            "UTF-8 comment should be preserved"
+        );
+        assert!(content.contains(".cargo"));
     }
 }
