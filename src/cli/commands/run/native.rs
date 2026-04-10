@@ -9,8 +9,11 @@ use crate::cli::args::RunArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::network::{resolve_network_mode, NetworkMode, NetworkResolutionInput};
-use crate::sandbox::config::validate_sandbox_paths;
+use crate::sandbox::config::{
+    resolve_sandbox_network, validate_sandbox_paths, DEFAULT_ENV_PASSTHROUGH,
+};
 use crate::sandbox::dotfiles;
+use crate::sandbox::fs_copy;
 use crate::sandbox::native::{create_sandbox_platform, SandboxPlatform, SandboxSpawnConfig};
 use crate::sandbox::process::SandboxProcess;
 use crate::session::{Session, SessionManager, SessionStatus};
@@ -86,7 +89,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     }
     // Re-validate after augmenting passthrough_paths so auto-mounted dirs
     // are subject to the same sensitive-path checks as user-specified paths.
-    crate::sandbox::config::validate_sandbox_paths(&sandbox_config, &home_dir)?;
+    validate_sandbox_paths(&sandbox_config, &home_dir)?;
 
     // Phase 4: Spawn sandbox and monitor
     let spawn_config = SandboxSpawnConfig {
@@ -129,7 +132,7 @@ async fn validate_and_resolve(
     debug!("Project directory: {}", project_dir.display());
 
     let (cfg_network, cfg_allow, cfg_preset) =
-        crate::sandbox::config::resolve_sandbox_network(&config.sandbox, &config.container);
+        resolve_sandbox_network(&config.sandbox, &config.container);
     let network_mode = resolve_network_mode(&NetworkResolutionInput {
         cli_network: args.network.as_deref(),
         cli_allow_rules: &args.network_allow,
@@ -498,7 +501,7 @@ fn build_sandbox_env(
     // or the default list (locale vars + ANTHROPIC_API_KEY).
     // Users can add other provider keys (OPENAI_API_KEY, GROQ_API_KEY, etc.) via
     // `sandbox.env_passthrough` in config without requiring a code change.
-    let default_passthrough = crate::sandbox::config::DEFAULT_ENV_PASSTHROUGH;
+    let default_passthrough = DEFAULT_ENV_PASSTHROUGH;
     let passthrough_keys: Vec<&str> = config
         .sandbox
         .env_passthrough
@@ -564,7 +567,7 @@ async fn cleanup_dotfile_dir(dir: &Option<PathBuf>) {
 /// (`terminate`, `wait`) are unit-tested independently in the process module.
 #[cfg(unix)]
 async fn wait_with_signal_forwarding(
-    process: &mut crate::sandbox::process::SandboxProcess,
+    process: &mut SandboxProcess,
 ) -> MinoResult<i32> {
     use tokio::signal::unix::{signal, SignalKind};
 
@@ -594,7 +597,7 @@ async fn wait_with_signal_forwarding(
 /// Non-Unix fallback: just wait for the process.
 #[cfg(not(unix))]
 async fn wait_with_signal_forwarding(
-    process: &mut crate::sandbox::process::SandboxProcess,
+    process: &mut SandboxProcess,
 ) -> MinoResult<i32> {
     process.wait().await
 }
@@ -603,7 +606,7 @@ async fn wait_with_signal_forwarding(
 fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
-    for name in crate::sandbox::dotfiles::DEFAULT_DOTFILES
+    for name in dotfiles::DEFAULT_DOTFILES
         .iter()
         .map(|s| s.to_string())
         .chain(config_dotfiles.iter().cloned())
@@ -704,14 +707,9 @@ async fn copy_auto_dirs(
             let dest_dir = staging.join(&dir_name);
             tracing::info!(dir = %dir_name, "auto-copying directory into sandbox");
             if dir_name == ".claude" {
-                crate::sandbox::dotfiles::copy_claude_config_dir(
-                    &host_dir,
-                    &dest_dir,
-                    &project_dir,
-                )
-                .await?;
+                dotfiles::copy_claude_config_dir(&host_dir, &dest_dir, &project_dir).await?;
             } else {
-                crate::sandbox::fs_copy::copy_dir_recursive(host_dir, dest_dir).await?;
+                fs_copy::copy_dir_recursive(host_dir, dest_dir).await?;
             }
         }
     }

@@ -165,7 +165,7 @@ pub async fn copy_claude_config_dir(
                 .await
                 .map_err(|e| MinoError::io(format!("copying .claude/{}", name), e))?;
         } else if metadata.is_dir() {
-            crate::sandbox::fs_copy::copy_dir_recursive(src_path, dst_path).await?;
+            super::fs_copy::copy_dir_recursive(src_path, dst_path).await?;
         }
         // Skip symlinks — they would dangle inside the sandbox
     }
@@ -176,7 +176,7 @@ pub async fn copy_claude_config_dir(
     let projects_src = src.join("projects").join(&project_key);
     if projects_src.is_dir() {
         let projects_dst = dst.join("projects").join(&project_key);
-        crate::sandbox::fs_copy::copy_dir_recursive(projects_src, projects_dst).await?;
+        super::fs_copy::copy_dir_recursive(projects_src, projects_dst).await?;
     }
 
     Ok(())
