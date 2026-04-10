@@ -53,8 +53,28 @@ pub(super) async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> Min
         StepResult::Blocked
     };
 
+    // Step 5: Offer toolchain passthrough (safe, non-interactive selects all)
+    let toolchain_result =
+        super::helpers::configure_toolchain_passthrough(ctx, args, &home, &config_path).await;
+
+    // Step 6: Offer sensitive-but-useful passthrough (skipped in non-interactive)
+    let sensitive_result =
+        super::helpers::configure_sensitive_passthrough(ctx, args, &home, &config_path).await;
+
+    // Step 7: Offer .claude auto-copy
+    let claude_result =
+        super::helpers::configure_claude_auto_copy(ctx, args, &home, &config_path).await;
+
     // Summary
-    let issues = count_setup_issues(&[user_result, helper_result, sudoers_result, pf_result]);
+    let issues = count_setup_issues(&[
+        user_result,
+        helper_result,
+        sudoers_result,
+        pf_result,
+        toolchain_result,
+        sensitive_result,
+        claude_result,
+    ]);
 
     if issues > 0 {
         ui::outro_warn(ctx, "Native sandbox setup incomplete. See issues above.");
@@ -608,6 +628,7 @@ pub(super) fn count_setup_issues(results: &[StepResult]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::commands::setup::helpers;
 
     // ---- sudoers content generation ----
 
@@ -876,5 +897,278 @@ mod tests {
         if let HelperAction::Upgrade { reason } = action {
             assert!(reason.contains("changed"));
         }
+    }
+
+    // ---- configure_toolchain_passthrough tests ----
+
+    #[tokio::test]
+    async fn toolchain_passthrough_no_dirs_returns_already_ok() {
+        let home = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: false,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result =
+            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path)
+                .await;
+        assert_eq!(result, StepResult::AlreadyOk);
+    }
+
+    #[tokio::test]
+    async fn toolchain_passthrough_detected_dirs_written_to_config() {
+        let home = tempfile::tempdir().unwrap();
+        // Create a known toolchain dir
+        std::fs::create_dir(home.path().join(".cargo")).unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        // Non-interactive: all detected entries accepted automatically
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: false,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result =
+            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path)
+                .await;
+        assert_eq!(result, StepResult::Installed);
+
+        // Config must now contain .cargo
+        let manager = ConfigManager::with_path(config_path);
+        let dirs = manager
+            .read_sandbox_passthrough_dirs()
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        assert!(dirs.contains(&".cargo".to_string()));
+    }
+
+    #[tokio::test]
+    async fn toolchain_passthrough_deduplicates_existing_entries() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".cargo")).unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        // Pre-populate config with .cargo already present
+        let manager = ConfigManager::with_path(config_path.clone());
+        manager
+            .set_sandbox_passthrough_dirs(&[".cargo".to_string()])
+            .await
+            .unwrap();
+
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: false,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result =
+            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path)
+                .await;
+
+        // All detected entries were already in config → no change
+        assert_eq!(result, StepResult::AlreadyOk);
+
+        // Config should still have exactly one .cargo entry (no duplicates)
+        let dirs = manager
+            .read_sandbox_passthrough_dirs()
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(dirs.iter().filter(|d| *d == ".cargo").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn toolchain_passthrough_check_mode_fails_when_empty() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".cargo")).unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: true,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result =
+            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path)
+                .await;
+        // Config is empty → check mode should report failure
+        assert_eq!(result, StepResult::Failed);
+    }
+
+    // ---- configure_sensitive_passthrough tests ----
+
+    #[tokio::test]
+    async fn sensitive_passthrough_no_dirs_returns_already_ok() {
+        let home = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: false,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result = helpers::configure_sensitive_passthrough(&ctx, &args, home.path(), &config_path)
+            .await;
+        assert_eq!(result, StepResult::AlreadyOk);
+    }
+
+    #[tokio::test]
+    async fn sensitive_passthrough_skips_in_non_interactive_mode() {
+        let home = tempfile::tempdir().unwrap();
+        // Create .docker so it would be detected
+        std::fs::create_dir(home.path().join(".docker")).unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        // Non-interactive: should skip regardless (security policy)
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: false,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result = helpers::configure_sensitive_passthrough(&ctx, &args, home.path(), &config_path)
+            .await;
+        assert_eq!(result, StepResult::AlreadyOk);
+
+        // Verify config was NOT written
+        assert!(
+            !config_path.exists(),
+            "config should not be written in non-interactive mode"
+        );
+    }
+
+    // ---- configure_claude_auto_copy tests ----
+
+    #[tokio::test]
+    async fn claude_auto_copy_no_dir_returns_already_ok() {
+        let home = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: false,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result =
+            helpers::configure_claude_auto_copy(&ctx, &args, home.path(), &config_path).await;
+        assert_eq!(result, StepResult::AlreadyOk);
+    }
+
+    #[tokio::test]
+    async fn claude_auto_copy_skips_in_non_interactive_mode() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".claude")).unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        // Non-interactive: should skip (may contain API tokens)
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: false,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result =
+            helpers::configure_claude_auto_copy(&ctx, &args, home.path(), &config_path).await;
+        assert_eq!(result, StepResult::AlreadyOk);
+        assert!(
+            !config_path.exists(),
+            "config should not be written in non-interactive mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_auto_copy_already_configured_returns_already_ok() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".claude")).unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        // Pre-configure .claude in auto_copy_dirs
+        let manager = ConfigManager::with_path(config_path.clone());
+        manager
+            .set_sandbox_copy_dirs(&[".claude".to_string()])
+            .await
+            .unwrap();
+
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: false,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result =
+            helpers::configure_claude_auto_copy(&ctx, &args, home.path(), &config_path).await;
+        assert_eq!(result, StepResult::AlreadyOk);
+    }
+
+    #[tokio::test]
+    async fn claude_auto_copy_check_mode_reports_failure_when_not_configured() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".claude")).unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_path = config_dir.path().join("config.toml");
+
+        let ctx = crate::ui::UiContext::non_interactive();
+        let args = crate::cli::args::SetupArgs {
+            check: true,
+            yes: false,
+            upgrade: false,
+            native: true,
+            uninstall: false,
+        };
+
+        let result =
+            helpers::configure_claude_auto_copy(&ctx, &args, home.path(), &config_path).await;
+        assert_eq!(result, StepResult::Failed);
     }
 }
