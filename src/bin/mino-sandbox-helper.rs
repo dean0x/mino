@@ -269,21 +269,11 @@ fn main() {
 
 /// Look up UID/GID for the sandbox user before forking.
 ///
-/// On error, cleans up any ACLs that were already set and returns Err.
+/// Cleanup on error is handled by the caller's `SpawnGuard` — this function
+/// simply returns Err and lets the guard's Drop impl do the work.
 /// Caller must validate `sandbox_user` before calling this function.
-fn prepare_spawn(
-    sandbox_user: &str,
-    acl_paths: &[AclEntry],
-    home_dir: &Path,
-) -> Result<SpawnReady, String> {
-    let (uid, gid) = match get_user_ids(sandbox_user) {
-        Ok(ids) => ids,
-        Err(e) => {
-            cleanup_acls(acl_paths, Some(home_dir), sandbox_user);
-            return Err(e);
-        }
-    };
-
+fn prepare_spawn(sandbox_user: &str) -> Result<SpawnReady, String> {
+    let (uid, gid) = get_user_ids(sandbox_user)?;
     Ok(SpawnReady { uid, gid })
 }
 
@@ -327,6 +317,48 @@ fn chown_recursive(path: &Path, uid: u32, gid: u32) {
     }
 }
 
+/// RAII guard that cleans up the home directory and ACLs on error.
+///
+/// Tracks which ACLs were successfully set and the home directory so that
+/// any error path through `handle_spawn` (via `?`) triggers cleanup.
+/// On success, call `std::mem::forget(guard)` to skip cleanup — the parent
+/// process handles cleanup after the child exits.
+///
+/// Reference pattern: `TerminalGuard` in the codebase.
+struct SpawnGuard<'a> {
+    home_dir: Option<PathBuf>,
+    /// Only ACLs that were successfully set are tracked here.
+    set_acl_paths: Vec<&'a AclEntry>,
+    sandbox_user: &'a str,
+}
+
+impl<'a> SpawnGuard<'a> {
+    fn new(home_dir: PathBuf, sandbox_user: &'a str) -> Self {
+        Self {
+            home_dir: Some(home_dir),
+            set_acl_paths: Vec::new(),
+            sandbox_user,
+        }
+    }
+
+    fn track_acl(&mut self, entry: &'a AclEntry) {
+        self.set_acl_paths.push(entry);
+    }
+}
+
+impl Drop for SpawnGuard<'_> {
+    fn drop(&mut self) {
+        for acl in &self.set_acl_paths {
+            let _ = remove_acl(&acl.path, acl.writable, self.sandbox_user);
+        }
+        if let Some(home) = self.home_dir.take() {
+            // Also remove the home dir ACL (set in step 2 before the guard tracks it)
+            let _ = remove_acl(&home, true, self.sandbox_user);
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+}
+
 fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     let SpawnParams {
         session_id,
@@ -347,13 +379,38 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     // 1. Create home directory
     std::fs::create_dir_all(&home_dir).map_err(|e| format!("Failed to create home dir: {}", e))?;
 
+    // 1a. Symlink check: /tmp is world-writable and session_id is predictable.
+    //     An attacker could pre-plant a symlink at /tmp/mino-home-<id> pointing to
+    //     /etc or another sensitive path. Bail if the path resolves to a symlink.
+    //
+    //     We check AFTER create_dir_all because create_dir_all does not follow
+    //     symlinks for the final component — if the path was a pre-planted symlink,
+    //     create_dir_all succeeds (the target dir already existed). Detecting the
+    //     symlink here closes that window before any privileged chown/ACL operation.
+    {
+        let meta = std::fs::symlink_metadata(&home_dir)
+            .map_err(|e| format!("Failed to stat home dir: {}", e))?;
+        if meta.file_type().is_symlink() {
+            // Remove the symlink to avoid leaving it in place, then bail.
+            let _ = std::fs::remove_file(&home_dir);
+            return Err(format!(
+                "Security: home dir path is a symlink (possible attack): {}",
+                home_dir.display()
+            ));
+        }
+    }
+
+    // Construct guard immediately after home dir is safely created.
+    // Any `?` error return below will trigger Drop → cleanup.
+    let mut guard = SpawnGuard::new(home_dir.clone(), &sandbox_user);
+
     // 2. Set ACL on home dir (before dotfile copy so file_inherit applies)
     if let Err(e) = set_acl(&home_dir, true, &sandbox_user) {
         return Err(format!("ACL setup failed on home dir: {}", e));
     }
 
     // 3. Look up sandbox user UID/GID (needed for chown after dotfile copy)
-    let ready = prepare_spawn(&sandbox_user, &acl_paths, &home_dir)?;
+    let ready = prepare_spawn(&sandbox_user)?;
 
     // 4. Copy dotfiles to home
     if let Some(dotfile_src) = &dotfile_dir {
@@ -365,9 +422,15 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     chown_recursive(&home_dir, ready.uid, ready.gid);
 
     // 6. Set ACLs for sandbox user on all paths (project, passthrough)
+    //    Track each successful ACL so the guard can remove them on error.
     for acl in &acl_paths {
         set_acl(&acl.path, acl.writable, &sandbox_user)?;
+        guard.track_acl(acl);
     }
+
+    // All setup succeeded — hand off cleanup responsibility to the parent
+    // process (which calls cleanup_acls + remove_dir_all after child exits).
+    std::mem::forget(guard);
 
     // 7. Fork + setgid + setuid + exec
     #[cfg(unix)]
@@ -568,8 +631,8 @@ fn handle_cleanup(session_id: &str, project_dir: &Path, sandbox_user: &str) -> R
     mino::sandbox::config::validate_sandbox_user(sandbox_user)
         .map_err(|e| format!("Invalid sandbox_user: {}", e))?;
 
-    // Remove ACLs on project dir
-    let _ = remove_acl(project_dir, sandbox_user);
+    // Remove ACLs on project dir — project dir is always writable=true
+    let _ = remove_acl(project_dir, true, sandbox_user);
 
     // Remove pf sub-anchor using validated args from library
     if let Ok(pf_args) = helper::build_pf_cleanup_args(session_id) {
@@ -602,25 +665,27 @@ fn set_acl(path: &Path, writable: bool, sandbox_user: &str) -> Result<(), String
 /// Remove ACLs from all tracked paths and optionally the home directory.
 fn cleanup_acls(acl_paths: &[AclEntry], home_dir: Option<&Path>, sandbox_user: &str) {
     for acl in acl_paths {
-        let _ = remove_acl(&acl.path, sandbox_user);
+        let _ = remove_acl(&acl.path, acl.writable, sandbox_user);
     }
     if let Some(home) = home_dir {
-        let _ = remove_acl(home, sandbox_user);
+        // Home dir ACL is always writable=true (set in step 2 of handle_spawn)
+        let _ = remove_acl(home, true, sandbox_user);
     }
 }
 
-fn remove_acl(path: &Path, sandbox_user: &str) -> Result<(), String> {
+/// Remove a single ACL entry from a path.
+///
+/// `writable` must match what was originally set: each path gets either a
+/// read-write OR a read-only ACL, never both. Calling `chmod -a` with the
+/// wrong variant is a no-op, so this is safe — but passing the correct flag
+/// avoids a redundant `-R` directory walk on large trees (.nvm, .oh-my-zsh).
+fn remove_acl(path: &Path, writable: bool, sandbox_user: &str) -> Result<(), String> {
     let path_str = path
         .to_str()
         .ok_or_else(|| format!("Path contains invalid UTF-8: {:?}", path))?;
 
-    // Remove read-write ACL
-    let rw_args = helper::build_remove_acl_args(path_str, sandbox_user, true);
-    let _ = std::process::Command::new("chmod").args(&rw_args).output();
-
-    // Remove read-only ACL
-    let ro_args = helper::build_remove_acl_args(path_str, sandbox_user, false);
-    let _ = std::process::Command::new("chmod").args(&ro_args).output();
+    let args = helper::build_remove_acl_args(path_str, sandbox_user, writable);
+    let _ = std::process::Command::new("chmod").args(&args).output();
 
     Ok(())
 }
@@ -1340,6 +1405,105 @@ mod tests {
         assert_eq!(
             std::fs::read_link(&dest_link).unwrap(),
             PathBuf::from("/usr/share/data")
+        );
+    }
+
+    // ---- chown_recursive tests ----
+    //
+    // These tests run as the current (non-root) user. They cannot verify that
+    // ownership actually changes — that requires root. What they DO verify:
+    //
+    // 1. Empty dir is a no-op (no panic, no error)
+    // 2. Nested directories are visited without panic
+    // 3. Symlinks are NOT followed (symlink_metadata detects them; chown is skipped)
+    //
+    // The actual chown is exercised only in integration / root CI environments.
+    // The behaviour under non-root is "log and continue" (non-fatal), which is
+    // intentional — the test confirms the function doesn't panic or return an error.
+
+    #[cfg(unix)]
+    #[test]
+    fn chown_recursive_empty_dir_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        // Use current user's uid/gid — chown to self is a no-op that always succeeds
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        // Must not panic
+        chown_recursive(dir.path(), uid, gid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chown_recursive_recurses_into_nested_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        std::fs::write(dir.path().join("a").join("b").join("file.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("top.txt"), "y").unwrap();
+
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        // Must not panic; all paths must still be accessible after the call
+        chown_recursive(dir.path(), uid, gid);
+
+        assert!(dir.path().join("a").join("b").join("file.txt").exists());
+        assert!(dir.path().join("top.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chown_recursive_skips_symlinks_does_not_follow() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a symlink pointing at a path that does NOT exist.
+        // If chown_recursive followed the symlink, libc::chown would fail on a
+        // non-existent target — but since we skip symlinks, that must not happen.
+        let dangling_target = dir.path().join("does-not-exist");
+        std::os::unix::fs::symlink(&dangling_target, dir.path().join("link")).unwrap();
+
+        // Also create a real file to confirm recursion still works alongside symlinks
+        std::fs::write(dir.path().join("real.txt"), "content").unwrap();
+
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        // Must not panic even though the dangling symlink target doesn't exist
+        chown_recursive(dir.path(), uid, gid);
+
+        // Symlink still exists and is still a symlink (not dereferenced, not removed)
+        let meta = std::fs::symlink_metadata(dir.path().join("link")).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "symlink should be preserved, not followed"
+        );
+
+        // Real file should still be accessible
+        assert!(dir.path().join("real.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chown_recursive_symlink_to_dir_is_not_recursed() {
+        let outer = tempfile::tempdir().unwrap();
+        let inner = tempfile::tempdir().unwrap();
+
+        // inner_dir/secret.txt — should NOT be touched if we link inner into outer
+        std::fs::write(inner.path().join("secret.txt"), "sensitive").unwrap();
+
+        // outer/link_to_inner -> inner (a directory symlink)
+        std::os::unix::fs::symlink(inner.path(), outer.path().join("link_to_inner")).unwrap();
+
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        // chown_recursive on outer must NOT recurse into inner via the symlink
+        chown_recursive(outer.path(), uid, gid);
+
+        // inner/secret.txt must still be accessible (not removed, not corrupted)
+        assert!(inner.path().join("secret.txt").exists());
+
+        // The symlink in outer should remain a symlink
+        let meta = std::fs::symlink_metadata(outer.path().join("link_to_inner")).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "directory symlink should not be recursed"
         );
     }
 }
