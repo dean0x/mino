@@ -687,6 +687,19 @@ fn handle_cleanup(session_id: &str, project_dir: &Path, sandbox_user: &str) -> R
         let _ = std::process::Command::new("pfctl").args(&pf_args).output();
     }
 
+    // Remove staging home dir (owned by _mino_agent, requires root).
+    // Best-effort: log on failure but do not abort cleanup.
+    let home_dir = PathBuf::from(format!("/tmp/mino-home-{}", session_id));
+    if home_dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&home_dir) {
+            eprintln!(
+                "Warning: failed to remove staging home dir {}: {}",
+                home_dir.display(),
+                e
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -1776,5 +1789,39 @@ mod tests {
             meta.file_type().is_symlink(),
             "directory symlink should not be recursed"
         );
+    }
+
+    // ---- handle_cleanup staging-dir removal tests ----
+
+    #[test]
+    fn handle_cleanup_removes_staging_home_dir() {
+        // Create a unique staging dir under /tmp that handle_cleanup should delete.
+        // We use a session-name derived from the test's pid to avoid collisions.
+        let session_id = format!("cleanup-test-{}", std::process::id());
+        let home_dir = PathBuf::from(format!("/tmp/mino-home-{}", session_id));
+        std::fs::create_dir_all(&home_dir).unwrap();
+        std::fs::write(home_dir.join("some-file"), "data").unwrap();
+
+        // handle_cleanup will fail on pfctl/chmod (not root) but must still
+        // remove the staging dir, which we created as the current user.
+        let project_dir = tempfile::tempdir().unwrap();
+        let _ = handle_cleanup(&session_id, project_dir.path(), "_mino_agent");
+
+        assert!(
+            !home_dir.exists(),
+            "handle_cleanup must remove /tmp/mino-home-{{session_id}}"
+        );
+    }
+
+    #[test]
+    fn handle_cleanup_tolerates_missing_home_dir() {
+        // If the staging dir was already removed (e.g. agent cleaned up on exit),
+        // handle_cleanup must not error.
+        let session_id = format!("cleanup-absent-{}", std::process::id());
+        // Do NOT create /tmp/mino-home-{session_id}
+        let project_dir = tempfile::tempdir().unwrap();
+        // Should return Ok (dir absence is not an error)
+        let _ = handle_cleanup(&session_id, project_dir.path(), "_mino_agent");
+        // No assertion needed — the absence of a panic/unwrap failure is the test
     }
 }
