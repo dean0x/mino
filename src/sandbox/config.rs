@@ -108,6 +108,16 @@ pub struct SandboxConfig {
 
     /// Environment variables for native sandbox (falls back to [container] if None)
     pub env: Option<HashMap<String, String>>,
+
+    /// Host environment keys to inherit into the sandbox.
+    ///
+    /// When `None` (unset in config), the default list is used:
+    /// `["ANTHROPIC_API_KEY", "LANG", "LC_ALL", "TZ", "TERM"]`.
+    ///
+    /// Set to an explicit list to override (use `[]` to disable all passthrough).
+    /// Add other AI provider keys here (e.g., `"OPENAI_API_KEY"`, `"GROQ_API_KEY"`)
+    /// without requiring a code change.
+    pub env_passthrough: Option<Vec<String>>,
 }
 
 impl Default for SandboxConfig {
@@ -129,9 +139,22 @@ impl Default for SandboxConfig {
             network_allow: None,
             network_preset: None,
             env: None,
+            env_passthrough: None,
         }
     }
 }
+
+/// Default host environment keys inherited into the sandbox.
+///
+/// Users may override this list via `sandbox.env_passthrough` in config.
+/// Locale vars (`LANG`, `LC_ALL`, `TZ`, `TERM`) keep the sandbox locale-consistent
+/// with the host. `ANTHROPIC_API_KEY` is included so the agent can authenticate
+/// without requiring explicit env var injection via `sandbox.env`.
+///
+/// Add other provider keys (e.g., `OPENAI_API_KEY`) by setting `env_passthrough`
+/// in `[sandbox]` config rather than adding them here.
+pub const DEFAULT_ENV_PASSTHROUGH: &[&str] =
+    &["ANTHROPIC_API_KEY", "LANG", "LC_ALL", "TZ", "TERM"];
 
 impl SandboxConfig {
     /// Validate that `auto_passthrough_dirs` and `auto_copy_dirs` do not overlap

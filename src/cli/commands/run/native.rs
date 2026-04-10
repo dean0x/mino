@@ -473,7 +473,14 @@ fn validate_native_flags(args: &RunArgs) -> MinoResult<()> {
     Ok(())
 }
 
-/// Build sandbox environment variables
+/// Build sandbox environment variables.
+///
+/// Resolution order (last writer wins):
+/// 1. Fixed sandbox identity vars (`HOME`, `USER`, `MINO_SANDBOX`, `PATH`)
+/// 2. Host env passthrough: keys from `sandbox.env_passthrough`
+///    (falls back to [`crate::sandbox::config::DEFAULT_ENV_PASSTHROUGH`] when unset)
+/// 3. Credential env vars (from credential providers)
+/// 4. Explicit env vars: `sandbox.env` if set, else `container.env`
 fn build_sandbox_env(
     config: &Config,
     credentials: &HashMap<String, String>,
@@ -487,12 +494,21 @@ fn build_sandbox_env(
     env.insert("USER".to_string(), config.sandbox.sandbox_user.clone());
     env.insert("MINO_SANDBOX".to_string(), "native".to_string());
 
-    // Inherit locale, terminal, and ANTHROPIC_API_KEY from the host environment.
-    // Other provider keys (OPENAI_API_KEY, etc.) are not automatically inherited;
-    // add them explicitly via `sandbox.env` in config if needed.
-    for key in &["LANG", "LC_ALL", "TZ", "TERM", "ANTHROPIC_API_KEY"] {
+    // Inherit keys from the host environment. Uses the configured list when set,
+    // or the default list (locale vars + ANTHROPIC_API_KEY).
+    // Users can add other provider keys (OPENAI_API_KEY, GROQ_API_KEY, etc.) via
+    // `sandbox.env_passthrough` in config without requiring a code change.
+    let default_passthrough = crate::sandbox::config::DEFAULT_ENV_PASSTHROUGH;
+    let passthrough_keys: Vec<&str> = config
+        .sandbox
+        .env_passthrough
+        .as_deref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_else(|| default_passthrough.to_vec());
+
+    for key in &passthrough_keys {
         if let Ok(val) = std::env::var(key) {
-            env.insert(key.to_string(), val);
+            env.insert((*key).to_string(), val);
         }
     }
 
@@ -1000,4 +1016,54 @@ mod tests {
         assert_eq!(env.get("FROM_CONTAINER").unwrap(), "hello");
     }
 
+    #[test]
+    #[serial]
+    fn build_sandbox_env_default_passthrough_includes_anthropic_and_locale() {
+        // Ensure the defaults are in place when env_passthrough is not configured
+        let key = "ANTHROPIC_API_KEY";
+        unsafe { std::env::set_var(key, "test-key-123") };
+        let config = Config::default();
+        assert!(config.sandbox.env_passthrough.is_none());
+        let env = build_sandbox_env(&config, &HashMap::new());
+        assert_eq!(env.get(key).unwrap(), "test-key-123");
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[test]
+    #[serial]
+    fn build_sandbox_env_custom_passthrough_replaces_defaults() {
+        // Custom list should NOT inherit ANTHROPIC_API_KEY unless explicitly listed
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "should-not-appear") };
+        unsafe { std::env::set_var("MY_CUSTOM_KEY", "custom-value") };
+
+        let mut config = Config::default();
+        config.sandbox.env_passthrough = Some(vec!["MY_CUSTOM_KEY".to_string()]);
+
+        let env = build_sandbox_env(&config, &HashMap::new());
+        assert_eq!(env.get("MY_CUSTOM_KEY").unwrap(), "custom-value");
+        assert!(
+            !env.contains_key("ANTHROPIC_API_KEY"),
+            "ANTHROPIC_API_KEY should not appear when not in custom passthrough list"
+        );
+
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+        unsafe { std::env::remove_var("MY_CUSTOM_KEY") };
+    }
+
+    #[test]
+    #[serial]
+    fn build_sandbox_env_empty_passthrough_disables_all_inheritance() {
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "key") };
+        unsafe { std::env::set_var("LANG", "en_US.UTF-8") };
+
+        let mut config = Config::default();
+        config.sandbox.env_passthrough = Some(vec![]);
+
+        let env = build_sandbox_env(&config, &HashMap::new());
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!env.contains_key("LANG"));
+
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+        unsafe { std::env::remove_var("LANG") };
+    }
 }
