@@ -9,6 +9,7 @@ use super::{
 use crate::cli::args::SetupArgs;
 use crate::error::MinoResult;
 use crate::ui::{self, UiContext};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -235,50 +236,40 @@ async fn setup_sandbox_user(ctx: &UiContext, args: &SetupArgs, username: &str) -
 async fn install_helper_binary(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let mino_version = env!("CARGO_PKG_VERSION");
 
-    // Check if helper exists and version matches
-    let current_version = check_installed_helper_version().await;
+    // Compute helper_src once — used for existence check and checksum comparison.
+    let helper_src = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("mino-sandbox-helper")));
+    let src_exists = helper_src.as_ref().map(|p| p.exists()).unwrap_or(false);
+    let checksums_match = helper_src
+        .as_ref()
+        .filter(|_| src_exists)
+        .map(|src| binary_checksums_match(src, Path::new(HELPER_BINARY_PATH)))
+        .unwrap_or(false);
 
-    if let Some(version) = current_version {
-        if version == mino_version {
-            // Version matches — but the binary might have been rebuilt from source
-            // with code changes (same Cargo.toml version, different binary content).
-            // Compare SHA256 checksums to detect stale binaries reliably.
-            //
-            // If the source helper is not co-located (e.g. Homebrew install layout),
-            // treat the installed binary as up-to-date rather than forcing a reinstall
-            // that would fail anyway.
-            let needs_update = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("mino-sandbox-helper")))
-                .filter(|src| src.exists())
-                .map(|src| !binary_checksums_match(&src, Path::new(HELPER_BINARY_PATH)))
-                .unwrap_or(false);
+    let installed_version = check_installed_helper_version().await;
+    let action = decide_helper_action(
+        mino_version,
+        installed_version.as_deref(),
+        src_exists,
+        checksums_match,
+    );
 
-            if !needs_update {
-                ui::step_ok_detail(ctx, "Helper binary", &format!("v{}", version));
-                return StepResult::AlreadyOk;
-            }
-            ui::remark(ctx, "Helper binary changed, reinstalling...");
-        } else {
-            ui::remark(
-                ctx,
-                &format!(
-                    "Helper version mismatch (v{} vs v{}), upgrading...",
-                    version, mino_version
-                ),
-            );
+    match &action {
+        HelperAction::SkipUpToDate => {
+            ui::step_ok_detail(ctx, "Helper binary", &format!("v{}", mino_version));
+            return StepResult::AlreadyOk;
         }
+        HelperAction::Upgrade { reason } => {
+            ui::remark(ctx, reason);
+        }
+        HelperAction::Install { .. } => {}
     }
 
     if args.check {
         ui::step_error(ctx, "Helper binary not installed or outdated");
         return StepResult::Failed;
     }
-
-    // Get path to current mino binary, the helper is built alongside it
-    let helper_src = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("mino-sandbox-helper")));
 
     match helper_src {
         Some(src) if src.exists() => {
@@ -475,13 +466,56 @@ async fn remove_if_exists(ctx: &UiContext, path: &str, description: &str) {
 // Pure functions (testable without root or system state)
 // =============================================================================
 
+/// Decision returned by [`decide_helper_action`].
+#[derive(Debug, PartialEq)]
+enum HelperAction {
+    /// Installed binary is current — no action needed.
+    SkipUpToDate,
+    /// Binary needs fresh installation.
+    Install { reason: &'static str },
+    /// Binary needs upgrade; carries the human-readable version mismatch message.
+    Upgrade { reason: String },
+}
+
+/// Determine what action (if any) is needed for the helper binary.
+///
+/// Pure function — contains no I/O or UI; test-friendly without mocks.
+///
+/// # Parameters
+/// - `mino_version`: the version string of the running `mino` binary
+/// - `installed_version`: `Some(version)` if the helper is already installed
+/// - `helper_src_exists`: whether the source helper is co-located with `mino`
+/// - `checksums_match`: whether source and installed have identical SHA-256
+fn decide_helper_action(
+    mino_version: &str,
+    installed_version: Option<&str>,
+    helper_src_exists: bool,
+    checksums_match: bool,
+) -> HelperAction {
+    match installed_version {
+        None => HelperAction::Install { reason: "not installed" },
+        Some(v) if v != mino_version => HelperAction::Upgrade {
+            reason: format!("Helper version mismatch (v{} vs v{}), upgrading...", v, mino_version),
+        },
+        Some(_) => {
+            // Same version — check if source binary changed (e.g. dev rebuild)
+            if helper_src_exists && !checksums_match {
+                HelperAction::Upgrade {
+                    reason: "Helper binary changed, reinstalling...".to_string(),
+                }
+            } else {
+                HelperAction::SkipUpToDate
+            }
+        }
+    }
+}
+
 /// Compare SHA256 checksums of two binary files.
 ///
 /// Streams each file through a `BufReader` in 64 KiB chunks to avoid loading
 /// the full binary into memory. Returns `true` if both files exist and have
 /// identical content hashes; `false` if either is missing, unreadable, or differs.
 fn binary_checksums_match(src: &std::path::Path, dst: &std::path::Path) -> bool {
-    use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader};
 
     fn hash_file(path: &std::path::Path) -> Option<[u8; 32]> {
@@ -767,5 +801,46 @@ mod tests {
         std::fs::write(&a, b"exists").unwrap();
         assert!(!binary_checksums_match(&a, &b));
         assert!(!binary_checksums_match(&b, &a));
+    }
+
+    // ---- decide_helper_action tests ----
+
+    #[test]
+    fn decide_helper_action_skip_when_up_to_date() {
+        let action = decide_helper_action("1.2.3", Some("1.2.3"), true, true);
+        assert_eq!(action, HelperAction::SkipUpToDate);
+    }
+
+    #[test]
+    fn decide_helper_action_skip_when_src_missing_same_version() {
+        // No source binary (e.g. Homebrew layout) — treat as up-to-date
+        let action = decide_helper_action("1.2.3", Some("1.2.3"), false, false);
+        assert_eq!(action, HelperAction::SkipUpToDate);
+    }
+
+    #[test]
+    fn decide_helper_action_install_when_not_installed() {
+        let action = decide_helper_action("1.2.3", None, true, false);
+        assert!(matches!(action, HelperAction::Install { .. }));
+    }
+
+    #[test]
+    fn decide_helper_action_upgrade_on_version_mismatch() {
+        let action = decide_helper_action("1.3.0", Some("1.2.0"), true, false);
+        assert!(matches!(action, HelperAction::Upgrade { .. }));
+        if let HelperAction::Upgrade { reason } = action {
+            assert!(reason.contains("1.2.0"));
+            assert!(reason.contains("1.3.0"));
+        }
+    }
+
+    #[test]
+    fn decide_helper_action_upgrade_on_checksum_mismatch_same_version() {
+        // Same Cargo.toml version but binary was rebuilt (dev workflow)
+        let action = decide_helper_action("1.2.3", Some("1.2.3"), true, false);
+        assert!(matches!(action, HelperAction::Upgrade { .. }));
+        if let HelperAction::Upgrade { reason } = action {
+            assert!(reason.contains("changed"));
+        }
     }
 }
