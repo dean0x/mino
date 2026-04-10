@@ -638,11 +638,45 @@ network_allow = ["github.com:443"]    # implies bridge + pf filter
 # dotfiles = [".vimrc", ".bashrc"]
 
 # Directories to mount read-only as symlinks (opt-in, empty by default)
-# auto_passthrough_dirs = [".oh-my-zsh", ".nvm"]
+# Detected and populated by `mino setup --native` (toolchain auto-detection)
+# auto_passthrough_dirs = [".cargo", ".nvm", ".pyenv"]
+
+# Specific sensitive paths to allow despite the blocklist.
+# Narrower than allow_sensitive = true — only the listed paths are permitted.
+# Written by `mino setup --native` when you opt in to .config/gh, .docker, etc.
+# allow_sensitive_paths = [".config/gh", ".docker"]
 
 # Directories to copy (mutable sandbox-local copy, opt-in)
 # .claude uses an allowlist (CLAUDE.md, settings.json, agents, commands, skills)
 # auto_copy_dirs = [".claude"]
+```
+
+### Toolchain Auto-Detection
+
+`mino setup --native` detects installed toolchain directories and offers to add them to
+`auto_passthrough_dirs` so shell init files can source them without errors like:
+
+```
+/bin/zsh: /Users/you/.cargo/env: no such file or directory
+```
+
+**Safe passthrough (auto-accepted in non-interactive / CI):**
+Rust (`.cargo`, `.rustup`), Node.js (`.nvm`, `.npm`, `.yarn`, `.volta`, `.bun`, `.pnpm`),
+Python (`.pyenv`, `.pipx`, `.poetry`, `.uv`), Ruby (`.rbenv`, `.gem`), JVM (`.sdkman`, `.gradle`, `.m2`),
+Go (`.go`), Haskell (`.ghcup`, `.cabal`, `.stack`), shell plugins (`.oh-my-zsh`, `.fzf`, `.starship`), and more.
+
+**Credential directories (interactive-only, opt-in with warning):**
+`.config/gh` (GitHub CLI token), `.docker` (registry auth), `.kube` (Kubernetes config).
+These are added to both `auto_passthrough_dirs` AND `allow_sensitive_paths` so
+`SandboxConfig` validation allows them.
+
+**`.claude` auto-copy (interactive confirm):**
+If `~/.claude` exists, setup offers to add it to `auto_copy_dirs`. Only the allowlisted
+subset is copied (CLAUDE.md, settings.json, agents, commands, skills, current project memory).
+
+To re-run detection after installing new toolchains:
+```bash
+mino setup --native
 ```
 
 ### Security Model

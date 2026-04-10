@@ -108,6 +108,39 @@ match resolve_runtime_mode(cli_runtime, &config.runtime)? {
 - Safe because `SandboxConfig::validate()` (called at config load time) rejects overlapping
   entries in `auto_passthrough_dirs` / `auto_copy_dirs` / `DEFAULT_DOTFILES`
 
+**Multi-segment passthrough paths** (`.config/gh`, `.cargo/bin`, etc.):
+- `create_passthrough_symlinks()` calls `create_dir_all(link_path.parent())` before placing the
+  symlink, so staging parent dirs like `.config/` are created automatically.
+- Validation uses `path_conflicts()` (ancestor-based component matching) instead of top-segment
+  comparison, so siblings like `.config/gh` and `.config/git/ignore` can coexist.
+
+**`allow_sensitive_paths`** (narrow per-path escape hatch):
+- `SENSITIVE_PATHS` is the blocklist (`.ssh`, `.aws`, `.docker`, `.config/gh`, etc.).
+- `allow_sensitive = true` bypasses the entire blocklist (nuclear option).
+- `allow_sensitive_paths = [".config/gh"]` allows only the listed paths (surgical opt-in).
+- `validate()` permits a sensitive entry iff `allow_sensitive` is true OR the entry is in
+  `allow_sensitive_paths`.
+
+**Setup toolchain detection** (`src/cli/commands/setup/helpers.rs`):
+- `configure_toolchain_passthrough`: detects `TOOLCHAIN_PASSTHROUGH_CANDIDATES` (30+ dirs),
+  merges with existing config, writes via `ConfigManager::set_sandbox_passthrough_dirs()`.
+  Non-interactive mode accepts all detected entries (safe — not credential stores).
+- `configure_sensitive_passthrough`: detects `SENSITIVE_BUT_USEFUL_CANDIDATES`
+  (`.config/gh`, `.docker`, `.kube`), writes to BOTH `auto_passthrough_dirs` AND
+  `allow_sensitive_paths` atomically via `ConfigManager::write_toml_keys()`.
+  Always skipped in non-interactive mode (security policy).
+- `configure_claude_auto_copy`: detects `~/.claude`, writes to `auto_copy_dirs`.
+  Skipped in non-interactive mode. Both macOS and Linux share these helpers.
+
+**Atomic TOML edits** (`ConfigManager::write_toml_keys` in `src/config/mod.rs`):
+- Uses `toml_edit::DocumentMut` to preserve comments and formatting in the config file.
+- Writes to `{parent}/.mino-config-tmp-{pid}` then `fs::rename` over target for atomicity.
+
+**Staging dir cleanup** (`mino stop` → helper binary `cleanup` subcommand):
+- `handle_cleanup()` in `src/bin/mino-sandbox-helper.rs` removes `/tmp/mino-home-{session_id}`.
+- Runs as root (via sudoers), so it can remove `_mino_agent`-owned files.
+- Best-effort: warnings printed to stderr on failure, cleanup continues.
+
 ### Network Isolation
 - Three modes: `Host`, `None`, `Bridge`, `Allow(rules)`
 - `--network-allow` implies bridge + `CAP_NET_ADMIN` + iptables wrapper
