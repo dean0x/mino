@@ -583,95 +583,6 @@ async fn wait_with_signal_forwarding(
     process.wait().await
 }
 
-/// Copy essential files from `.claude` into the sandbox.
-///
-/// Uses an allowlist to copy only configuration files the agent needs
-/// (CLAUDE.md, settings, agents, commands, skills, and the current project's
-/// memory). This avoids copying multi-GB state directories (sessions, debug,
-/// telemetry, file-history, etc.) that are not needed inside the sandbox.
-async fn copy_claude_dir(src: &Path, dest: &Path, project_dir: &Path) -> MinoResult<()> {
-    /// Top-level entries to copy from ~/.claude (allowlist)
-    const ALLOW_ENTRIES: &[&str] = &[
-        "CLAUDE.md",
-        "settings.json",
-        "agents",
-        "commands",
-        "skills",
-    ];
-
-    tokio::fs::create_dir_all(dest)
-        .await
-        .map_err(|e| MinoError::io("creating .claude copy dir", e))?;
-
-    // Copy allowlisted top-level entries
-    for name in ALLOW_ENTRIES {
-        let src_path = src.join(name);
-        let dest_path = dest.join(name);
-        let metadata = match tokio::fs::symlink_metadata(&src_path).await {
-            Ok(m) => m,
-            Err(_) => continue, // Entry doesn't exist, skip
-        };
-        if metadata.is_file() {
-            tokio::fs::copy(&src_path, &dest_path)
-                .await
-                .map_err(|e| MinoError::io(format!("copying .claude/{}", name), e))?;
-        } else if metadata.is_dir() {
-            copy_dir_recursive(&src_path, &dest_path).await?;
-        }
-    }
-
-    // Copy only the current project's memory directory from projects/
-    // Project dirs are named by path with slashes replaced by dashes,
-    // e.g. /Users/dean/Sandbox/minotaur -> -Users-dean-Sandbox-minotaur
-    let project_key = project_dir
-        .to_string_lossy()
-        .replace('/', "-");
-    let projects_src = src.join("projects").join(&project_key);
-    if projects_src.is_dir() {
-        let projects_dest = dest.join("projects").join(&project_key);
-        copy_dir_recursive(&projects_src, &projects_dest).await?;
-    }
-
-    Ok(())
-}
-
-/// Recursively copy a directory (all files and subdirectories).
-///
-/// Symlinks within the source are skipped (only regular files and dirs are copied).
-async fn copy_dir_recursive(src: &Path, dest: &Path) -> MinoResult<()> {
-    tokio::fs::create_dir_all(dest)
-        .await
-        .map_err(|e| MinoError::io("creating copy dir", e))?;
-
-    let mut entries = tokio::fs::read_dir(src)
-        .await
-        .map_err(|e| MinoError::io("reading dir", e))?;
-
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| MinoError::io("reading dir entry", e))?
-    {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        let src_path = entry.path();
-        let dest_path = dest.join(&name);
-        let metadata = tokio::fs::symlink_metadata(&src_path)
-            .await
-            .map_err(|e| MinoError::io("stat", e))?;
-
-        if metadata.is_dir() {
-            Box::pin(copy_dir_recursive(&src_path, &dest_path)).await?;
-        } else if metadata.is_file() {
-            tokio::fs::copy(&src_path, &dest_path)
-                .await
-                .map_err(|e| MinoError::io(format!("copying {}", name_str), e))?;
-        }
-        // Skip symlinks — don't follow them into the copy
-    }
-    Ok(())
-}
-
 /// Collect and deduplicate dotfile names from defaults and user config.
 fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -785,9 +696,14 @@ async fn prepare_dotfiles(config: &Config, project_dir: &Path) -> MinoResult<Opt
             let dest_dir = tmp_dir.join(dir_name);
             tracing::info!(dir = %dir_name, "auto-copying directory into sandbox");
             if dir_name == ".claude" {
-                copy_claude_dir(&host_dir, &dest_dir, project_dir).await?;
+                crate::sandbox::dotfiles::copy_claude_config_dir(
+                    &host_dir,
+                    &dest_dir,
+                    project_dir,
+                )
+                .await?;
             } else {
-                copy_dir_recursive(&host_dir, &dest_dir).await?;
+                crate::sandbox::fs_copy::copy_dir_recursive(host_dir, dest_dir).await?;
             }
         }
     }
@@ -1027,118 +943,4 @@ mod tests {
         assert_eq!(env.get("FROM_CONTAINER").unwrap(), "hello");
     }
 
-    // ---- copy_dir_recursive tests ----
-
-    #[tokio::test]
-    async fn copy_dir_recursive_copies_files_and_subdirs() {
-        let src_guard = tempfile::tempdir().unwrap();
-        let dest_guard = tempfile::tempdir().unwrap();
-        let src = src_guard.path();
-        let dest = dest_guard.path().join("dest");
-
-        tokio::fs::write(src.join("file.txt"), b"hello").await.unwrap();
-        tokio::fs::create_dir_all(src.join("subdir")).await.unwrap();
-        tokio::fs::write(src.join("subdir").join("nested.txt"), b"world")
-            .await
-            .unwrap();
-
-        copy_dir_recursive(src, &dest).await.unwrap();
-
-        assert!(dest.join("file.txt").exists());
-        assert_eq!(
-            tokio::fs::read_to_string(dest.join("file.txt")).await.unwrap(),
-            "hello"
-        );
-        assert!(dest.join("subdir").join("nested.txt").exists());
-        assert_eq!(
-            tokio::fs::read_to_string(dest.join("subdir").join("nested.txt"))
-                .await
-                .unwrap(),
-            "world"
-        );
-        // cleanup is automatic when guards drop
-    }
-
-    // ---- copy_claude_dir tests ----
-
-    #[tokio::test]
-    async fn copy_claude_dir_copies_allowlisted_entries() {
-        let src_guard = tempfile::tempdir().unwrap();
-        let dest_guard = tempfile::tempdir().unwrap();
-        let src = src_guard.path();
-        let dest = dest_guard.path().join("dest");
-
-        // Create allowlisted files and dirs
-        tokio::fs::write(src.join("CLAUDE.md"), b"# Config").await.unwrap();
-        tokio::fs::write(src.join("settings.json"), b"{}").await.unwrap();
-        tokio::fs::create_dir_all(src.join("skills").join("review"))
-            .await
-            .unwrap();
-        tokio::fs::write(src.join("skills").join("review").join("skill.md"), b"skill")
-            .await
-            .unwrap();
-
-        // Create non-allowlisted dirs that should NOT be copied
-        for skip_dir in &["debug", "sessions", "telemetry", "file-history", "downloads"] {
-            tokio::fs::create_dir_all(src.join(skip_dir)).await.unwrap();
-            tokio::fs::write(src.join(skip_dir).join("data.bin"), b"big data")
-                .await
-                .unwrap();
-        }
-
-        let project_dir = PathBuf::from("/Users/test/my-project");
-        copy_claude_dir(src, &dest, &project_dir).await.unwrap();
-
-        // Allowlisted entries should be copied
-        assert!(dest.join("CLAUDE.md").exists());
-        assert!(dest.join("settings.json").exists());
-        assert!(dest.join("skills").join("review").join("skill.md").exists());
-
-        // Non-allowlisted dirs should NOT be copied
-        assert!(!dest.join("debug").exists());
-        assert!(!dest.join("sessions").exists());
-        assert!(!dest.join("telemetry").exists());
-        assert!(!dest.join("file-history").exists());
-        assert!(!dest.join("downloads").exists());
-        // cleanup is automatic when guards drop
-    }
-
-    #[tokio::test]
-    async fn copy_claude_dir_copies_current_project_memory() {
-        let src_guard = tempfile::tempdir().unwrap();
-        let dest_guard = tempfile::tempdir().unwrap();
-        let src = src_guard.path();
-        let dest = dest_guard.path().join("dest");
-
-        // Create project dirs: one matching, one not
-        let matching = src.join("projects").join("-Users-test-my-project");
-        let other = src.join("projects").join("-Users-test-other-project");
-        tokio::fs::create_dir_all(&matching).await.unwrap();
-        tokio::fs::create_dir_all(matching.join("memory")).await.unwrap();
-        tokio::fs::write(matching.join("memory").join("MEMORY.md"), b"memory")
-            .await
-            .unwrap();
-        tokio::fs::create_dir_all(&other).await.unwrap();
-        tokio::fs::write(other.join("data.json"), b"other project")
-            .await
-            .unwrap();
-
-        let project_dir = PathBuf::from("/Users/test/my-project");
-        copy_claude_dir(src, &dest, &project_dir).await.unwrap();
-
-        // Current project's memory should be copied
-        assert!(dest
-            .join("projects")
-            .join("-Users-test-my-project")
-            .join("memory")
-            .join("MEMORY.md")
-            .exists());
-
-        // Other project should NOT be copied
-        assert!(!dest
-            .join("projects")
-            .join("-Users-test-other-project")
-            .exists());
-        // cleanup is automatic when guards drop
-    }
 }

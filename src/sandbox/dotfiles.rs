@@ -3,6 +3,9 @@
 //! Copies dotfiles into the sandbox home directory with secret stripping.
 //! Known credential-bearing files have their secrets removed before copying.
 
+use crate::error::{MinoError, MinoResult};
+use std::path::Path;
+
 /// Dotfiles that are always copied (safe defaults)
 pub const DEFAULT_DOTFILES: &[&str] = &[
     ".gitconfig",
@@ -106,6 +109,77 @@ pub(crate) fn prepare_dotfile_content(dotfile_path: &str, content: &str) -> Stri
     } else {
         content.to_string()
     }
+}
+
+/// Top-level entries to copy from `~/.claude` (allowlist).
+///
+/// This allowlist exists because `~/.claude` can contain multi-GB state
+/// directories (`sessions/`, `file-history/`, `debug/`) that are never
+/// needed inside the sandbox. We copy only the small set of configuration
+/// files the agent needs for context.
+///
+/// **Source of truth**: These paths match the Claude Code layout as of the
+/// time this allowlist was written. If Claude Code restructures its home
+/// directory, this list must be updated.
+const CLAUDE_ALLOW_ENTRIES: &[&str] = &[
+    "CLAUDE.md",
+    "settings.json",
+    "agents",
+    "commands",
+    "skills",
+];
+
+/// Copy the user's `~/.claude` directory into the sandbox using an allowlist.
+///
+/// Only the entries in [`CLAUDE_ALLOW_ENTRIES`] are copied. The current
+/// project's memory directory (`projects/<project-key>/`) is also copied
+/// so the agent has access to project context.
+///
+/// Project directory keys follow the Claude Code convention:
+/// the absolute path with every `/` replaced by `-`, e.g.
+/// `/Users/dean/Sandbox/minotaur` → `-Users-dean-Sandbox-minotaur`.
+///
+/// # Parameters
+/// - `src`: path to `~/.claude` on the host
+/// - `dst`: staging destination directory (created if absent)
+/// - `project_dir`: absolute path to the current project directory
+pub async fn copy_claude_config_dir(
+    src: &Path,
+    dst: &Path,
+    project_dir: &Path,
+) -> MinoResult<()> {
+    tokio::fs::create_dir_all(dst)
+        .await
+        .map_err(|e| MinoError::io("creating .claude copy dir", e))?;
+
+    // Copy allowlisted top-level entries (files and directories).
+    for name in CLAUDE_ALLOW_ENTRIES {
+        let src_path = src.join(name);
+        let dst_path = dst.join(name);
+        let metadata = match tokio::fs::symlink_metadata(&src_path).await {
+            Ok(m) => m,
+            Err(_) => continue, // Entry doesn't exist — skip silently
+        };
+        if metadata.is_file() {
+            tokio::fs::copy(&src_path, &dst_path)
+                .await
+                .map_err(|e| MinoError::io(format!("copying .claude/{}", name), e))?;
+        } else if metadata.is_dir() {
+            crate::sandbox::fs_copy::copy_dir_recursive(src_path, dst_path).await?;
+        }
+        // Skip symlinks — they would dangle inside the sandbox
+    }
+
+    // Copy only the current project's memory directory so the agent has context.
+    // Project dirs are keyed by their absolute path with '/' replaced by '-'.
+    let project_key = project_dir.to_string_lossy().replace('/', "-");
+    let projects_src = src.join("projects").join(&project_key);
+    if projects_src.is_dir() {
+        let projects_dst = dst.join("projects").join(&project_key);
+        crate::sandbox::fs_copy::copy_dir_recursive(projects_src, projects_dst).await?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -316,5 +390,72 @@ mod tests {
         let input = "export NVM_DIR=\"$HOME/.nvm\"\n";
         let output = prepare_dotfile_content(".zshenv", input);
         assert_eq!(output, input);
+    }
+
+    // ---- copy_claude_config_dir tests ----
+
+    #[tokio::test]
+    async fn copy_claude_config_dir_copies_allowlisted_entries() {
+        let src_guard = tempfile::tempdir().unwrap();
+        let dst_guard = tempfile::tempdir().unwrap();
+        let src = src_guard.path();
+        let dst = dst_guard.path().join("dest");
+
+        // Create allowlisted files and dirs
+        tokio::fs::write(src.join("CLAUDE.md"), b"# Config").await.unwrap();
+        tokio::fs::write(src.join("settings.json"), b"{}").await.unwrap();
+        tokio::fs::create_dir_all(src.join("skills").join("review"))
+            .await
+            .unwrap();
+        tokio::fs::write(src.join("skills").join("review").join("skill.md"), b"skill")
+            .await
+            .unwrap();
+
+        // Non-allowlisted (should be excluded)
+        tokio::fs::create_dir_all(src.join("sessions")).await.unwrap();
+        tokio::fs::write(src.join("sessions").join("big.json"), b"[]").await.unwrap();
+
+        let project_dir = std::path::Path::new("/nonexistent/project");
+        copy_claude_config_dir(src, &dst, project_dir).await.unwrap();
+
+        assert!(dst.join("CLAUDE.md").exists());
+        assert!(dst.join("settings.json").exists());
+        assert!(dst.join("skills").join("review").join("skill.md").exists());
+        assert!(!dst.join("sessions").exists());
+    }
+
+    #[tokio::test]
+    async fn copy_claude_config_dir_copies_current_project_memory() {
+        let src_guard = tempfile::tempdir().unwrap();
+        let dst_guard = tempfile::tempdir().unwrap();
+        let src = src_guard.path();
+        let dst = dst_guard.path().join("dest");
+
+        // Simulate project memory dir
+        let project_dir = std::path::PathBuf::from("/Users/test/my-project");
+        let project_key = project_dir.to_string_lossy().replace('/', "-");
+        let mem_dir = src.join("projects").join(&project_key);
+        tokio::fs::create_dir_all(&mem_dir).await.unwrap();
+        tokio::fs::write(mem_dir.join("MEMORY.md"), b"# Memory").await.unwrap();
+
+        // Another project that should NOT be copied
+        let other_dir = src.join("projects").join("-other-project");
+        tokio::fs::create_dir_all(&other_dir).await.unwrap();
+        tokio::fs::write(other_dir.join("MEMORY.md"), b"# Other").await.unwrap();
+
+        copy_claude_config_dir(src, &dst, &project_dir).await.unwrap();
+
+        assert!(dst.join("projects").join(&project_key).join("MEMORY.md").exists());
+        assert!(!dst.join("projects").join("-other-project").exists());
+    }
+
+    #[tokio::test]
+    async fn copy_claude_config_dir_empty_source_is_ok() {
+        let src_guard = tempfile::tempdir().unwrap();
+        let dst_guard = tempfile::tempdir().unwrap();
+        let project_dir = std::path::Path::new("/proj");
+        copy_claude_config_dir(src_guard.path(), &dst_guard.path().join("dest"), project_dir)
+            .await
+            .unwrap();
     }
 }

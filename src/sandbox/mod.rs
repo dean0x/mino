@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod dotfiles;
+pub mod fs_copy;
 pub mod helper;
 pub mod helper_protocol;
 pub mod linux;
