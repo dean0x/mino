@@ -265,23 +265,20 @@ pub fn detect_passthrough_candidates(
 ///
 /// Returns those entries from `sensitive_but_useful` where `home.join(entry)`
 /// exists AND is a directory. Returned in the same order as the input.
+///
+/// Sensitive candidates are not filtered against a blocklist — the caller
+/// is responsible for presenting them with an appropriate warning.
 pub fn detect_sensitive_candidates(home: &Path, sensitive_but_useful: &[&str]) -> Vec<String> {
-    sensitive_but_useful
-        .iter()
-        .filter(|&&c| home.join(c).is_dir())
-        .map(|&c| c.to_string())
-        .collect()
+    detect_passthrough_candidates(home, sensitive_but_useful, &[])
 }
 
 /// Detect whether `.claude` exists on the host and should be offered for auto-copy.
 ///
 /// Returns `Some(".claude".into())` iff `home.join(".claude")` exists as a directory.
 pub fn detect_claude_copy_candidate(home: &Path) -> Option<String> {
-    if home.join(CLAUDE_AUTO_COPY_CANDIDATE).is_dir() {
-        Some(CLAUDE_AUTO_COPY_CANDIDATE.to_string())
-    } else {
-        None
-    }
+    home.join(CLAUDE_AUTO_COPY_CANDIDATE)
+        .is_dir()
+        .then(|| CLAUDE_AUTO_COPY_CANDIDATE.to_string())
 }
 
 #[cfg(test)]

@@ -79,12 +79,13 @@ pub(super) async fn configure_toolchain_passthrough(
             .iter()
             .map(|d| (d.clone(), d.as_str(), ""))
             .collect();
-        let options_ref: Vec<(String, &str, &str)> = options
-            .iter()
-            .map(|(v, l, h)| (v.clone(), *l, *h))
-            .collect();
-        match ui::multiselect(ctx, "Select toolchain dirs to passthrough:", &options_ref, false)
-            .await
+        match ui::multiselect(
+            ctx,
+            "Select toolchain dirs to passthrough:",
+            &options,
+            false,
+        )
+        .await
         {
             Ok(selected) => selected,
             Err(e) => {
@@ -200,15 +201,11 @@ pub(super) async fn configure_sensitive_passthrough(
         .iter()
         .map(|d| (d.clone(), d.as_str(), "contains credentials"))
         .collect();
-    let options_ref: Vec<(String, &str, &str)> = options
-        .iter()
-        .map(|(v, l, h)| (v.clone(), *l, *h))
-        .collect();
 
     let selected = match ui::multiselect(
         ctx,
         "Select sensitive dirs to allow (optional):",
-        &options_ref,
+        &options,
         false,
     )
     .await

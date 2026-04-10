@@ -225,28 +225,21 @@ impl SandboxConfig {
         // (Implementation note: no runtime logging here — this is a pure validate fn;
         //  the config loader may emit a warning at the call site if desired.)
 
-        // Check auto_passthrough_dirs for conflicts with DEFAULT_DOTFILES
-        for name in &self.auto_passthrough_dirs {
-            for default in DEFAULT_DOTFILES {
-                if path_conflicts(name, default) {
-                    return Err(MinoError::User(format!(
-                        "auto_passthrough_dirs entry '{}' conflicts with a default dotfile. \
-                         Remove it from auto_passthrough_dirs or from the dotfiles list.",
-                        name
-                    )));
-                }
-            }
-        }
-
-        // Check auto_copy_dirs for conflicts with DEFAULT_DOTFILES
-        for name in &self.auto_copy_dirs {
-            for default in DEFAULT_DOTFILES {
-                if path_conflicts(name, default) {
-                    return Err(MinoError::User(format!(
-                        "auto_copy_dirs entry '{}' conflicts with a default dotfile. \
-                         Remove it from auto_copy_dirs or from the dotfiles list.",
-                        name
-                    )));
+        // Check both lists for conflicts with DEFAULT_DOTFILES
+        let dir_list_entries = [
+            ("auto_passthrough_dirs", &self.auto_passthrough_dirs),
+            ("auto_copy_dirs", &self.auto_copy_dirs),
+        ];
+        for (list_name, entries) in &dir_list_entries {
+            for name in *entries {
+                for default in DEFAULT_DOTFILES {
+                    if path_conflicts(name, default) {
+                        return Err(MinoError::User(format!(
+                            "{} entry '{}' conflicts with a default dotfile. \
+                             Remove it from {} or from the dotfiles list.",
+                            list_name, name, list_name
+                        )));
+                    }
                 }
             }
         }

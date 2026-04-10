@@ -917,8 +917,7 @@ mod tests {
         };
 
         let result =
-            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path)
-                .await;
+            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path).await;
         assert_eq!(result, StepResult::AlreadyOk);
     }
 
@@ -942,8 +941,7 @@ mod tests {
         };
 
         let result =
-            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path)
-                .await;
+            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path).await;
         assert_eq!(result, StepResult::Installed);
 
         // Config must now contain .cargo
@@ -981,8 +979,7 @@ mod tests {
         };
 
         let result =
-            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path)
-                .await;
+            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path).await;
 
         // All detected entries were already in config → no change
         assert_eq!(result, StepResult::AlreadyOk);
@@ -1014,8 +1011,7 @@ mod tests {
         };
 
         let result =
-            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path)
-                .await;
+            helpers::configure_toolchain_passthrough(&ctx, &args, home.path(), &config_path).await;
         // Config is empty → check mode should report failure
         assert_eq!(result, StepResult::Failed);
     }
@@ -1037,8 +1033,8 @@ mod tests {
             uninstall: false,
         };
 
-        let result = helpers::configure_sensitive_passthrough(&ctx, &args, home.path(), &config_path)
-            .await;
+        let result =
+            helpers::configure_sensitive_passthrough(&ctx, &args, home.path(), &config_path).await;
         assert_eq!(result, StepResult::AlreadyOk);
     }
 
@@ -1061,8 +1057,8 @@ mod tests {
             uninstall: false,
         };
 
-        let result = helpers::configure_sensitive_passthrough(&ctx, &args, home.path(), &config_path)
-            .await;
+        let result =
+            helpers::configure_sensitive_passthrough(&ctx, &args, home.path(), &config_path).await;
         assert_eq!(result, StepResult::AlreadyOk);
 
         // Verify config was NOT written
