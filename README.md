@@ -516,6 +516,179 @@ Or via CLI: `mino config set container.network_allow "github.com:443,npmjs.org:4
 - **iptables required**: The container image must include iptables. Fedora 43 and mino-base include it by default.
 - **capsh required**: `--network-allow` and `--network-preset` modes require `capsh` (from `libcap`) in the container image to drop `CAP_NET_ADMIN` after iptables setup. The mino-base image includes it.
 
+## Sandbox Modes
+
+Mino supports two isolation strategies. Choose based on your platform and how much startup
+overhead you can accept.
+
+### Overview
+
+| | Container | Native |
+|---|---|---|
+| **Mechanism** | Rootless Podman container | macOS: dedicated system user + pf firewall |
+| **Startup time** | 2–4 s (image pull cached) | < 0.5 s |
+| **Platform** | macOS (via OrbStack), Linux | macOS only (Linux coming) |
+| **Root required** | No | No (sudoers grants one command) |
+| **Filesystem isolation** | Container image | ACLs on project + dotfile dirs |
+| **Network isolation** | iptables in container | pf + SOCKS5 proxy |
+| **Language toolchains** | Layer system (`--layers rust`) | Host tools (auto-detected) |
+
+### When to Use Native vs Container
+
+**Use native when:**
+- You want near-instant sandbox startup (< 0.5 s vs 2–4 s)
+- You use macOS and already have your toolchain installed on the host
+- You are running Claude Code interactively and tolerate less filesystem isolation
+
+**Use container when:**
+- You need strict filesystem isolation (read-only root, immutable image)
+- You need reproducible toolchain versions across machines
+- You are on Linux or prefer Podman-based isolation
+
+### Platform Support
+
+| Platform | Container | Native |
+|---|---|---|
+| macOS (Apple Silicon, x86) | via OrbStack | supported |
+| Linux | direct Podman | experimental |
+
+### Setup (macOS Native)
+
+```bash
+# One-time setup: creates _mino_agent system user, installs helper binary,
+# configures sudoers and pf anchor
+mino setup --native
+
+# Verify setup is complete
+mino setup --native --check
+```
+
+The setup creates:
+- System user `_mino_agent` (UID in system range, no login shell)
+- `/usr/local/bin/mino-sandbox-helper` (root-owned, sudoers-controlled)
+- `/etc/sudoers.d/mino` (grants your user passwordless sudo for the helper only)
+- `/etc/pf.anchors/mino` (packet filter anchor for network isolation)
+
+### Running (Native Mode)
+
+```bash
+# Select native mode via CLI flag
+mino run --runtime native -- claude
+
+# Or set as default in config (avoids repeating the flag)
+# [config.toml]
+# runtime = "native"
+```
+
+```bash
+# With network allow (pf-based, not iptables)
+mino run --runtime native --network-allow github.com:443 -- claude
+
+# Fully offline
+mino run --runtime native --network none -- claude
+```
+
+### Configuration
+
+All native sandbox settings live under `[sandbox]` in `~/.config/mino/config.toml`.
+Network and env fields fall back to `[container]` values when not set in `[sandbox]`.
+
+```toml
+[sandbox]
+# Dedicated macOS system user for process isolation
+sandbox_user = "_mino_agent"          # default
+
+# Resource limits
+max_memory_mb = 4096                  # 0 = no limit
+max_processes = 256
+max_cpu_seconds = 0                   # 0 = no limit
+
+# Network isolation (falls back to [container] values if not set)
+network = "bridge"                    # host | none | bridge
+network_allow = ["github.com:443"]    # implies bridge + pf filter
+# network_preset = "dev"              # preset allowlist
+
+# Environment passthrough: which host env vars the sandbox inherits
+# Default: ["ANTHROPIC_API_KEY", "LANG", "LC_ALL", "TZ", "TERM"]
+# Add other AI provider keys here:
+# env_passthrough = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LANG", "LC_ALL", "TZ", "TERM"]
+
+# Explicit env vars injected into every sandbox session
+# (falls back to [container].env if not set)
+[sandbox.env]
+# MY_VAR = "my_value"
+
+# Additional read-only paths (absolute paths only, not in sensitive list)
+# passthrough_paths = ["/usr/local/share/my-data"]
+
+# Additional writable paths
+# writable_paths = ["/tmp/my-workspace"]
+
+# Dotfiles to copy from your host $HOME into the sandbox home
+# (sanitized: .gitconfig has credential sections stripped)
+# dotfiles = [".vimrc", ".bashrc"]
+
+# Directories to mount read-only as symlinks (opt-in, empty by default)
+# auto_passthrough_dirs = [".oh-my-zsh", ".nvm"]
+
+# Directories to copy (mutable sandbox-local copy, opt-in)
+# .claude uses an allowlist (CLAUDE.md, settings.json, agents, commands, skills)
+# auto_copy_dirs = [".claude"]
+```
+
+### Security Model
+
+**What the native sandbox does:**
+- Runs the agent process as `_mino_agent` (unprivileged system user, no home, no login)
+- ACLs on the project directory allow `_mino_agent` read-write access
+- ACLs on passthrough paths allow read-only access
+- pf anchor blocks all outbound traffic except the allowlist
+- SOCKS5 proxy for `--network-allow` rules (no iptables required on host)
+- Home directory created fresh in `/tmp/mino-home-<session-id>` on each run, removed after exit
+
+**What it does NOT do:**
+- Syscall filtering (no seccomp / sandbox-exec)
+- Filesystem root isolation (host filesystem is visible via path traversal)
+- Memory isolation beyond OS-level user boundaries
+- Network namespace isolation (pf rules only)
+
+**Threat model:** The sandbox assumes the agent is non-malicious but potentially buggy or
+prompt-injected. It limits the blast radius to the project directory and the agent's session
+home. It does NOT defend against a fully adversarial process with local exploit capabilities.
+
+### Troubleshooting
+
+**`mino: helper binary not found`**
+Run `mino setup --native` to install the helper binary.
+
+**`Operation not permitted` on startup**
+The helper binary may have wrong ownership. Re-run `mino setup --native`.
+
+**`ACL setup failed on home dir`**
+Check that `_mino_agent` user exists: `dscl . -read /Users/_mino_agent`.
+Re-run `mino setup --native` if the user is missing.
+
+**`pf anchor not loaded`**
+The pf anchor is loaded on each run. If pf is not enabled on your system:
+`sudo pfctl -e` to enable, then re-run.
+
+**Sandbox process can access host files**
+Native mode uses ACLs, not filesystem namespaces. The agent runs as `_mino_agent`
+which cannot write to your home directory, but can read world-readable files.
+Use container mode for strict read-only filesystem isolation.
+
+**`mino setup --check` reports issues but setup completed**
+Re-run `mino setup --native` to repair. Some steps are idempotent.
+
+### Uninstall
+
+```bash
+# Remove all mino native sandbox components
+mino setup --native --uninstall
+
+# Removes: _mino_agent user, helper binary, sudoers entry, pf anchor
+```
+
 ## Container Images
 
 Mino uses a base image (`mino-base`) with a layer composition system for language toolchains.
