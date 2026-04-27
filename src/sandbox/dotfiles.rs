@@ -126,6 +126,24 @@ pub(crate) fn prepare_dotfile_content(dotfile_path: &str, content: &str) -> Stri
 const CLAUDE_ALLOW_ENTRIES: &[&str] =
     &["CLAUDE.md", "settings.json", "agents", "commands", "skills"];
 
+/// Entries in `~/.claude` that are intentionally excluded (large or transient).
+///
+/// These are skipped silently — they are large runtime-generated directories that
+/// have no value inside the sandbox. Any entry not in this list AND not in
+/// [`CLAUDE_ALLOW_ENTRIES`] triggers a forward-compatibility log message so we
+/// notice when Claude Code adds new top-level config files we should copy.
+const KNOWN_SKIP_ENTRIES: &[&str] = &[
+    "sessions",
+    "file-history",
+    "debug",
+    "telemetry",
+    "logs",
+    "cache",
+    "tmp",
+    ".git",
+    "projects",
+];
+
 /// Copy the user's `~/.claude` directory into the sandbox using an allowlist.
 ///
 /// Only the entries in [`CLAUDE_ALLOW_ENTRIES`] are copied. The current
@@ -170,6 +188,26 @@ pub async fn copy_claude_config_dir(src: &Path, dst: &Path, project_dir: &Path) 
     if projects_src.is_dir() {
         let projects_dst = dst.join("projects").join(&project_key);
         super::fs_copy::copy_dir_recursive(projects_src, projects_dst).await?;
+    }
+
+    // Forward-compatibility: log entries that are neither allowlisted nor in the
+    // known-skip list. This fires when Claude Code adds new top-level config files
+    // that should potentially be copied — a signal to update CLAUDE_ALLOW_ENTRIES.
+    // Directory-scan failure here is non-fatal; the copy already completed above.
+    if let Ok(mut scan) = tokio::fs::read_dir(src).await {
+        while let Ok(Some(entry)) = scan.next_entry().await {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !CLAUDE_ALLOW_ENTRIES.contains(&name_str.as_ref())
+                && !KNOWN_SKIP_ENTRIES.contains(&name_str.as_ref())
+            {
+                tracing::info!(
+                    entry = %name_str,
+                    "unknown entry in ~/.claude — not in allowlist or known-skip list; \
+                     consider updating CLAUDE_ALLOW_ENTRIES if this is a config file"
+                );
+            }
+        }
     }
 
     Ok(())
@@ -474,6 +512,41 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// Unknown top-level entries must not be copied and must not cause an error.
+    /// The forward-compatibility scan is informational only.
+    #[tokio::test]
+    async fn copy_claude_config_dir_ignores_unknown_entries() {
+        let src_guard = tempfile::tempdir().unwrap();
+        let dst_guard = tempfile::tempdir().unwrap();
+        let src = src_guard.path();
+        let dst = dst_guard.path().join("dest");
+
+        // One allowlisted entry (should be copied)
+        tokio::fs::write(src.join("CLAUDE.md"), b"# Config")
+            .await
+            .unwrap();
+
+        // Unknown entry — not in CLAUDE_ALLOW_ENTRIES or KNOWN_SKIP_ENTRIES
+        tokio::fs::write(src.join("new-future-config.json"), b"{}")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(src.join("new-future-dir"))
+            .await
+            .unwrap();
+
+        let project_dir = std::path::Path::new("/proj");
+        // Must succeed — unknown entries are only logged, never an error
+        copy_claude_config_dir(src, &dst, project_dir)
+            .await
+            .unwrap();
+
+        // Allowlisted entry is present
+        assert!(dst.join("CLAUDE.md").exists());
+        // Unknown entries are NOT copied
+        assert!(!dst.join("new-future-config.json").exists());
+        assert!(!dst.join("new-future-dir").exists());
     }
 
 }
