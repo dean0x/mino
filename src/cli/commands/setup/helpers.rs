@@ -6,7 +6,7 @@
 use super::StepResult;
 use crate::cli::args::SetupArgs;
 use crate::config::ConfigManager;
-use crate::sandbox::dotfiles::{
+use crate::sandbox::detection::{
     detect_claude_copy_candidate, detect_passthrough_candidates, detect_sensitive_candidates,
     CLAUDE_AUTO_COPY_CANDIDATE, SENSITIVE_BUT_USEFUL_CANDIDATES, TOOLCHAIN_PASSTHROUGH_CANDIDATES,
 };

@@ -4,6 +4,7 @@
 //! Linux: User namespaces (unshare). macOS: Dedicated user + pf packet filter.
 
 pub mod config;
+pub mod detection;
 pub mod dotfiles;
 pub mod fs_copy;
 pub mod helper;
