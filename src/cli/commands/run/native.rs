@@ -810,10 +810,10 @@ mod tests {
     }
 
     impl EnvGuard {
-        /// Capture current values of `names` and set them to `values`.
+        /// Capture the current values of the given keys, then set each to the provided value.
         ///
-        /// `names` and `values` are paired by index. Pass `None` in `values` to
-        /// leave a variable unchanged (only capture for restore-on-drop).
+        /// The Drop impl restores every captured key to its original value (or removes it
+        /// if it was absent), so cleanup runs even if a test assertion panics.
         fn set(pairs: &[(&str, &str)]) -> Self {
             let vars = pairs
                 .iter()

@@ -258,33 +258,8 @@ impl SandboxConfig {
     ///
     /// Checks both `auto_passthrough_dirs` and `auto_copy_dirs` independently.
     fn validate_intra_list_conflicts(&self) -> MinoResult<()> {
-        // Check within auto_passthrough_dirs
-        for (i, a) in self.auto_passthrough_dirs.iter().enumerate() {
-            for b in self.auto_passthrough_dirs.iter().skip(i + 1) {
-                if path_conflicts(a, b) {
-                    return Err(MinoError::User(format!(
-                        "auto_passthrough_dirs entries '{}' and '{}' conflict (one is an \
-                         ancestor of the other).",
-                        a, b
-                    )));
-                }
-            }
-        }
-
-        // Check within auto_copy_dirs
-        for (i, a) in self.auto_copy_dirs.iter().enumerate() {
-            for b in self.auto_copy_dirs.iter().skip(i + 1) {
-                if path_conflicts(a, b) {
-                    return Err(MinoError::User(format!(
-                        "auto_copy_dirs entries '{}' and '{}' conflict (one is an \
-                         ancestor of the other).",
-                        a, b
-                    )));
-                }
-            }
-        }
-
-        Ok(())
+        check_no_intra_conflicts(&self.auto_passthrough_dirs, "auto_passthrough_dirs")?;
+        check_no_intra_conflicts(&self.auto_copy_dirs, "auto_copy_dirs")
     }
 
     /// Pass 4: Ensure no entry appears in both `auto_passthrough_dirs` and `auto_copy_dirs`.
@@ -302,6 +277,23 @@ impl SandboxConfig {
         }
         Ok(())
     }
+}
+
+/// Return an error if any two entries in `list` are ancestor-related.
+///
+/// `list_name` is used only in the error message.
+fn check_no_intra_conflicts(list: &[String], list_name: &str) -> MinoResult<()> {
+    for (i, a) in list.iter().enumerate() {
+        for b in list.iter().skip(i + 1) {
+            if path_conflicts(a, b) {
+                return Err(MinoError::User(format!(
+                    "{} entries '{}' and '{}' conflict (one is an ancestor of the other).",
+                    list_name, a, b
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Check whether two path strings conflict under ancestor-based semantics.

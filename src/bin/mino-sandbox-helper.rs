@@ -184,13 +184,7 @@ fn dispatch_cleanup(args: &[String]) -> Result<i32, String> {
     }
 
     // Fallback path: fields encoded in a JSON request file (legacy callers).
-    let request = match load_request(args) {
-        Ok(r) => r,
-        Err(msg) => {
-            print_error(&msg);
-            process::exit(1);
-        }
-    };
+    let request = load_request(args)?;
     match request {
         HelperRequest::Cleanup {
             session_id,
@@ -407,6 +401,27 @@ const SPAWN_STAGES: &[SpawnStage] = &[
     SpawnStage::ExecChild,
 ];
 
+/// Confirm that `path` is not a symlink, removing it if it is.
+///
+/// Called twice during home-dir setup to close a TOCTOU window: once after
+/// `create_dir_all` (before the guard is installed) and once immediately before
+/// the first privileged ACL operation (after the guard is installed but before
+/// any chown or ACL write). A second check is needed because an attacker could
+/// remove the real directory and plant a symlink in the gap between the two calls.
+fn reject_if_symlink(path: &Path, context: &str) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("Failed to stat {}: {}", context, e))?;
+    if meta.file_type().is_symlink() {
+        let _ = std::fs::remove_file(path);
+        return Err(format!(
+            "Security: {} is a symlink (possible attack): {}",
+            context,
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     let SpawnParams {
         session_id,
@@ -427,25 +442,12 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     std::fs::create_dir_all(&home_dir).map_err(|e| format!("Failed to create home dir: {}", e))?;
 
     // Symlink check: /tmp is world-writable and session_id is predictable.
-    //     An attacker could pre-plant a symlink at /tmp/mino-home-<id> pointing to
-    //     /etc or another sensitive path. Bail if the path resolves to a symlink.
-    //
-    //     We check AFTER create_dir_all because create_dir_all does not follow
-    //     symlinks for the final component — if the path was a pre-planted symlink,
-    //     create_dir_all succeeds (the target dir already existed). Detecting the
-    //     symlink here closes that window before any privileged chown/ACL operation.
-    {
-        let meta = std::fs::symlink_metadata(&home_dir)
-            .map_err(|e| format!("Failed to stat home dir: {}", e))?;
-        if meta.file_type().is_symlink() {
-            // Remove the symlink to avoid leaving it in place, then bail.
-            let _ = std::fs::remove_file(&home_dir);
-            return Err(format!(
-                "Security: home dir path is a symlink (possible attack): {}",
-                home_dir.display()
-            ));
-        }
-    }
+    // An attacker could pre-plant a symlink at /tmp/mino-home-<id> pointing to
+    // /etc or another sensitive path. We check AFTER create_dir_all because
+    // create_dir_all does not follow symlinks for the final component — if the path
+    // was a pre-planted symlink, create_dir_all succeeds (the target dir already
+    // existed). Detecting the symlink here closes that window.
+    reject_if_symlink(&home_dir, "home dir path")?;
 
     // Stage: InstallGuard — construct RAII guard; set ACL on home dir so that
     //   file_inherit applies to dotfiles copied in the next stage.
@@ -453,20 +455,10 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     //   Any `?` error return below will trigger Drop → cleanup.
     let mut guard = SpawnGuard::new(home_dir.clone(), &sandbox_user);
 
-    // Re-verify immediately before the privileged ACL operation. A narrow race exists
-    // between the symlink check above and here: an attacker could remove the real dir and
-    // plant a symlink in the gap. A second symlink_metadata call closes that window.
-    {
-        let meta = std::fs::symlink_metadata(&home_dir)
-            .map_err(|e| format!("Failed to re-stat home dir before ACL: {}", e))?;
-        if meta.file_type().is_symlink() {
-            let _ = std::fs::remove_file(&home_dir);
-            return Err(format!(
-                "Security: home dir became a symlink before ACL set (possible race): {}",
-                home_dir.display()
-            ));
-        }
-    }
+    // Re-verify immediately before the privileged ACL operation. A narrow TOCTOU race
+    // exists between the check above and here: an attacker could remove the real dir and
+    // plant a symlink in the gap. A second check closes that window.
+    reject_if_symlink(&home_dir, "home dir before ACL")?;
 
     if let Err(e) = set_acl(&home_dir, true, &sandbox_user) {
         return Err(format!("ACL setup failed on home dir: {}", e));
