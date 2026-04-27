@@ -172,6 +172,35 @@ fn parse_cleanup_args(args: &[String]) -> Result<CleanupArgs<'_>, String> {
     })
 }
 
+/// Dispatch the "cleanup" subcommand.
+///
+/// Tries CLI args first (preferred), then falls back to the request-file protocol
+/// for backward compatibility with callers that still use `--request-file`.
+fn dispatch_cleanup(args: &[String]) -> Result<i32, String> {
+    // Primary path: all fields supplied as CLI flags.
+    if let Ok(parsed) = parse_cleanup_args(&args[2..]) {
+        return handle_cleanup(parsed.session_id, &parsed.project_dir, parsed.sandbox_user)
+            .map(|()| 0);
+    }
+
+    // Fallback path: fields encoded in a JSON request file (legacy callers).
+    let request = match load_request(args) {
+        Ok(r) => r,
+        Err(msg) => {
+            print_error(&msg);
+            process::exit(1);
+        }
+    };
+    match request {
+        HelperRequest::Cleanup {
+            session_id,
+            project_dir,
+            sandbox_user,
+        } => handle_cleanup(&session_id, &project_dir, &sandbox_user).map(|()| 0),
+        _ => Err("Expected Cleanup request".into()),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -223,33 +252,7 @@ fn main() {
                 _ => Err("Expected Spawn request".into()),
             }
         }
-        "cleanup" => {
-            // Try CLI args first, fall back to request file for backward compat
-            match parse_cleanup_args(&args[2..]) {
-                Ok(parsed) => {
-                    handle_cleanup(parsed.session_id, &parsed.project_dir, parsed.sandbox_user)
-                        .map(|()| 0)
-                }
-                Err(_) => {
-                    // Fallback: try loading from request file
-                    let request = match load_request(&args) {
-                        Ok(r) => r,
-                        Err(msg) => {
-                            print_error(&msg);
-                            process::exit(1);
-                        }
-                    };
-                    match request {
-                        HelperRequest::Cleanup {
-                            session_id,
-                            project_dir,
-                            sandbox_user,
-                        } => handle_cleanup(&session_id, &project_dir, &sandbox_user).map(|()| 0),
-                        _ => Err("Expected Cleanup request".into()),
-                    }
-                }
-            }
-        }
+        "cleanup" => dispatch_cleanup(&args),
         "exec" => handle_exec(&args[2..]),
         "health-check" => respond_healthy(),
         _ => {
@@ -352,7 +355,9 @@ impl Drop for SpawnGuard<'_> {
             let _ = remove_acl(&acl.path, acl.writable, self.sandbox_user);
         }
         if let Some(home) = self.home_dir.take() {
-            // Also remove the home dir ACL (set in step 2 before the guard tracks it)
+            // Also remove the home dir ACL (set in InstallGuard stage before the guard tracks it).
+            // Note: remove_acl on a path that was never ACL'd is a no-op (chmod -a returns 0),
+            // so this is safe even if set_acl failed before Drop was triggered.
             let _ = remove_acl(&home, true, self.sandbox_user);
             let _ = std::fs::remove_dir_all(&home);
         }
@@ -447,6 +452,21 @@ fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
     //   (Corresponds to SPAWN_STAGES[1]: SpawnStage::InstallGuard)
     //   Any `?` error return below will trigger Drop → cleanup.
     let mut guard = SpawnGuard::new(home_dir.clone(), &sandbox_user);
+
+    // Re-verify immediately before the privileged ACL operation. A narrow race exists
+    // between the symlink check above and here: an attacker could remove the real dir and
+    // plant a symlink in the gap. A second symlink_metadata call closes that window.
+    {
+        let meta = std::fs::symlink_metadata(&home_dir)
+            .map_err(|e| format!("Failed to re-stat home dir before ACL: {}", e))?;
+        if meta.file_type().is_symlink() {
+            let _ = std::fs::remove_file(&home_dir);
+            return Err(format!(
+                "Security: home dir became a symlink before ACL set (possible race): {}",
+                home_dir.display()
+            ));
+        }
+    }
 
     if let Err(e) = set_acl(&home_dir, true, &sandbox_user) {
         return Err(format!("ACL setup failed on home dir: {}", e));
@@ -1378,15 +1398,24 @@ mod tests {
 
     #[test]
     fn spawn_stages_covers_all_variants() {
-        // Keep in sync with SpawnStage enum: if a new variant is added,
-        // this test fails unless SPAWN_STAGES is also updated.
-        let expected_count = 7; // CreateHome, InstallGuard, ResolveIds, CopyDotfiles,
-                                // ChownHome, SetProjectAcls, ExecChild
+        // Exhaustive match forces a compile error when a new SpawnStage variant is added
+        // without also updating SPAWN_STAGES. This is more reliable than a hardcoded count
+        // because the compiler rejects the match rather than silently passing a stale number.
+        let expected_count = [
+            SpawnStage::CreateHome,
+            SpawnStage::InstallGuard,
+            SpawnStage::ResolveIds,
+            SpawnStage::CopyDotfiles,
+            SpawnStage::ChownHome,
+            SpawnStage::SetProjectAcls,
+            SpawnStage::ExecChild,
+        ]
+        .len();
         assert_eq!(
             SPAWN_STAGES.len(),
             expected_count,
             "SPAWN_STAGES has {} entries but expected {}. \
-             Update SPAWN_STAGES and this count when adding/removing SpawnStage variants.",
+             Update SPAWN_STAGES when adding/removing SpawnStage variants.",
             SPAWN_STAGES.len(),
             expected_count
         );
@@ -1821,7 +1850,9 @@ mod tests {
         // Do NOT create /tmp/mino-home-{session_id}
         let project_dir = tempfile::tempdir().unwrap();
         // Should return Ok (dir absence is not an error)
-        let _ = handle_cleanup(&session_id, project_dir.path(), "_mino_agent");
-        // No assertion needed — the absence of a panic/unwrap failure is the test
+        assert!(
+            handle_cleanup(&session_id, project_dir.path(), "_mino_agent").is_ok(),
+            "handle_cleanup must return Ok when home dir is absent"
+        );
     }
 }
