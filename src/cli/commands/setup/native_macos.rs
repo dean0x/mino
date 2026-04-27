@@ -27,11 +27,11 @@ pub(super) async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> Min
     let config_path = ConfigManager::default_config_path();
 
     // Step 1: Create system user
-    let user_result = setup_sandbox_user(ctx, args, sandbox_user, &home, &config_path).await;
+    let user_result = setup_sandbox_user(ctx, args, sandbox_user).await;
 
     // Step 2: Install helper binary
     let helper_result = if user_result.is_ok() {
-        install_helper_binary(ctx, args, &home, &config_path).await
+        install_helper_binary(ctx, args).await
     } else {
         ui::step_blocked(ctx, "Helper Binary", "System User");
         StepResult::Blocked
@@ -39,7 +39,7 @@ pub(super) async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> Min
 
     // Step 3: Configure sudoers
     let sudoers_result = if helper_result.is_ok() {
-        configure_sudoers(ctx, args, &home, &config_path).await
+        configure_sudoers(ctx, args).await
     } else {
         ui::step_blocked(ctx, "Sudoers", "Helper Binary");
         StepResult::Blocked
@@ -47,7 +47,7 @@ pub(super) async fn setup_native_macos(ctx: &UiContext, args: &SetupArgs) -> Min
 
     // Step 4: Configure pf anchor
     let pf_result = if sudoers_result.is_ok() {
-        configure_pf_anchor(ctx, args, sandbox_user, &home, &config_path).await
+        configure_pf_anchor(ctx, args, sandbox_user).await
     } else {
         ui::step_blocked(ctx, "pf Anchor", "Sudoers");
         StepResult::Blocked
@@ -173,8 +173,6 @@ async fn setup_sandbox_user(
     ctx: &UiContext,
     args: &SetupArgs,
     username: &str,
-    _home: &Path,
-    _config_path: &Path,
 ) -> StepResult {
     if let Err(e) = crate::sandbox::config::validate_sandbox_user(username) {
         ui::step_error(ctx, &e.to_string());
@@ -269,8 +267,6 @@ async fn setup_sandbox_user(
 async fn install_helper_binary(
     ctx: &UiContext,
     args: &SetupArgs,
-    _home: &Path,
-    _config_path: &Path,
 ) -> StepResult {
     let mino_version = env!("CARGO_PKG_VERSION");
 
@@ -350,8 +346,6 @@ async fn install_helper_binary(
 async fn configure_sudoers(
     ctx: &UiContext,
     args: &SetupArgs,
-    _home: &Path,
-    _config_path: &Path,
 ) -> StepResult {
     let sudoers_file = SUDOERS_PATH;
 
@@ -420,8 +414,6 @@ async fn configure_pf_anchor(
     ctx: &UiContext,
     args: &SetupArgs,
     sandbox_user: &str,
-    _home: &Path,
-    _config_path: &Path,
 ) -> StepResult {
     // Check if anchor exists in pf.conf
     let pf_check = Command::new("sudo")

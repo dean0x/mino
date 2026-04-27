@@ -142,7 +142,7 @@ match resolve_runtime_mode(cli_runtime, &config.runtime)? {
 - Best-effort: warnings printed to stderr on failure, cleanup continues.
 
 ### Network Isolation
-- Three modes: `Host`, `None`, `Bridge`, `Allow(rules)`
+- Four modes: `Host`, `None`, `Bridge`, `Allow(rules)`
 - `--network-allow` implies bridge + `CAP_NET_ADMIN` + iptables wrapper
 - `resolve_network_mode()` handles CLI/config precedence and conflict detection
 - iptables rules: DROP all → ACCEPT loopback → ACCEPT established → ACCEPT DNS → per-rule ACCEPT → exec command

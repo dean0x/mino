@@ -591,6 +591,10 @@ The setup creates:
 
 ### Running (Native Mode)
 
+When no command is specified, the native sandbox defaults to `/bin/zsh` on macOS and
+`/bin/bash` on Linux. The `session.shell` config key applies only to container mode and
+is ignored by the native sandbox.
+
 ```bash
 # Select native mode via CLI flag
 mino run --runtime native -- claude
