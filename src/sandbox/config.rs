@@ -197,9 +197,15 @@ impl SandboxConfig {
     /// # Errors
     /// Returns the first conflicting or disallowed entry with a diagnostic message.
     pub fn validate(&self) -> MinoResult<()> {
-        use crate::sandbox::dotfiles::DEFAULT_DOTFILES;
+        self.validate_sensitive_gates()?;
+        self.validate_default_dotfile_conflicts()?;
+        self.validate_intra_list_conflicts()?;
+        self.validate_cross_list_conflicts()?;
+        Ok(())
+    }
 
-        // Validate sensitive paths gate
+    /// Pass 1: Ensure no entry in either dir list is a sensitive path without explicit opt-in.
+    fn validate_sensitive_gates(&self) -> MinoResult<()> {
         for name in self
             .auto_passthrough_dirs
             .iter()
@@ -217,15 +223,17 @@ impl SandboxConfig {
                 }
             }
         }
-
         // Validate allow_sensitive_paths entries are actually in SENSITIVE_PATHS.
-        // Unknown entries are warned about (non-fatal) to future-proof against
-        // new SENSITIVE_PATHS additions. We log a debug message only; rejecting
-        // them would break configs written today when SENSITIVE_PATHS grows tomorrow.
-        // (Implementation note: no runtime logging here — this is a pure validate fn;
-        //  the config loader may emit a warning at the call site if desired.)
+        // Unknown entries are ignored (non-fatal) to future-proof against new
+        // SENSITIVE_PATHS additions. Rejecting them would break configs written
+        // today when SENSITIVE_PATHS grows tomorrow.
+        Ok(())
+    }
 
-        // Check both lists for conflicts with DEFAULT_DOTFILES
+    /// Pass 2: Ensure no entry in either dir list conflicts with the always-copied DEFAULT_DOTFILES.
+    fn validate_default_dotfile_conflicts(&self) -> MinoResult<()> {
+        use crate::sandbox::dotfiles::DEFAULT_DOTFILES;
+
         let dir_list_entries = [
             ("auto_passthrough_dirs", &self.auto_passthrough_dirs),
             ("auto_copy_dirs", &self.auto_copy_dirs),
@@ -243,8 +251,14 @@ impl SandboxConfig {
                 }
             }
         }
+        Ok(())
+    }
 
-        // Check for conflicts within auto_passthrough_dirs (nested entries)
+    /// Pass 3: Ensure no two entries within the same list are ancestors of each other.
+    ///
+    /// Checks both `auto_passthrough_dirs` and `auto_copy_dirs` independently.
+    fn validate_intra_list_conflicts(&self) -> MinoResult<()> {
+        // Check within auto_passthrough_dirs
         for (i, a) in self.auto_passthrough_dirs.iter().enumerate() {
             for b in self.auto_passthrough_dirs.iter().skip(i + 1) {
                 if path_conflicts(a, b) {
@@ -257,7 +271,24 @@ impl SandboxConfig {
             }
         }
 
-        // Check for conflicts between auto_passthrough_dirs and auto_copy_dirs
+        // Check within auto_copy_dirs
+        for (i, a) in self.auto_copy_dirs.iter().enumerate() {
+            for b in self.auto_copy_dirs.iter().skip(i + 1) {
+                if path_conflicts(a, b) {
+                    return Err(MinoError::User(format!(
+                        "auto_copy_dirs entries '{}' and '{}' conflict (one is an \
+                         ancestor of the other).",
+                        a, b
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Pass 4: Ensure no entry appears in both `auto_passthrough_dirs` and `auto_copy_dirs`.
+    fn validate_cross_list_conflicts(&self) -> MinoResult<()> {
         for a in &self.auto_passthrough_dirs {
             for b in &self.auto_copy_dirs {
                 if path_conflicts(a, b) {
@@ -269,7 +300,6 @@ impl SandboxConfig {
                 }
             }
         }
-
         Ok(())
     }
 }
@@ -1029,6 +1059,27 @@ mod tests {
         };
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains(".foo"));
+    }
+
+    #[test]
+    fn validate_rejects_nested_ancestor_inside_copy_dirs() {
+        // auto_copy_dirs has its own intra-list conflict check:
+        // .myapp and .myapp/data conflict (ancestor relationship)
+        let config = SandboxConfig {
+            auto_copy_dirs: vec![".myapp".to_string(), ".myapp/data".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains(".myapp"),
+            "expected error to mention the conflicting entries, got: {}",
+            err
+        );
+        assert!(
+            err.to_string().contains("auto_copy_dirs"),
+            "expected error to name the list, got: {}",
+            err
+        );
     }
 
     #[test]

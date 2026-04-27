@@ -13,6 +13,13 @@ use std::path::PathBuf;
 /// Uses an iterative BFS worklist instead of async recursion to avoid
 /// one `Box::pin` allocation per directory level.
 ///
+/// **Owned parameters**: `src` and `dst` are taken as owned `PathBuf` rather
+/// than `&Path` references because the BFS worklist queue (`VecDeque<(PathBuf,
+/// PathBuf)>`) stores path pairs across iterations. Accepting owned values
+/// avoids a `.to_path_buf()` clone at every call site while making the queue
+/// ownership model explicit. Compare with `copy_claude_config_dir`, which
+/// takes `&Path` references because it does not need to enqueue paths.
+///
 /// **Symlink skipping**: entries detected as symlinks via
 /// [`tokio::fs::symlink_metadata`] are silently skipped. This prevents
 /// the sandbox staging directory from receiving host-relative symlinks

@@ -383,9 +383,11 @@ impl ConfigManager {
         fs::write(&tmp_path, &new_content)
             .await
             .map_err(|e| MinoError::io("writing config tempfile", e))?;
-        fs::rename(&tmp_path, &self.config_path)
-            .await
-            .map_err(|e| MinoError::io("renaming config tempfile", e))?;
+        if let Err(e) = fs::rename(&tmp_path, &self.config_path).await {
+            // Best-effort cleanup: remove the tempfile so it does not linger on disk.
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(MinoError::io("renaming config tempfile", e));
+        }
 
         debug!(
             "Config updated via toml_edit: {:?}",
