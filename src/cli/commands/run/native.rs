@@ -1179,4 +1179,301 @@ mod tests {
             .unwrap();
         assert!(meta_other.file_type().is_symlink());
     }
+
+    // ---- write_sanitized_dotfiles integration tests ----
+
+    #[tokio::test]
+    async fn write_sanitized_dotfiles_strips_gitconfig_credentials() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        let gitconfig_content = "[user]\n    name = Test User\n    email = test@example.com\n\n[credential]\n    helper = osxkeychain\n\n[core]\n    autocrlf = input\n";
+        tokio::fs::write(home.path().join(".gitconfig"), gitconfig_content)
+            .await
+            .unwrap();
+
+        write_sanitized_dotfiles(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".gitconfig".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let output = tokio::fs::read_to_string(staging.path().join(".gitconfig"))
+            .await
+            .unwrap();
+
+        assert!(
+            !output.contains("[credential]"),
+            "credential section should be stripped from .gitconfig"
+        );
+        assert!(
+            output.contains("[user]"),
+            "[user] section should be preserved"
+        );
+        assert!(
+            output.contains("Test User"),
+            "user name should be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_sanitized_dotfiles_skips_missing_files() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        // home dir is empty — .gitconfig does not exist
+        let result = write_sanitized_dotfiles(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".gitconfig".to_string()],
+        )
+        .await;
+
+        assert!(result.is_ok(), "should not error on missing dotfile");
+
+        let mut entries = tokio::fs::read_dir(staging.path()).await.unwrap();
+        assert!(
+            entries.next_entry().await.unwrap().is_none(),
+            "staging dir should be empty when dotfile does not exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_sanitized_dotfiles_creates_parent_dirs_for_nested() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        // Create nested dotfile in home
+        tokio::fs::create_dir_all(home.path().join(".config").join("git"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            home.path().join(".config").join("git").join("ignore"),
+            b"*.log\n*.tmp\n",
+        )
+        .await
+        .unwrap();
+
+        write_sanitized_dotfiles(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".config/git/ignore".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let dest = staging.path().join(".config").join("git").join("ignore");
+        assert!(dest.exists(), "staging should have .config/git/ignore");
+
+        let content = tokio::fs::read_to_string(&dest).await.unwrap();
+        assert_eq!(content, "*.log\n*.tmp\n");
+    }
+
+    // ---- copy_auto_dirs integration tests ----
+
+    #[tokio::test]
+    async fn copy_auto_dirs_copies_claude_with_allowlist() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+
+        // Build a fake ~/.claude with allowlisted and excluded entries
+        let claude_src = home.path().join(".claude");
+        tokio::fs::create_dir_all(&claude_src).await.unwrap();
+        tokio::fs::write(claude_src.join("CLAUDE.md"), b"# Claude config\n")
+            .await
+            .unwrap();
+        tokio::fs::write(claude_src.join("settings.json"), b"{}\n")
+            .await
+            .unwrap();
+        // sessions/ is in KNOWN_SKIP_ENTRIES and not in CLAUDE_ALLOW_ENTRIES — must be excluded
+        tokio::fs::create_dir_all(claude_src.join("sessions"))
+            .await
+            .unwrap();
+        tokio::fs::write(claude_src.join("sessions").join("some-session.json"), b"[]")
+            .await
+            .unwrap();
+
+        copy_auto_dirs(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".claude".to_string()],
+            project_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            staging.path().join(".claude").join("CLAUDE.md").exists(),
+            "CLAUDE.md should be copied"
+        );
+        assert!(
+            staging.path().join(".claude").join("settings.json").exists(),
+            "settings.json should be copied"
+        );
+        assert!(
+            !staging.path().join(".claude").join("sessions").exists(),
+            "sessions/ should be excluded by allowlist"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_auto_dirs_generic_dir_copies_recursively() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+
+        // Build a fake ~/.custom with nested content
+        tokio::fs::create_dir_all(home.path().join(".custom").join("subdir"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            home.path().join(".custom").join("subdir").join("file.txt"),
+            b"hello world\n",
+        )
+        .await
+        .unwrap();
+
+        copy_auto_dirs(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".custom".to_string()],
+            project_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+        let dest = staging
+            .path()
+            .join(".custom")
+            .join("subdir")
+            .join("file.txt");
+        assert!(dest.exists(), "nested file should be copied recursively");
+
+        let content = tokio::fs::read_to_string(&dest).await.unwrap();
+        assert_eq!(content, "hello world\n");
+    }
+
+    #[tokio::test]
+    async fn copy_auto_dirs_skips_missing_host_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+
+        // home dir has no .nonexistent directory
+        let result = copy_auto_dirs(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".nonexistent".to_string()],
+            project_dir.path().to_path_buf(),
+        )
+        .await;
+
+        assert!(result.is_ok(), "should not error when host dir is missing");
+
+        let mut entries = tokio::fs::read_dir(staging.path()).await.unwrap();
+        assert!(
+            entries.next_entry().await.unwrap().is_none(),
+            "staging dir should be empty when host dir does not exist"
+        );
+    }
+
+    // ---- full pipeline concurrent staging integration test ----
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn full_pipeline_concurrent_staging() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+
+        // Dotfile: .gitconfig with a credential section to strip
+        tokio::fs::write(
+            home.path().join(".gitconfig"),
+            b"[user]\n    name = Agent\n\n[credential]\n    helper = store\n",
+        )
+        .await
+        .unwrap();
+
+        // Passthrough dir: .nvm
+        tokio::fs::create_dir_all(home.path().join(".nvm"))
+            .await
+            .unwrap();
+
+        // Copy dir: .custom with a file
+        tokio::fs::create_dir_all(home.path().join(".custom"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            home.path().join(".custom").join("file.txt"),
+            b"data\n",
+        )
+        .await
+        .unwrap();
+
+        // Build staging dir with 0o700 permissions (as prepare_dotfiles does)
+        let staging = tempfile::tempdir().unwrap();
+        let staging_path = staging.path().to_path_buf();
+        tokio::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+
+        // Run all three stages concurrently exactly as prepare_dotfiles does
+        tokio::try_join!(
+            write_sanitized_dotfiles(
+                staging_path.clone(),
+                home.path().to_path_buf(),
+                vec![".gitconfig".to_string()],
+            ),
+            create_passthrough_symlinks(
+                staging_path.clone(),
+                home.path().to_path_buf(),
+                vec![".nvm".to_string()],
+            ),
+            copy_auto_dirs(
+                staging_path.clone(),
+                home.path().to_path_buf(),
+                vec![".custom".to_string()],
+                project_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+
+        // Verify sanitized .gitconfig
+        let gitconfig = tokio::fs::read_to_string(staging_path.join(".gitconfig"))
+            .await
+            .unwrap();
+        assert!(
+            !gitconfig.contains("[credential]"),
+            ".gitconfig should have credential section stripped"
+        );
+        assert!(gitconfig.contains("[user]"), "[user] section should remain");
+
+        // Verify passthrough symlink for .nvm
+        let nvm_meta =
+            tokio::fs::symlink_metadata(staging_path.join(".nvm"))
+                .await
+                .unwrap();
+        assert!(
+            nvm_meta.file_type().is_symlink(),
+            ".nvm should be a symlink to the host dir"
+        );
+
+        // Verify copied .custom/file.txt
+        assert!(
+            staging_path.join(".custom").join("file.txt").exists(),
+            ".custom/file.txt should be copied into staging"
+        );
+
+        // Verify staging dir has 0o700 permissions
+        let meta = tokio::fs::metadata(&staging_path).await.unwrap();
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o700,
+            "staging dir should have 0o700 permissions"
+        );
+    }
 }
