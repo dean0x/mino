@@ -13,6 +13,234 @@ use crate::sandbox::detection::{
 use crate::ui::{self, UiContext};
 use std::path::Path;
 
+// ---------------------------------------------------------------------------
+// Shared passthrough infrastructure
+// ---------------------------------------------------------------------------
+
+/// How to persist the merged dirs to the config file.
+enum PassthroughStrategy {
+    /// Write `auto_passthrough_dirs` only (toolchain flow).
+    SingleKey,
+    /// Write `auto_passthrough_dirs` **and** `allow_sensitive_paths` atomically
+    /// (sensitive flow).
+    DualKey {
+        existing_sensitive: Vec<String>,
+    },
+}
+
+/// All parameters that drive [`configure_passthrough`].
+struct PassthroughParams<'a> {
+    /// Human-readable label used in UI messages (e.g. "Toolchain" or "Sensitive").
+    label: &'a str,
+    /// Detected candidate directories.
+    detected: Vec<String>,
+    /// Entries already present in `auto_passthrough_dirs` in the config file.
+    existing_passthrough: Vec<String>,
+    /// How to write back to the config.
+    strategy: PassthroughStrategy,
+    /// `true` → accept all detected entries when running non-interactively.
+    /// `false` → skip entirely in non-interactive mode (security policy).
+    auto_accept_non_interactive: bool,
+    /// `true` → check mode reports failure when nothing is configured.
+    /// `false` → check mode always reports success (optional step).
+    check_warns_if_missing: bool,
+    /// Hint text shown in check-mode warnings (e.g. "Run: mino setup --native").
+    option_hint: &'a str,
+    /// Optional warning shown before the multiselect prompt.
+    /// `Some((title, detail))` → calls `ui::note`; `None` → omitted.
+    pre_select_warning: Option<(&'a str, &'a str)>,
+    /// Per-option hint shown next to each item in the multiselect list.
+    /// `""` for toolchain; `"contains credentials"` for sensitive.
+    option_item_hint: &'a str,
+    /// Multiselect prompt label.
+    select_prompt: &'a str,
+    /// `label` portion of the "selection failed" warning.
+    select_fail_label: &'a str,
+}
+
+/// Core passthrough-configuration flow shared by toolchain and sensitive helpers.
+///
+/// Steps:
+/// 1. Empty detection → return `AlreadyOk` immediately.
+/// 2. Check mode → report configured/not-configured and return.
+/// 3. Non-interactive → accept all (if `auto_accept_non_interactive`) or skip.
+/// 4. Show optional pre-select warning.
+/// 5. Run multiselect UI.
+/// 6. Merge selected with existing (dedup, preserve order).
+/// 7. Write via strategy.
+async fn configure_passthrough(
+    ctx: &UiContext,
+    args: &SetupArgs,
+    manager: &ConfigManager,
+    params: PassthroughParams<'_>,
+) -> StepResult {
+    let PassthroughParams {
+        label,
+        detected,
+        existing_passthrough,
+        strategy,
+        auto_accept_non_interactive,
+        check_warns_if_missing,
+        option_hint,
+        pre_select_warning,
+        option_item_hint,
+        select_prompt,
+        select_fail_label,
+    } = params;
+
+    // Step 1: Nothing detected
+    if detected.is_empty() {
+        ui::step_ok(ctx, &format!("{} dirs: none detected", label));
+        return StepResult::AlreadyOk;
+    }
+
+    // Step 2: Check mode
+    if args.check {
+        if check_warns_if_missing && existing_passthrough.is_empty() {
+            ui::step_warn_hint(
+                ctx,
+                &format!("{} dirs not configured", label),
+                option_hint,
+            );
+            return StepResult::Failed;
+        }
+        if check_warns_if_missing {
+            ui::step_ok_detail(
+                ctx,
+                &format!("{} passthrough configured", label),
+                &format!("{} dirs", existing_passthrough.len()),
+            );
+        } else {
+            ui::step_ok(ctx, &format!("{} dirs: not checked (optional)", label));
+        }
+        return StepResult::AlreadyOk;
+    }
+
+    // Step 3: Non-interactive mode
+    if !ctx.is_interactive() || ctx.auto_yes() {
+        if auto_accept_non_interactive {
+            // Fall through: `to_add` will be set to `detected` below.
+        } else {
+            ui::step_ok(ctx, &format!("{} dirs: skipped (non-interactive)", label));
+            return StepResult::AlreadyOk;
+        }
+    }
+
+    // Filter candidates to those not yet in `auto_passthrough_dirs`.
+    // Both flows need this: sensitive needs it before the multiselect to avoid
+    // re-offering already-configured dirs; toolchain still deduplicates during
+    // the merge step (so no double-write), but filtering here keeps the list tidy.
+    let candidates: Vec<String> = detected
+        .iter()
+        .filter(|d| !existing_passthrough.contains(d))
+        .cloned()
+        .collect();
+
+    if candidates.is_empty() {
+        ui::step_ok(ctx, &format!("{} passthrough: already configured", label));
+        return StepResult::AlreadyOk;
+    }
+
+    // Steps 4–5: Optional warning + multiselect (or auto-accept)
+    let to_add: Vec<String> = if ctx.is_interactive() && !ctx.auto_yes() {
+        if let Some((warn_title, warn_detail)) = pre_select_warning {
+            ui::note(ctx, warn_title, warn_detail);
+        }
+
+        let options: Vec<(String, &str, &str)> = candidates
+            .iter()
+            .map(|d| (d.clone(), d.as_str(), option_item_hint))
+            .collect();
+        match ui::multiselect(ctx, select_prompt, &options, false).await {
+            Ok(selected) => selected,
+            Err(e) => {
+                ui::step_warn_hint(ctx, &format!("{} selection failed", select_fail_label), &e.to_string());
+                return StepResult::Skipped;
+            }
+        }
+    } else {
+        // Non-interactive + auto_accept_non_interactive: accept all candidates
+        candidates.clone()
+    };
+
+    if to_add.is_empty() {
+        ui::step_ok(ctx, &format!("{} passthrough: no dirs selected", label));
+        return StepResult::Skipped;
+    }
+
+    // Step 6: Merge (dedup, preserve order)
+    let mut new_passthrough = existing_passthrough;
+    let mut newly_added = 0usize;
+    for entry in &to_add {
+        if !new_passthrough.contains(entry) {
+            new_passthrough.push(entry.clone());
+            newly_added += 1;
+        }
+    }
+
+    if newly_added == 0 {
+        ui::step_ok_detail(
+            ctx,
+            &format!("{} passthrough", label),
+            "already configured, no changes",
+        );
+        return StepResult::AlreadyOk;
+    }
+
+    // Step 7: Write via strategy
+    match strategy {
+        PassthroughStrategy::SingleKey => {
+            match manager.set_sandbox_passthrough_dirs(&new_passthrough).await {
+                Ok(()) => {
+                    ui::step_ok_detail(
+                        ctx,
+                        &format!("{} passthrough configured", label),
+                        &format!("{} dir(s) added", newly_added),
+                    );
+                    StepResult::Installed
+                }
+                Err(e) => {
+                    ui::step_error_detail(ctx, "Failed to write config", &e.to_string());
+                    StepResult::Failed
+                }
+            }
+        }
+        PassthroughStrategy::DualKey {
+            existing_sensitive: mut new_sensitive,
+        } => {
+            for s in &to_add {
+                if !new_sensitive.contains(s) {
+                    new_sensitive.push(s.clone());
+                }
+            }
+            match manager
+                .write_toml_keys(&[
+                    ("auto_passthrough_dirs", &new_passthrough),
+                    ("allow_sensitive_paths", &new_sensitive),
+                ])
+                .await
+            {
+                Ok(()) => {
+                    ui::step_ok_detail(
+                        ctx,
+                        &format!("{} passthrough configured", label),
+                        &format!("{} dir(s) added", to_add.len()),
+                    );
+                    StepResult::Installed
+                }
+                Err(e) => {
+                    ui::step_error_detail(ctx, "Failed to write config", &e.to_string());
+                    StepResult::Failed
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public wrappers
+// ---------------------------------------------------------------------------
+
 /// Detect toolchain directories on the host and add them to
 /// `[sandbox].auto_passthrough_dirs` so shell init files can source them
 /// without "no such file or directory" errors.
@@ -35,14 +263,8 @@ pub(super) async fn configure_toolchain_passthrough(
         crate::sandbox::config::SENSITIVE_PATHS,
     );
 
-    if detected.is_empty() {
-        ui::step_ok(ctx, "Toolchain dirs: none detected");
-        return StepResult::AlreadyOk;
-    }
-
-    // Read existing config to avoid clobbering manually set entries
     let manager = ConfigManager::with_path(config_path.to_path_buf());
-    let existing = match manager.read_sandbox_passthrough_dirs().await {
+    let existing_passthrough = match manager.read_sandbox_passthrough_dirs().await {
         Ok(v) => v.unwrap_or_default(),
         Err(e) => {
             ui::step_warn_hint(
@@ -54,88 +276,25 @@ pub(super) async fn configure_toolchain_passthrough(
         }
     };
 
-    // In check mode just report whether config is already populated
-    if args.check {
-        if existing.is_empty() {
-            ui::step_warn_hint(
-                ctx,
-                "Toolchain dirs not configured",
-                "Run: mino setup --native to auto-detect",
-            );
-            return StepResult::Failed;
-        }
-        ui::step_ok_detail(
-            ctx,
-            "Toolchain passthrough configured",
-            &format!("{} dirs", existing.len()),
-        );
-        return StepResult::AlreadyOk;
-    }
-
-    // Determine which detected entries the user wants to add.
-    // In non-interactive mode: accept all detected entries automatically.
-    let to_add: Vec<String> = if ctx.is_interactive() && !ctx.auto_yes() {
-        let options: Vec<(String, &str, &str)> = detected
-            .iter()
-            .map(|d| (d.clone(), d.as_str(), ""))
-            .collect();
-        match ui::multiselect(
-            ctx,
-            "Select toolchain dirs to passthrough:",
-            &options,
-            false,
-        )
-        .await
-        {
-            Ok(selected) => selected,
-            Err(e) => {
-                ui::step_warn_hint(ctx, "Toolchain selection failed", &e.to_string());
-                return StepResult::Skipped;
-            }
-        }
-    } else {
-        detected.clone()
-    };
-
-    if to_add.is_empty() {
-        ui::step_ok(ctx, "Toolchain passthrough: no dirs selected");
-        return StepResult::Skipped;
-    }
-
-    // Merge: keep existing + add newly selected (dedup, preserve order)
-    let mut merged: Vec<String> = existing;
-    let mut newly_added = 0usize;
-    for entry in &to_add {
-        if !merged.contains(entry) {
-            merged.push(entry.clone());
-            newly_added += 1;
-        }
-    }
-
-    if newly_added == 0 {
-        // All selected entries were already present
-        ui::step_ok_detail(
-            ctx,
-            "Toolchain passthrough",
-            "already configured, no changes",
-        );
-        return StepResult::AlreadyOk;
-    }
-
-    match manager.set_sandbox_passthrough_dirs(&merged).await {
-        Ok(()) => {
-            ui::step_ok_detail(
-                ctx,
-                "Toolchain passthrough configured",
-                &format!("{} dir(s) added", newly_added),
-            );
-            StepResult::Installed
-        }
-        Err(e) => {
-            ui::step_error_detail(ctx, "Failed to write config", &e.to_string());
-            StepResult::Failed
-        }
-    }
+    configure_passthrough(
+        ctx,
+        args,
+        &manager,
+        PassthroughParams {
+            label: "Toolchain",
+            detected,
+            existing_passthrough,
+            strategy: PassthroughStrategy::SingleKey,
+            auto_accept_non_interactive: true,
+            check_warns_if_missing: true,
+            option_hint: "Run: mino setup --native to auto-detect",
+            pre_select_warning: None,
+            option_item_hint: "",
+            select_prompt: "Select toolchain dirs to passthrough:",
+            select_fail_label: "Toolchain",
+        },
+    )
+    .await
 }
 
 /// Detect sensitive-but-useful directories (credential stores that many AI
@@ -152,23 +311,6 @@ pub(super) async fn configure_sensitive_passthrough(
 ) -> StepResult {
     let detected = detect_sensitive_candidates(home, SENSITIVE_BUT_USEFUL_CANDIDATES);
 
-    if detected.is_empty() {
-        ui::step_ok(ctx, "Sensitive dirs: none detected");
-        return StepResult::AlreadyOk;
-    }
-
-    if args.check {
-        // Check mode: non-blocking, sensitive dirs are optional
-        ui::step_ok(ctx, "Sensitive dirs: not checked (optional)");
-        return StepResult::AlreadyOk;
-    }
-
-    // Security policy: skip in non-interactive mode — never auto-add credential dirs
-    if !ctx.is_interactive() || ctx.auto_yes() {
-        ui::step_ok(ctx, "Sensitive dirs: skipped (non-interactive)");
-        return StepResult::AlreadyOk;
-    }
-
     let manager = ConfigManager::with_path(config_path.to_path_buf());
     let existing_passthrough = match manager.read_sandbox_passthrough_dirs().await {
         Ok(v) => v.unwrap_or_default(),
@@ -179,83 +321,28 @@ pub(super) async fn configure_sensitive_passthrough(
         Err(_) => vec![],
     };
 
-    // Filter out already-configured entries
-    let not_yet_added: Vec<String> = detected
-        .iter()
-        .filter(|d| !existing_passthrough.contains(d))
-        .cloned()
-        .collect();
-
-    if not_yet_added.is_empty() {
-        ui::step_ok(ctx, "Sensitive passthrough: already configured");
-        return StepResult::AlreadyOk;
-    }
-
-    ui::note(
+    configure_passthrough(
         ctx,
-        "Warning: credential directories detected",
-        "The following directories contain credentials (GitHub token, Docker auth, etc.). Adding them gives the sandbox read access to those credentials.",
-    );
-
-    let options: Vec<(String, &str, &str)> = not_yet_added
-        .iter()
-        .map(|d| (d.clone(), d.as_str(), "contains credentials"))
-        .collect();
-
-    let selected = match ui::multiselect(
-        ctx,
-        "Select sensitive dirs to allow (optional):",
-        &options,
-        false,
+        args,
+        &manager,
+        PassthroughParams {
+            label: "Sensitive",
+            detected,
+            existing_passthrough,
+            strategy: PassthroughStrategy::DualKey { existing_sensitive },
+            auto_accept_non_interactive: false,
+            check_warns_if_missing: false,
+            option_hint: "",
+            pre_select_warning: Some((
+                "Warning: credential directories detected",
+                "The following directories contain credentials (GitHub token, Docker auth, etc.). Adding them gives the sandbox read access to those credentials.",
+            )),
+            option_item_hint: "contains credentials",
+            select_prompt: "Select sensitive dirs to allow (optional):",
+            select_fail_label: "Sensitive dir",
+        },
     )
     .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            ui::step_warn_hint(ctx, "Sensitive dir selection failed", &e.to_string());
-            return StepResult::Skipped;
-        }
-    };
-
-    if selected.is_empty() {
-        ui::step_ok(ctx, "Sensitive passthrough: none selected");
-        return StepResult::AlreadyOk;
-    }
-
-    // Write both keys atomically in a single file operation
-    let mut new_passthrough = existing_passthrough;
-    for s in &selected {
-        if !new_passthrough.contains(s) {
-            new_passthrough.push(s.clone());
-        }
-    }
-    let mut new_sensitive = existing_sensitive;
-    for s in &selected {
-        if !new_sensitive.contains(s) {
-            new_sensitive.push(s.clone());
-        }
-    }
-
-    match manager
-        .write_toml_keys(&[
-            ("auto_passthrough_dirs", &new_passthrough),
-            ("allow_sensitive_paths", &new_sensitive),
-        ])
-        .await
-    {
-        Ok(()) => {
-            ui::step_ok_detail(
-                ctx,
-                "Sensitive passthrough configured",
-                &format!("{} dir(s) added", selected.len()),
-            );
-            StepResult::Installed
-        }
-        Err(e) => {
-            ui::step_error_detail(ctx, "Failed to write config", &e.to_string());
-            StepResult::Failed
-        }
-    }
 }
 
 /// Detect whether `~/.claude` exists and offer to add it to
