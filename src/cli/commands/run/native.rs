@@ -147,7 +147,8 @@ async fn validate_and_resolve(
     })?;
     debug!("Network mode: {:?}", network_mode);
 
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| MinoError::User("Cannot determine home directory".to_string()))?;
     validate_sandbox_paths(&config.sandbox, &home_dir)?;
 
     Ok((project_dir, network_mode, home_dir))
@@ -800,6 +801,43 @@ mod tests {
     use crate::cli::args::RunArgs;
     use serial_test::serial;
 
+    /// Guard that restores environment variables on drop, even on panic.
+    ///
+    /// Used by `#[serial]` tests that modify process environment: the Drop impl
+    /// ensures cleanup runs on any exit path so subsequent tests see a clean env.
+    struct EnvGuard {
+        vars: Vec<(String, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        /// Capture current values of `names` and set them to `values`.
+        ///
+        /// `names` and `values` are paired by index. Pass `None` in `values` to
+        /// leave a variable unchanged (only capture for restore-on-drop).
+        fn set(pairs: &[(&str, &str)]) -> Self {
+            let vars = pairs
+                .iter()
+                .map(|(k, v)| {
+                    let prev = std::env::var(k).ok();
+                    unsafe { std::env::set_var(k, v) };
+                    (k.to_string(), prev)
+                })
+                .collect();
+            Self { vars }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, prev) in &self.vars {
+                match prev {
+                    Some(v) => unsafe { std::env::set_var(k, v) },
+                    None => unsafe { std::env::remove_var(k) },
+                }
+            }
+        }
+    }
+
     fn test_run_args() -> RunArgs {
         RunArgs {
             name: None,
@@ -1029,22 +1067,24 @@ mod tests {
     #[test]
     #[serial]
     fn build_sandbox_env_default_passthrough_includes_anthropic_and_locale() {
-        // Ensure the defaults are in place when env_passthrough is not configured
-        let key = "ANTHROPIC_API_KEY";
-        unsafe { std::env::set_var(key, "test-key-123") };
+        // Ensure the defaults are in place when env_passthrough is not configured.
+        // EnvGuard restores the variable on drop, even if an assertion panics.
+        let _guard = EnvGuard::set(&[("ANTHROPIC_API_KEY", "test-key-123")]);
         let config = Config::default();
         assert!(config.sandbox.env_passthrough.is_none());
         let env = build_sandbox_env(&config, &HashMap::new());
-        assert_eq!(env.get(key).unwrap(), "test-key-123");
-        unsafe { std::env::remove_var(key) };
+        assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "test-key-123");
     }
 
     #[test]
     #[serial]
     fn build_sandbox_env_custom_passthrough_replaces_defaults() {
-        // Custom list should NOT inherit ANTHROPIC_API_KEY unless explicitly listed
-        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "should-not-appear") };
-        unsafe { std::env::set_var("MY_CUSTOM_KEY", "custom-value") };
+        // Custom list should NOT inherit ANTHROPIC_API_KEY unless explicitly listed.
+        // EnvGuard restores both variables on drop, even if an assertion panics.
+        let _guard = EnvGuard::set(&[
+            ("ANTHROPIC_API_KEY", "should-not-appear"),
+            ("MY_CUSTOM_KEY", "custom-value"),
+        ]);
 
         let mut config = Config::default();
         config.sandbox.env_passthrough = Some(vec!["MY_CUSTOM_KEY".to_string()]);
@@ -1055,16 +1095,13 @@ mod tests {
             !env.contains_key("ANTHROPIC_API_KEY"),
             "ANTHROPIC_API_KEY should not appear when not in custom passthrough list"
         );
-
-        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
-        unsafe { std::env::remove_var("MY_CUSTOM_KEY") };
     }
 
     #[test]
     #[serial]
     fn build_sandbox_env_empty_passthrough_disables_all_inheritance() {
-        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "key") };
-        unsafe { std::env::set_var("LANG", "en_US.UTF-8") };
+        // EnvGuard restores both variables on drop, even if an assertion panics.
+        let _guard = EnvGuard::set(&[("ANTHROPIC_API_KEY", "key"), ("LANG", "en_US.UTF-8")]);
 
         let mut config = Config::default();
         config.sandbox.env_passthrough = Some(vec![]);
@@ -1072,9 +1109,6 @@ mod tests {
         let env = build_sandbox_env(&config, &HashMap::new());
         assert!(!env.contains_key("ANTHROPIC_API_KEY"));
         assert!(!env.contains_key("LANG"));
-
-        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
-        unsafe { std::env::remove_var("LANG") };
     }
 
     // ---- create_passthrough_symlinks multi-segment tests ----

@@ -50,6 +50,12 @@ fn default_sandbox_user() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AclEntry {
     pub path: PathBuf,
+    /// Whether the ACL grants write access (true) or read-only access (false).
+    ///
+    /// This flag is recorded at `set_acl` time and must be passed unchanged to
+    /// `remove_acl`. Each path receives either a read-write OR a read-only ACL,
+    /// never both. Passing the wrong variant to `remove_acl` would issue a
+    /// `chmod -a` with the wrong rule string, leaving the ACL in place.
     pub writable: bool,
 }
 
