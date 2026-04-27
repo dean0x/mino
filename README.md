@@ -140,6 +140,7 @@ mino run [OPTIONS] [-- COMMAND...]
 | `--network <MODE>` | Network mode: `bridge` (default), `host`, `none` |
 | `--network-allow <RULES>` | Allowlisted destinations (`host:port`, comma-separated). Implies bridge + iptables |
 | `--network-preset <PRESET>` | Network preset: `dev`, `registries` (conflicts with `--network-allow`) |
+| `--runtime <MODE>` | Runtime mode: `container` (default), `native` |
 
 **Layer precedence**: `--layers` flag > `--image` flag > `MINO_LAYERS` env var > config `container.layers` > interactive selection > config `container.image`.
 
@@ -306,6 +307,7 @@ verbose = false
 log_format = "text"    # "text" or "json"
 audit_log = true       # Security events written to state dir
 update_check = true    # Check for new versions (once/24h)
+runtime = "container"  # "container", "native", or "auto"
 
 [vm]
 name = "mino"
@@ -362,6 +364,7 @@ general.verbose
 general.log_format
 general.audit_log
 general.update_check
+general.runtime
 vm.name
 vm.distro
 container.image
@@ -381,7 +384,24 @@ credentials.azure.subscription
 credentials.azure.tenant
 session.shell
 session.auto_cleanup_hours
+sandbox.sandbox_user
+sandbox.max_memory_mb
+sandbox.max_processes
+sandbox.max_cpu_seconds
+sandbox.max_file_size_mb
+sandbox.cache_mode
+sandbox.allow_sensitive
+sandbox.allow_sensitive_paths
+sandbox.network
+sandbox.network_allow
+sandbox.network_preset
+sandbox.env_passthrough
+sandbox.auto_passthrough_dirs
+sandbox.auto_copy_dirs
 ```
+
+> **Note**: Most `[sandbox]` fields are managed by `mino setup --native` or edited directly
+> in the config file. `mino config set sandbox.*` is supported for the scalar fields listed above.
 
 ## Dependency Caching
 
@@ -574,10 +594,13 @@ The setup creates:
 ```bash
 # Select native mode via CLI flag
 mino run --runtime native -- claude
+```
 
+```toml
 # Or set as default in config (avoids repeating the flag)
-# [config.toml]
-# runtime = "native"
+# ~/.config/mino/config.toml
+[general]
+runtime = "native"  # "container" (default), "native", or "auto"
 ```
 
 ```bash
