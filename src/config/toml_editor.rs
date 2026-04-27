@@ -10,29 +10,24 @@
 //! [`ConfigManager`]: super::ConfigManager
 
 use crate::error::{MinoError, MinoResult};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
 use toml_edit::DocumentMut;
 use tracing::debug;
 
 /// Atomic, comment-preserving TOML editor for the `[sandbox]` config section.
-pub struct TomlEditor {
+pub(crate) struct TomlEditor {
     config_path: PathBuf,
 }
 
 impl TomlEditor {
     /// Create a new editor targeting the given config file path.
-    pub fn new(config_path: PathBuf) -> Self {
+    pub(crate) fn new(config_path: PathBuf) -> Self {
         Self { config_path }
     }
 
-    /// Return the config file path this editor targets.
-    pub fn path(&self) -> &Path {
-        &self.config_path
-    }
-
     /// Ensure the parent directory of the config file exists.
-    pub async fn ensure_config_dir(&self) -> MinoResult<()> {
+    pub(crate) async fn ensure_config_dir(&self) -> MinoResult<()> {
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)
                 .await
@@ -52,18 +47,18 @@ impl TomlEditor {
     ///
     /// Returns `Ok(None)` if the file, section, or key is absent.
     /// Returns `Err` if the key is present but not a string array.
-    pub async fn read_sandbox_passthrough_dirs(&self) -> MinoResult<Option<Vec<String>>> {
+    pub(crate) async fn read_sandbox_passthrough_dirs(&self) -> MinoResult<Option<Vec<String>>> {
         self.read_sandbox_string_array("auto_passthrough_dirs")
             .await
     }
 
     /// Read `[sandbox].auto_copy_dirs` from the config file.
-    pub async fn read_sandbox_copy_dirs(&self) -> MinoResult<Option<Vec<String>>> {
+    pub(crate) async fn read_sandbox_copy_dirs(&self) -> MinoResult<Option<Vec<String>>> {
         self.read_sandbox_string_array("auto_copy_dirs").await
     }
 
     /// Read `[sandbox].allow_sensitive_paths` from the config file.
-    pub async fn read_sandbox_allow_sensitive_paths(&self) -> MinoResult<Option<Vec<String>>> {
+    pub(crate) async fn read_sandbox_allow_sensitive_paths(&self) -> MinoResult<Option<Vec<String>>> {
         self.read_sandbox_string_array("allow_sensitive_paths")
             .await
     }
@@ -75,18 +70,18 @@ impl TomlEditor {
     /// Write `[sandbox].auto_passthrough_dirs` to the config file.
     ///
     /// Preserves all other sections, keys, and comments.  Atomic write.
-    pub async fn set_sandbox_passthrough_dirs(&self, dirs: &[String]) -> MinoResult<()> {
+    pub(crate) async fn set_sandbox_passthrough_dirs(&self, dirs: &[String]) -> MinoResult<()> {
         self.write_toml_keys(&[("auto_passthrough_dirs", dirs)])
             .await
     }
 
     /// Write `[sandbox].auto_copy_dirs` to the config file.
-    pub async fn set_sandbox_copy_dirs(&self, dirs: &[String]) -> MinoResult<()> {
+    pub(crate) async fn set_sandbox_copy_dirs(&self, dirs: &[String]) -> MinoResult<()> {
         self.write_toml_keys(&[("auto_copy_dirs", dirs)]).await
     }
 
     /// Write `[sandbox].allow_sensitive_paths` to the config file.
-    pub async fn set_sandbox_allow_sensitive_paths(&self, paths: &[String]) -> MinoResult<()> {
+    pub(crate) async fn set_sandbox_allow_sensitive_paths(&self, paths: &[String]) -> MinoResult<()> {
         self.write_toml_keys(&[("allow_sensitive_paths", paths)])
             .await
     }
@@ -101,7 +96,7 @@ impl TomlEditor {
     /// `set_sandbox_allow_sensitive_paths` ensures that writing both keys
     /// simultaneously (as the sensitive-path setup step requires) is a single
     /// atomic file operation.
-    pub async fn write_toml_keys(&self, mutations: &[(&str, &[String])]) -> MinoResult<()> {
+    pub(crate) async fn write_toml_keys(&self, mutations: &[(&str, &[String])]) -> MinoResult<()> {
         self.ensure_config_dir().await?;
 
         // Load existing document or start empty

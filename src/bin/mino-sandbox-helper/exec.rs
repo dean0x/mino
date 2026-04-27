@@ -139,10 +139,7 @@ pub(crate) fn handle_exec(args: &[String]) -> Result<i32, String> {
 mod tests {
     use super::*;
 
-    /// Convert a slice of &str into Vec<String> for test convenience.
-    fn args(slice: &[&str]) -> Vec<String> {
-        slice.iter().map(|s| s.to_string()).collect()
-    }
+    use crate::str_args as args;
 
     #[test]
     fn parse_exec_args_valid() {

@@ -40,10 +40,23 @@ pub(crate) fn parse_cleanup_args(args: &[String]) -> Result<CleanupArgs<'_>, Str
         }
     }
 
+    let session_id = match session_id {
+        Some(id) if !id.is_empty() => id,
+        _ => return Err("Missing --session-id".to_string()),
+    };
+    let project_dir = match project_dir {
+        Some(p) if !p.is_empty() => p,
+        _ => return Err("Missing --project-dir".to_string()),
+    };
+    let sandbox_user = match sandbox_user {
+        Some(u) if !u.is_empty() => u,
+        _ => return Err("Missing --sandbox-user".to_string()),
+    };
+
     Ok(CleanupArgs {
-        session_id: session_id.ok_or("Missing --session-id")?,
-        project_dir: PathBuf::from(project_dir.ok_or("Missing --project-dir")?),
-        sandbox_user: sandbox_user.ok_or("Missing --sandbox-user")?,
+        session_id,
+        project_dir: PathBuf::from(project_dir),
+        sandbox_user,
     })
 }
 
@@ -110,10 +123,7 @@ pub(crate) fn dispatch_cleanup(args: &[String]) -> Result<i32, String> {
 mod tests {
     use super::*;
 
-    /// Convert a slice of &str into Vec<String> for test convenience.
-    fn args(slice: &[&str]) -> Vec<String> {
-        slice.iter().map(|s| s.to_string()).collect()
-    }
+    use crate::str_args as args;
 
     // ---- parse_cleanup_args tests ----
 
@@ -163,6 +173,42 @@ mod tests {
     #[test]
     fn parse_cleanup_args_missing_sandbox_user() {
         let input = args(&["--session-id", "s1", "--project-dir", "/tmp/proj"]);
+        let err = parse_cleanup_args(&input).unwrap_err();
+        assert!(
+            err.contains("--sandbox-user"),
+            "expected error about --sandbox-user, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_cleanup_args_rejects_empty_session_id() {
+        let input = args(&[
+            "--session-id",
+            "",
+            "--project-dir",
+            "/tmp/proj",
+            "--sandbox-user",
+            "_mino_agent",
+        ]);
+        let err = parse_cleanup_args(&input).unwrap_err();
+        assert!(
+            err.contains("--session-id"),
+            "expected error about --session-id, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_cleanup_args_rejects_empty_sandbox_user() {
+        let input = args(&[
+            "--session-id",
+            "s1",
+            "--project-dir",
+            "/tmp/proj",
+            "--sandbox-user",
+            "",
+        ]);
         let err = parse_cleanup_args(&input).unwrap_err();
         assert!(
             err.contains("--sandbox-user"),

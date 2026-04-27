@@ -59,6 +59,14 @@ pub(crate) fn print_error(message: &str) {
     eprintln!("[mino-helper] {}", message);
 }
 
+/// Convert a slice of &str into Vec<String>.
+///
+/// Available to all test modules in this crate via `crate::str_args`.
+#[cfg(test)]
+pub(crate) fn str_args(slice: &[&str]) -> Vec<String> {
+    slice.iter().map(|s| s.to_string()).collect()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -135,10 +143,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    /// Convert a slice of &str into Vec<String> for test convenience.
-    fn args(slice: &[&str]) -> Vec<String> {
-        slice.iter().map(|s| s.to_string()).collect()
-    }
+    use crate::str_args as args;
 
     // ---- load_request tests ----
 

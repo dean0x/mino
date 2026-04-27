@@ -1,11 +1,11 @@
 //! Configuration management for Mino
 
 pub mod schema;
-pub mod toml_editor;
+pub(crate) mod toml_editor;
 pub mod trust;
 
 pub use schema::Config;
-pub use toml_editor::TomlEditor;
+pub(crate) use toml_editor::TomlEditor;
 
 use crate::error::{MinoError, MinoResult};
 use std::path::{Path, PathBuf};
