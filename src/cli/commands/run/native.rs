@@ -917,6 +917,7 @@ mod tests {
         assert_eq!(env.get("USER").unwrap(), "_mino_agent");
         assert_eq!(env.get("MINO_SANDBOX").unwrap(), "native");
         let path = env.get("PATH").unwrap();
+        #[cfg(target_os = "macos")]
         assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/bin"));
         assert!(path.contains("/bin"));
@@ -1310,7 +1311,11 @@ mod tests {
             "CLAUDE.md should be copied"
         );
         assert!(
-            staging.path().join(".claude").join("settings.json").exists(),
+            staging
+                .path()
+                .join(".claude")
+                .join("settings.json")
+                .exists(),
             "settings.json should be copied"
         );
         assert!(
@@ -1407,12 +1412,9 @@ mod tests {
         tokio::fs::create_dir_all(home.path().join(".custom"))
             .await
             .unwrap();
-        tokio::fs::write(
-            home.path().join(".custom").join("file.txt"),
-            b"data\n",
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(home.path().join(".custom").join("file.txt"), b"data\n")
+            .await
+            .unwrap();
 
         // Build staging dir with 0o700 permissions (as prepare_dotfiles does)
         let staging = tempfile::tempdir().unwrap();
@@ -1453,10 +1455,9 @@ mod tests {
         assert!(gitconfig.contains("[user]"), "[user] section should remain");
 
         // Verify passthrough symlink for .nvm
-        let nvm_meta =
-            tokio::fs::symlink_metadata(staging_path.join(".nvm"))
-                .await
-                .unwrap();
+        let nvm_meta = tokio::fs::symlink_metadata(staging_path.join(".nvm"))
+            .await
+            .unwrap();
         assert!(
             nvm_meta.file_type().is_symlink(),
             ".nvm should be a symlink to the host dir"

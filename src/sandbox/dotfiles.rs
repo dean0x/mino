@@ -548,5 +548,4 @@ mod tests {
         assert!(!dst.join("new-future-config.json").exists());
         assert!(!dst.join("new-future-dir").exists());
     }
-
 }

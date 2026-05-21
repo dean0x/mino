@@ -58,7 +58,9 @@ impl TomlEditor {
     }
 
     /// Read `[sandbox].allow_sensitive_paths` from the config file.
-    pub(crate) async fn read_sandbox_allow_sensitive_paths(&self) -> MinoResult<Option<Vec<String>>> {
+    pub(crate) async fn read_sandbox_allow_sensitive_paths(
+        &self,
+    ) -> MinoResult<Option<Vec<String>>> {
         self.read_sandbox_string_array("allow_sensitive_paths")
             .await
     }
@@ -81,7 +83,10 @@ impl TomlEditor {
     }
 
     /// Write `[sandbox].allow_sensitive_paths` to the config file.
-    pub(crate) async fn set_sandbox_allow_sensitive_paths(&self, paths: &[String]) -> MinoResult<()> {
+    pub(crate) async fn set_sandbox_allow_sensitive_paths(
+        &self,
+        paths: &[String],
+    ) -> MinoResult<()> {
         self.write_toml_keys(&[("allow_sensitive_paths", paths)])
             .await
     }

@@ -23,7 +23,7 @@ mod signal;
 
 use cleanup::dispatch_cleanup;
 use exec::handle_exec;
-use lifecycle::{SpawnParams, handle_spawn};
+use lifecycle::{handle_spawn, SpawnParams};
 
 /// Load a HelperRequest from the --request-file argument.
 ///

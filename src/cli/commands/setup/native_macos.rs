@@ -169,11 +169,7 @@ pub(super) async fn uninstall_native_macos(ctx: &UiContext) -> MinoResult<()> {
 // Setup steps
 // =============================================================================
 
-async fn setup_sandbox_user(
-    ctx: &UiContext,
-    args: &SetupArgs,
-    username: &str,
-) -> StepResult {
+async fn setup_sandbox_user(ctx: &UiContext, args: &SetupArgs, username: &str) -> StepResult {
     if let Err(e) = crate::sandbox::config::validate_sandbox_user(username) {
         ui::step_error(ctx, &e.to_string());
         return StepResult::Failed;
@@ -264,10 +260,7 @@ async fn setup_sandbox_user(
 /// If the source helper binary is not co-located with the `mino` executable
 /// (e.g. in a Homebrew layout), the installed binary is treated as up-to-date.
 /// Uses `sudo cp` so this step requires the user to have sudo access.
-async fn install_helper_binary(
-    ctx: &UiContext,
-    args: &SetupArgs,
-) -> StepResult {
+async fn install_helper_binary(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let mino_version = env!("CARGO_PKG_VERSION");
 
     // Compute helper_src once — used for existence check and checksum comparison.
@@ -343,10 +336,7 @@ async fn install_helper_binary(
     }
 }
 
-async fn configure_sudoers(
-    ctx: &UiContext,
-    args: &SetupArgs,
-) -> StepResult {
+async fn configure_sudoers(ctx: &UiContext, args: &SetupArgs) -> StepResult {
     let sudoers_file = SUDOERS_PATH;
 
     if std::path::Path::new(sudoers_file).exists() {
@@ -410,11 +400,7 @@ async fn configure_sudoers(
     }
 }
 
-async fn configure_pf_anchor(
-    ctx: &UiContext,
-    args: &SetupArgs,
-    sandbox_user: &str,
-) -> StepResult {
+async fn configure_pf_anchor(ctx: &UiContext, args: &SetupArgs, sandbox_user: &str) -> StepResult {
     // Check if anchor exists in pf.conf
     let pf_check = Command::new("sudo")
         .args(["pfctl", "-s", "Anchors"])

@@ -23,9 +23,7 @@ enum PassthroughStrategy {
     SingleKey,
     /// Write `auto_passthrough_dirs` **and** `allow_sensitive_paths` atomically
     /// (sensitive flow).
-    DualKey {
-        existing_sensitive: Vec<String>,
-    },
+    DualKey { existing_sensitive: Vec<String> },
 }
 
 /// All parameters that drive [`configure_passthrough`].
@@ -97,11 +95,7 @@ async fn configure_passthrough(
     // Step 2: Check mode
     if args.check {
         if check_warns_if_missing && existing_passthrough.is_empty() {
-            ui::step_warn_hint(
-                ctx,
-                &format!("{} dirs not configured", label),
-                option_hint,
-            );
+            ui::step_warn_hint(ctx, &format!("{} dirs not configured", label), option_hint);
             return StepResult::Failed;
         }
         if check_warns_if_missing {
@@ -154,7 +148,11 @@ async fn configure_passthrough(
         match ui::multiselect(ctx, select_prompt, &options, false).await {
             Ok(selected) => selected,
             Err(e) => {
-                ui::step_warn_hint(ctx, &format!("{} selection failed", select_fail_label), &e.to_string());
+                ui::step_warn_hint(
+                    ctx,
+                    &format!("{} selection failed", select_fail_label),
+                    &e.to_string(),
+                );
                 return StepResult::Skipped;
             }
         }
