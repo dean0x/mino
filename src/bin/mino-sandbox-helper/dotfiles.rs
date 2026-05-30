@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::Path;
 
 /// Recreate a single symlink entry in `dst_parent`.
@@ -28,63 +29,91 @@ pub(crate) fn recreate_symlink_entry(
     Ok(())
 }
 
+/// Maximum directory depth for [`copy_dotfiles`].
+///
+/// Staging directories created by the mino CLI are shallow by design, but the
+/// helper runs as root and must defend against unexpectedly deep trees that
+/// could exhaust the stack or consume unbounded time.
+const MAX_COPY_DEPTH: usize = 32;
+
+/// Copy a staging dotfile tree into `dest` using an iterative BFS worklist.
+///
+/// Uses the same iterative pattern as `src/sandbox/fs_copy.rs` to avoid
+/// unbounded recursion. Symlinks are recreated (not followed) matching the
+/// behavior described in [`recreate_symlink_entry`]. Directories nested beyond
+/// [`MAX_COPY_DEPTH`] are skipped with a warning.
 pub(crate) fn copy_dotfiles(src: &Path, dest: &Path) {
-    let entries = match std::fs::read_dir(src) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
+    // Worklist entries carry (src_dir, dest_dir, depth).
+    let mut queue: VecDeque<(std::path::PathBuf, std::path::PathBuf, usize)> =
+        VecDeque::from([(src.to_path_buf(), dest.to_path_buf(), 0)]);
 
-    for entry in entries.flatten() {
-        let src_path = entry.path();
-        let file_name = entry.file_name();
-        let dest_path = dest.join(&file_name);
-
-        // Use symlink_metadata() (not metadata()) to detect symlinks without
-        // following them. Symlinks are recreated, not dereferenced.
-        let metadata = match std::fs::symlink_metadata(&src_path) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!(
-                    "[mino-helper] skipping dotfile (metadata error): {}: {}",
-                    src_path.display(),
-                    e
-                );
-                continue;
-            }
+    while let Some((src_dir, dest_dir, depth)) = queue.pop_front() {
+        let entries = match std::fs::read_dir(&src_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
         };
 
-        if metadata.file_type().is_symlink() {
-            // Recreate symlinks from the staging dir — these are created by the
-            // mino CLI to bridge host directories (e.g., ~/.oh-my-zsh → /Users/X/.oh-my-zsh).
-            // The staging dir is 0700 and CLI-controlled, so these are trusted.
-            #[cfg(unix)]
-            if let Err(e) = recreate_symlink_entry(&src_path, dest, &file_name) {
-                eprintln!(
-                    "[mino-helper] failed to read symlink {}: {}",
-                    src_path.display(),
-                    e
-                );
-            }
-            continue;
-        }
+        for entry in entries.flatten() {
+            let src_path = entry.path();
+            let file_name = entry.file_name();
+            let dest_path = dest_dir.join(&file_name);
 
-        if metadata.is_dir() {
-            if let Err(e) = std::fs::create_dir_all(&dest_path) {
+            // Use symlink_metadata() (not metadata()) to detect symlinks without
+            // following them. Symlinks are recreated, not dereferenced.
+            let metadata = match std::fs::symlink_metadata(&src_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!(
+                        "[mino-helper] skipping dotfile (metadata error): {}: {}",
+                        src_path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            if metadata.file_type().is_symlink() {
+                // Recreate symlinks from the staging dir — these are created by the
+                // mino CLI to bridge host directories (e.g., ~/.oh-my-zsh → /Users/X/.oh-my-zsh).
+                // The staging dir is 0700 and CLI-controlled, so these are trusted.
+                #[cfg(unix)]
+                if let Err(e) = recreate_symlink_entry(&src_path, &dest_dir, &file_name) {
+                    eprintln!(
+                        "[mino-helper] failed to read symlink {}: {}",
+                        src_path.display(),
+                        e
+                    );
+                }
+                continue;
+            }
+
+            if metadata.is_dir() {
+                let next_depth = depth + 1;
+                if next_depth > MAX_COPY_DEPTH {
+                    eprintln!(
+                        "[mino-helper] skipping deeply nested dir (depth {}): {}",
+                        next_depth,
+                        src_path.display()
+                    );
+                    continue;
+                }
+                if let Err(e) = std::fs::create_dir_all(&dest_path) {
+                    eprintln!(
+                        "[mino-helper] failed to create dir {}: {}",
+                        dest_path.display(),
+                        e
+                    );
+                    continue;
+                }
+                queue.push_back((src_path, dest_path, next_depth));
+            } else if let Err(e) = std::fs::copy(&src_path, &dest_path) {
                 eprintln!(
-                    "[mino-helper] failed to create dir {}: {}",
+                    "[mino-helper] failed to copy dotfile {} -> {}: {}",
+                    src_path.display(),
                     dest_path.display(),
                     e
                 );
-                continue;
             }
-            copy_dotfiles(&src_path, &dest_path);
-        } else if let Err(e) = std::fs::copy(&src_path, &dest_path) {
-            eprintln!(
-                "[mino-helper] failed to copy dotfile {} -> {}: {}",
-                src_path.display(),
-                dest_path.display(),
-                e
-            );
         }
     }
 }
@@ -392,5 +421,47 @@ mod tests {
         assert!(dest.path().join(".gitconfig").exists());
         let meta = std::fs::symlink_metadata(dest.path().join(".local-link")).unwrap();
         assert!(meta.file_type().is_symlink());
+    }
+
+    #[test]
+    fn copy_dotfiles_depth_limit_skips_overly_deep_dirs() {
+        // Build a directory tree that is exactly MAX_COPY_DEPTH + 1 levels deep.
+        // The deepest directory should be skipped rather than causing a stack overflow.
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+
+        // Build depth = MAX_COPY_DEPTH + 1 directories: src/d0/d1/.../d{MAX+1}
+        let mut current = src.path().to_path_buf();
+        let too_deep = super::MAX_COPY_DEPTH + 1;
+        for i in 0..=too_deep {
+            current = current.join(format!("d{}", i));
+        }
+        std::fs::create_dir_all(&current).unwrap();
+        // Place a sentinel file at the deepest level.
+        std::fs::write(current.join("deep.txt"), "should be skipped").unwrap();
+
+        // Place a file at a shallow (depth=1) level that should be copied.
+        let shallow_dir = src.path().join("d0");
+        std::fs::write(shallow_dir.join("shallow.txt"), "should be copied").unwrap();
+
+        copy_dotfiles(src.path(), dest.path());
+
+        // The shallow file should be present.
+        assert!(
+            dest.path().join("d0").join("shallow.txt").exists(),
+            "shallow file must be copied"
+        );
+        // The overly-deep sentinel must not appear anywhere under dest.
+        let deep_in_dest = {
+            let mut p = dest.path().to_path_buf();
+            for i in 0..=too_deep {
+                p = p.join(format!("d{}", i));
+            }
+            p.join("deep.txt")
+        };
+        assert!(
+            !deep_in_dest.exists(),
+            "file beyond MAX_COPY_DEPTH must be skipped"
+        );
     }
 }
