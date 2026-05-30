@@ -153,7 +153,7 @@ async fn validate_and_resolve(
 /// Only the newly-added paths are validated — the base `passthrough_paths` were already
 /// checked by `validate_and_resolve`, so revalidating the full list would trigger
 /// redundant `canonicalize` syscalls per path per `SENSITIVE_PATHS` entry.
-fn apply_auto_mounts(config: &Config, home_dir: &PathBuf) -> MinoResult<crate::sandbox::config::SandboxConfig> {
+fn apply_auto_mounts(config: &Config, home_dir: &Path) -> MinoResult<crate::sandbox::config::SandboxConfig> {
     let mut sandbox_config = config.sandbox.clone();
     for dir_name in &config.sandbox.auto_passthrough_dirs {
         let dir = home_dir.join(dir_name);
@@ -359,20 +359,7 @@ async fn spawn_and_monitor(
     let mut process = match platform.spawn(spawn_config).await {
         Ok(p) => p,
         Err(e) => {
-            cleanup_dotfile_dir(&dotfile_dir).await;
-            manager
-                .update_status(&session_name, SessionStatus::Failed)
-                .await?;
-            audit
-                .log(
-                    "session.failed",
-                    &serde_json::json!({
-                        "name": session_name,
-                        "error": e.to_string(),
-                    }),
-                )
-                .await;
-            return Err(e);
+            return handle_spawn_failure(e, &dotfile_dir, &session_name, &manager, &audit).await;
         }
     };
 
@@ -395,14 +382,50 @@ async fn spawn_and_monitor(
     ));
 
     let exit_code = wait_with_signal_forwarding(&mut process).await?;
-    cleanup_dotfile_dir(&dotfile_dir).await;
+    finalize_session(exit_code, &dotfile_dir, &session_name, &manager, &audit, config).await
+}
+
+/// Clean up and record failure when the sandbox fails to spawn.
+async fn handle_spawn_failure(
+    error: MinoError,
+    dotfile_dir: &Option<PathBuf>,
+    session_name: &str,
+    manager: &SessionManager,
+    audit: &AuditLog,
+) -> MinoResult<()> {
+    cleanup_dotfile_dir(dotfile_dir).await;
+    manager
+        .update_status(session_name, SessionStatus::Failed)
+        .await?;
+    audit
+        .log(
+            "session.failed",
+            &serde_json::json!({
+                "name": session_name,
+                "error": error.to_string(),
+            }),
+        )
+        .await;
+    Err(error)
+}
+
+/// Clean up dotfiles, update session status, write audit log, and show any update notification.
+async fn finalize_session(
+    exit_code: i32,
+    dotfile_dir: &Option<PathBuf>,
+    session_name: &str,
+    manager: &SessionManager,
+    audit: &AuditLog,
+    config: &Config,
+) -> MinoResult<()> {
+    cleanup_dotfile_dir(dotfile_dir).await;
 
     let final_status = if exit_code == 0 {
         SessionStatus::Stopped
     } else {
         SessionStatus::Failed
     };
-    manager.update_status(&session_name, final_status).await?;
+    manager.update_status(session_name, final_status).await?;
 
     audit
         .log(
