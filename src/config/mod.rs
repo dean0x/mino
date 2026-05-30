@@ -286,6 +286,25 @@ impl ConfigManager {
         self.editor.set_sandbox_allow_sensitive_paths(paths).await
     }
 
+    /// Write `[sandbox].auto_passthrough_dirs` and `[sandbox].allow_sensitive_paths`
+    /// atomically in a single file operation.
+    ///
+    /// Use this instead of `write_toml_keys` when the sensitive-path setup step
+    /// needs to update both keys simultaneously (e.g. when the user opts in to a
+    /// credential directory that must appear in both lists).
+    pub async fn set_sandbox_passthrough_and_sensitive_paths(
+        &self,
+        passthrough: &[String],
+        sensitive: &[String],
+    ) -> MinoResult<()> {
+        self.editor
+            .write_toml_keys(&[
+                ("auto_passthrough_dirs", passthrough),
+                ("allow_sensitive_paths", sensitive),
+            ])
+            .await
+    }
+
     /// Apply one or more `[sandbox].<key> = [...]` mutations atomically.
     ///
     /// Reads the current config (or starts from an empty document), applies all
@@ -296,7 +315,7 @@ impl ConfigManager {
     /// `set_sandbox_allow_sensitive_paths` ensures that writing both keys
     /// simultaneously (as the sensitive-path setup step requires) is a single
     /// atomic file operation.
-    pub async fn write_toml_keys(&self, mutations: &[(&str, &[String])]) -> MinoResult<()> {
+    pub(crate) async fn write_toml_keys(&self, mutations: &[(&str, &[String])]) -> MinoResult<()> {
         self.editor.write_toml_keys(mutations).await
     }
 
@@ -882,7 +901,7 @@ region = "us-west-2"
 
     #[tokio::test]
     async fn set_both_passthrough_and_allow_sensitive_in_one_call() {
-        // Exercises the shared write_toml_keys path with two mutations in one atomic write.
+        // Exercises the atomic dual-key write via set_sandbox_passthrough_and_sensitive_paths.
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("config.toml");
         let manager = ConfigManager::with_path(path.clone());
@@ -891,10 +910,7 @@ region = "us-west-2"
         let allowlist = vec![".config/gh".to_string()];
 
         manager
-            .write_toml_keys(&[
-                ("auto_passthrough_dirs", &passthrough),
-                ("allow_sensitive_paths", &allowlist),
-            ])
+            .set_sandbox_passthrough_and_sensitive_paths(&passthrough, &allowlist)
             .await
             .unwrap();
 

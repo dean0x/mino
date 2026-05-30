@@ -165,7 +165,7 @@ impl TomlEditor {
     }
 
     // ==========================================================================
-    // Private helpers
+    // Private helpers — see also #[cfg(test)] mod tests below
     // ==========================================================================
 
     /// Read a string array from `[sandbox].<key>`.
@@ -203,5 +203,146 @@ impl TomlEditor {
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
         Ok(Some(values))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ---- write_toml_keys: empty-content branch ----
+
+    #[tokio::test]
+    async fn write_toml_keys_empty_file_is_treated_as_blank_document() {
+        // The `content.trim().is_empty()` guard must produce a fresh DocumentMut
+        // rather than forwarding the empty string to the TOML parser (which would
+        // succeed but return an empty table — behaviorally equivalent, but the
+        // guard exists to avoid any parser quirks with whitespace-only files).
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+
+        // Write a file with only whitespace — triggers the empty-content branch.
+        std::fs::write(&path, "   \n\n  \t  \n").unwrap();
+
+        let editor = TomlEditor::new(path.clone());
+        editor
+            .write_toml_keys(&[("auto_passthrough_dirs", &[".cargo".to_string()])])
+            .await
+            .unwrap();
+
+        let result = editor.read_sandbox_passthrough_dirs().await.unwrap();
+        assert_eq!(result, Some(vec![".cargo".to_string()]));
+    }
+
+    // ---- write_toml_keys: rename-failure cleanup ----
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn write_toml_keys_rename_failure_removes_tempfile() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+
+        // Create a read-only subdirectory for the config file.  `rename` into a
+        // read-only directory fails with EACCES, exercising the cleanup branch.
+        let ro_dir = temp.path().join("ro");
+        std::fs::create_dir(&ro_dir).unwrap();
+
+        // Write an initial config so the file "exists" in a writable sibling dir
+        // that we can point the editor at; we make the *target directory* read-only
+        // after creating the file to force rename to fail.
+        let config_path = ro_dir.join("config.toml");
+        std::fs::write(&config_path, "[container]\nimage = \"test\"\n").unwrap();
+
+        // Make the directory read-only so rename into it fails.
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let editor = TomlEditor::new(config_path.clone());
+        let result = editor
+            .write_toml_keys(&[("auto_passthrough_dirs", &[".cargo".to_string()])])
+            .await;
+
+        // Restore permissions so TempDir cleanup can succeed.
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // The write must fail (EACCES on rename).
+        assert!(result.is_err(), "expected rename failure to propagate as Err");
+
+        // The tempfile must not be left on disk after the cleanup branch runs.
+        let leftover: Vec<_> = std::fs::read_dir(&ro_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".mino-config-tmp-")
+            })
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "tempfile should be cleaned up on rename failure, found: {:?}",
+            leftover
+        );
+    }
+
+    // ---- write_toml_keys: multi-key atomicity ----
+
+    #[tokio::test]
+    async fn write_toml_keys_multiple_keys_in_one_call() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        let editor = TomlEditor::new(path.clone());
+
+        editor
+            .write_toml_keys(&[
+                ("auto_passthrough_dirs", &[".cargo".to_string()]),
+                ("allow_sensitive_paths", &[".config/gh".to_string()]),
+            ])
+            .await
+            .unwrap();
+
+        let passthrough = editor.read_sandbox_passthrough_dirs().await.unwrap();
+        assert_eq!(passthrough, Some(vec![".cargo".to_string()]));
+
+        let sensitive = editor.read_sandbox_allow_sensitive_paths().await.unwrap();
+        assert_eq!(sensitive, Some(vec![".config/gh".to_string()]));
+    }
+
+    // ---- read_sandbox_string_array: missing file ----
+
+    #[tokio::test]
+    async fn read_sandbox_passthrough_dirs_missing_file_returns_none() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("nonexistent.toml");
+        let editor = TomlEditor::new(path);
+
+        let result = editor.read_sandbox_passthrough_dirs().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // ---- read_sandbox_string_array: key absent ----
+
+    #[tokio::test]
+    async fn read_sandbox_passthrough_dirs_absent_key_returns_none() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "[sandbox]\ncache_mode = \"read-write\"\n").unwrap();
+
+        let editor = TomlEditor::new(path);
+        let result = editor.read_sandbox_passthrough_dirs().await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // ---- ensure_config_dir ----
+
+    #[tokio::test]
+    async fn ensure_config_dir_creates_nested_dirs() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("a").join("b").join("config.toml");
+        let editor = TomlEditor::new(path.clone());
+
+        editor.ensure_config_dir().await.unwrap();
+        assert!(path.parent().unwrap().is_dir());
     }
 }

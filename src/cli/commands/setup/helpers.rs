@@ -186,9 +186,35 @@ async fn configure_passthrough(
     }
 
     // Step 7: Write via strategy
+    write_passthrough_result(
+        ctx,
+        manager,
+        label,
+        strategy,
+        &new_passthrough,
+        &to_add,
+        newly_added,
+    )
+    .await
+}
+
+/// Persist the merged passthrough dirs to the config file and report the result.
+///
+/// Extracted from [`configure_passthrough`] to keep the main flow under the
+/// complexity threshold. Handles both `SingleKey` (toolchain) and `DualKey`
+/// (sensitive) write strategies.
+async fn write_passthrough_result(
+    ctx: &UiContext,
+    manager: &ConfigManager,
+    label: &str,
+    strategy: PassthroughStrategy,
+    new_passthrough: &[String],
+    to_add: &[String],
+    newly_added: usize,
+) -> StepResult {
     match strategy {
         PassthroughStrategy::SingleKey => {
-            match manager.set_sandbox_passthrough_dirs(&new_passthrough).await {
+            match manager.set_sandbox_passthrough_dirs(new_passthrough).await {
                 Ok(()) => {
                     ui::step_ok_detail(
                         ctx,
@@ -206,16 +232,13 @@ async fn configure_passthrough(
         PassthroughStrategy::DualKey {
             existing_sensitive: mut new_sensitive,
         } => {
-            for s in &to_add {
+            for s in to_add {
                 if !new_sensitive.contains(s) {
                     new_sensitive.push(s.clone());
                 }
             }
             match manager
-                .write_toml_keys(&[
-                    ("auto_passthrough_dirs", &new_passthrough),
-                    ("allow_sensitive_paths", &new_sensitive),
-                ])
+                .set_sandbox_passthrough_and_sensitive_paths(new_passthrough, &new_sensitive)
                 .await
             {
                 Ok(()) => {
