@@ -16,28 +16,6 @@ pub const DEFAULT_DOTFILES: &[&str] = &[
     ".tmux.conf",
 ];
 
-/// Host directories that were previously auto-mounted read-only.
-///
-/// These are no longer applied by default. To opt in, add to your config:
-/// ```toml
-/// [sandbox]
-/// auto_passthrough_dirs = [".oh-my-zsh", ".nvm", ".zsh"]
-/// ```
-#[allow(dead_code)]
-pub const AUTO_PASSTHROUGH_DIRS: &[&str] = &[".oh-my-zsh", ".nvm", ".zsh"];
-
-/// Host directories that were previously auto-copied into the sandbox home.
-///
-/// These are no longer applied by default. To opt in, add to your config:
-/// ```toml
-/// [sandbox]
-/// auto_copy_dirs = [".claude"]
-/// ```
-///
-/// Note: `.claude` contains `settings.json` (may hold API tokens), agent
-/// definitions, and memory files. Only enable if you understand the implications.
-#[allow(dead_code)]
-pub const AUTO_COPY_DIRS: &[&str] = &[".claude"];
 
 /// Known-risky dotfiles that trigger warnings
 const RISKY_DOTFILES: &[&str] = &[

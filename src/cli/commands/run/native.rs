@@ -10,7 +10,8 @@ use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::network::{resolve_network_mode, NetworkMode, NetworkResolutionInput};
 use crate::sandbox::config::{
-    resolve_sandbox_network, validate_sandbox_paths, DEFAULT_ENV_PASSTHROUGH,
+    resolve_sandbox_network, validate_path_not_sensitive, validate_sandbox_paths,
+    DEFAULT_ENV_PASSTHROUGH,
 };
 use crate::sandbox::dotfiles;
 use crate::sandbox::fs_copy;
@@ -80,20 +81,8 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     .await?;
 
     // Auto-mount user-configured host directories (read-only) when present.
-    // This runs after validate_and_resolve so we re-validate with the augmented paths.
-    let mut sandbox_config = config.sandbox.clone();
-    for dir_name in &config.sandbox.auto_passthrough_dirs {
-        let dir = home_dir.join(dir_name);
-        if dir.is_dir() {
-            tracing::info!(dir = %dir.display(), "auto-mounting passthrough directory");
-            sandbox_config
-                .passthrough_paths
-                .push(dir.to_string_lossy().to_string());
-        }
-    }
-    // Re-validate after augmenting passthrough_paths so auto-mounted dirs
-    // are subject to the same sensitive-path checks as user-specified paths.
-    validate_sandbox_paths(&sandbox_config, &home_dir)?;
+    // Runs after validate_and_resolve so only newly-added entries are re-validated.
+    let sandbox_config = apply_auto_mounts(config, &home_dir)?;
 
     // Phase 4: Spawn sandbox and monitor
     let spawn_config = SandboxSpawnConfig {
@@ -152,6 +141,35 @@ async fn validate_and_resolve(
     validate_sandbox_paths(&config.sandbox, &home_dir)?;
 
     Ok((project_dir, network_mode, home_dir))
+}
+
+/// Augment the sandbox config with auto-passthrough directories that exist on disk.
+///
+/// Iterates `config.sandbox.auto_passthrough_dirs`, resolves each to an absolute path
+/// under the user's home directory, and appends it to `passthrough_paths` when the
+/// directory is present. Each new path is validated for sensitive-path constraints so
+/// auto-mounted dirs are subject to the same security checks as user-specified paths.
+///
+/// Only the newly-added paths are validated — the base `passthrough_paths` were already
+/// checked by `validate_and_resolve`, so revalidating the full list would trigger
+/// redundant `canonicalize` syscalls per path per `SENSITIVE_PATHS` entry.
+fn apply_auto_mounts(config: &Config, home_dir: &PathBuf) -> MinoResult<crate::sandbox::config::SandboxConfig> {
+    let mut sandbox_config = config.sandbox.clone();
+    for dir_name in &config.sandbox.auto_passthrough_dirs {
+        let dir = home_dir.join(dir_name);
+        if dir.is_dir() {
+            tracing::info!(dir = %dir.display(), "auto-mounting passthrough directory");
+            let dir_str = dir.to_string_lossy().to_string();
+            validate_path_not_sensitive(
+                &dir,
+                home_dir,
+                sandbox_config.allow_sensitive,
+                &sandbox_config.allow_sensitive_paths,
+            )?;
+            sandbox_config.passthrough_paths.push(dir_str);
+        }
+    }
+    Ok(sandbox_config)
 }
 
 /// Gather cloud credentials and build the sandbox environment variables.
@@ -515,8 +533,13 @@ fn build_sandbox_env(
         .unwrap_or_else(|| default_passthrough.to_vec());
 
     for key in &passthrough_keys {
-        if let Ok(val) = std::env::var(key) {
-            env.insert((*key).to_string(), val);
+        match std::env::var(key) {
+            Ok(val) => {
+                env.insert((*key).to_string(), val);
+            }
+            Err(_) => {
+                debug!(key = *key, "passthrough env key not set in host — skipping");
+            }
         }
     }
 
