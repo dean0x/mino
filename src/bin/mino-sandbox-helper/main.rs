@@ -93,30 +93,7 @@ fn main() {
                 }
             };
 
-            match request {
-                HelperRequest::Spawn {
-                    session_id,
-                    project_dir,
-                    env,
-                    command,
-                    resource_limits,
-                    acl_paths,
-                    dotfile_dir,
-                    home_dir,
-                    sandbox_user,
-                } => handle_spawn(SpawnParams {
-                    session_id,
-                    project_dir,
-                    env,
-                    command,
-                    resource_limits,
-                    acl_paths,
-                    dotfile_dir,
-                    home_dir,
-                    sandbox_user,
-                }),
-                _ => Err("Expected Spawn request".into()),
-            }
+            SpawnParams::try_from(request).and_then(handle_spawn)
         }
         "cleanup" => dispatch_cleanup(&args),
         "exec" => handle_exec(&args[2..]),

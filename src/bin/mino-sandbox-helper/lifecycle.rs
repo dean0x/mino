@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use mino::sandbox::helper;
-use mino::sandbox::helper_protocol::{AclEntry, ResourceLimitsDto};
+use mino::sandbox::helper_protocol::{AclEntry, HelperRequest, ResourceLimitsDto};
 
 use super::acl::{cleanup_acls, set_acl};
 use super::dotfiles::copy_dotfiles;
@@ -22,6 +22,40 @@ pub(crate) struct SpawnParams {
     pub(crate) dotfile_dir: Option<PathBuf>,
     pub(crate) home_dir: PathBuf,
     pub(crate) sandbox_user: String,
+}
+
+impl TryFrom<HelperRequest> for SpawnParams {
+    type Error = String;
+
+    /// Extract SpawnParams from a `HelperRequest::Spawn` variant.
+    ///
+    /// Returns `Err` if the request is not a `Spawn` variant.
+    fn try_from(request: HelperRequest) -> Result<Self, Self::Error> {
+        match request {
+            HelperRequest::Spawn {
+                session_id,
+                project_dir,
+                env,
+                command,
+                resource_limits,
+                acl_paths,
+                dotfile_dir,
+                home_dir,
+                sandbox_user,
+            } => Ok(SpawnParams {
+                session_id,
+                project_dir,
+                env,
+                command,
+                resource_limits,
+                acl_paths,
+                dotfile_dir,
+                home_dir,
+                sandbox_user,
+            }),
+            _ => Err("Expected Spawn request".into()),
+        }
+    }
 }
 
 /// Pre-fork state: UID/GID resolved and validated, ready to fork.
@@ -182,16 +216,21 @@ pub(crate) fn get_user_ids(username: &str) -> Result<(u32, u32), String> {
     helper::parse_dscl_ids(&stdout).map_err(|e| e.to_string())
 }
 
-/// Recursively set ownership of all files and directories under a path.
+/// Iteratively set ownership of all files and directories under a path.
+///
+/// Uses an explicit stack (BFS worklist) instead of recursion to avoid stack
+/// overflow on pathological inputs — this binary runs as root and must be
+/// robust. Matches the iterative BFS pattern in `src/sandbox/fs_copy.rs`.
 ///
 /// Uses libc::chown (not lchown) and explicitly skips symlinks so that
 /// only regular files and directories are chowned. Errors are logged but non-fatal.
 #[cfg(unix)]
 pub(crate) fn chown_recursive(path: &Path, uid: u32, gid: u32) {
-    fn chown_path(path: &Path, uid: u32, gid: u32) {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
+    use std::collections::VecDeque;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
 
+    fn chown_path(path: &Path, uid: u32, gid: u32) {
         if let Ok(cpath) = CString::new(path.as_os_str().as_bytes()) {
             // SAFETY: valid CString, uid/gid from dscl lookup
             if unsafe { libc::chown(cpath.as_ptr(), uid, gid) } != 0 {
@@ -204,9 +243,17 @@ pub(crate) fn chown_recursive(path: &Path, uid: u32, gid: u32) {
         }
     }
 
-    chown_path(path, uid, gid);
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
+    queue.push_back(path.to_path_buf());
 
-    if let Ok(entries) = std::fs::read_dir(path) {
+    while let Some(dir) = queue.pop_front() {
+        chown_path(&dir, uid, gid);
+
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
         for entry in entries.flatten() {
             let entry_path = entry.path();
             let metadata = match std::fs::symlink_metadata(&entry_path) {
@@ -214,7 +261,8 @@ pub(crate) fn chown_recursive(path: &Path, uid: u32, gid: u32) {
                 Err(_) => continue,
             };
             if metadata.is_dir() {
-                chown_recursive(&entry_path, uid, gid);
+                // Enqueue subdirectory for iterative traversal — no recursion.
+                queue.push_back(entry_path);
             } else if !metadata.file_type().is_symlink() {
                 chown_path(&entry_path, uid, gid);
             }
@@ -308,11 +356,15 @@ pub(crate) fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
         guard.track_acl(acl);
     }
 
-    // Stage: ExecChild — forget the guard (cleanup handed to parent), fork, exec.
+    // Stage: ExecChild — fork, drop privileges, and exec the command.
     //   (Corresponds to SPAWN_STAGES[6]: SpawnStage::ExecChild)
-    // All setup succeeded — hand off cleanup responsibility to the parent
-    // process (which calls cleanup_acls + remove_dir_all after child exits).
-    std::mem::forget(guard);
+    //
+    // IMPORTANT: do NOT forget the guard until fork() succeeds. If fork() fails,
+    // `guard` must still be live so its Drop impl cleans up the home directory and
+    // ACLs. We forget it only inside the parent branch, where parent_process takes
+    // over cleanup responsibility (calling cleanup_acls + remove_dir_all before
+    // process::exit). The child branch is `-> !` and never returns, so Drop is
+    // irrelevant there.
     #[cfg(unix)]
     {
         // SAFETY: fork() duplicates the process. The helper binary is single-threaded
@@ -321,11 +373,13 @@ pub(crate) fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
         // process::exit/exec before returning control.
         let pid = unsafe { libc::fork() };
         if pid < 0 {
+            // fork() failed — guard drops here, cleaning up ACLs and home dir.
             return Err("fork() failed".to_string());
         }
 
         if pid == 0 {
-            // SAFETY: child process after fork — single-threaded, owned resources
+            // SAFETY: child process after fork — single-threaded, owned resources.
+            // child_process is `-> !` so Drop never runs here; no cleanup needed.
             unsafe {
                 child_process(ChildArgs {
                     uid: ready.uid,
@@ -339,6 +393,9 @@ pub(crate) fn handle_spawn(params: SpawnParams) -> Result<i32, String> {
                 });
             }
         } else {
+            // Parent: transfer cleanup responsibility to parent_process, which calls
+            // cleanup_acls + remove_dir_all before process::exit.
+            std::mem::forget(guard);
             // SAFETY: parent process — monitors child, handles signals
             unsafe {
                 parent_process(pid, &acl_paths, &home_dir, &session_id, &sandbox_user);
