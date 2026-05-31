@@ -9,6 +9,19 @@ use crate::session::validate_session_name;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Default PATH for sandbox processes.
+///
+/// On macOS, Homebrew directories are prepended so that tools installed via
+/// Homebrew are reachable inside the sandbox. On other platforms a standard
+/// set of system directories is used.
+#[cfg(target_os = "macos")]
+pub const SANDBOX_PATH: &str =
+    "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// Default PATH for sandbox processes (Linux / non-macOS).
+#[cfg(not(target_os = "macos"))]
+pub const SANDBOX_PATH: &str = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
 /// Convert a home directory path to a UTF-8 string, returning an error
 /// if the path contains non-UTF-8 bytes.
 fn home_dir_to_str(home_dir: &Path) -> MinoResult<&str> {
@@ -29,22 +42,40 @@ fn acl_perms(writable: bool) -> &'static str {
     }
 }
 
-/// Generate `chmod +a` arguments to add an ACL entry for a user.
+/// Generate `chmod -RH +a` arguments to add an ACL entry for a user.
+///
+/// The `-R` flag is required so that newly created files and subdirectories
+/// inside `path` automatically inherit the ACL entry — without it only the
+/// top-level directory receives the permission, and files created later by
+/// the sandbox user would be inaccessible to the agent user.
+///
+/// The `-H` flag (combined with `-R`) causes `chmod` to follow symbolic links
+/// only when they appear as command-line arguments (i.e. `path` itself), not
+/// when encountered during recursive directory traversal. Without `-H`, macOS
+/// `chmod -R` follows every symlink it finds, which could grant the sandbox
+/// user access to targets outside the intended scope.
 ///
 /// Returns the full argument list for `std::process::Command::new("chmod").args(...)`.
 pub fn build_acl_args(path: &str, username: &str, writable: bool) -> Vec<String> {
     vec![
+        "-RH".to_string(),
         "+a".to_string(),
         format!("{} {}", username, acl_perms(writable)),
         path.to_string(),
     ]
 }
 
-/// Generate `chmod -a` arguments to remove an ACL entry for a user.
+/// Generate `chmod -RH -a` arguments to remove an ACL entry for a user.
+///
+/// The `-RH` flags mirror `build_acl_args`: the ACL entry is removed from the
+/// directory tree recursively, following symlinks only at the command-line
+/// level (not during traversal) so that cleanup does not stray outside the
+/// intended path.
 ///
 /// Returns the full argument list for `std::process::Command::new("chmod").args(...)`.
 pub fn build_remove_acl_args(path: &str, username: &str, writable: bool) -> Vec<String> {
     vec![
+        "-RH".to_string(),
         "-a".to_string(),
         format!("{} {}", username, acl_perms(writable)),
         path.to_string(),
@@ -117,15 +148,18 @@ pub fn parse_dscl_ids(output: &str) -> MinoResult<(u32, u32)> {
 /// Unlike `build_child_env`, this does not inherit the original request env.
 /// Instead it provides only the essentials: HOME, USER, PATH, and TERM
 /// (from the host process if available).
+///
+/// **TERM inheritance**: `TERM` is read from the root process environment
+/// (the helper runs as root via `sudo`). This is intentional — `TERM` is not
+/// a credential and `sudo` preserves it by design. Forwarding it ensures the
+/// sandboxed shell receives correct terminal type information for interactive
+/// sessions (e.g. colour support, readline behaviour).
 pub fn build_exec_env(home_dir: &Path, sandbox_user: &str) -> MinoResult<HashMap<String, String>> {
     let home = home_dir_to_str(home_dir)?;
     let mut env = HashMap::new();
     env.insert("HOME".to_string(), home.to_string());
     env.insert("USER".to_string(), sandbox_user.to_string());
-    env.insert(
-        "PATH".to_string(),
-        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
-    );
+    env.insert("PATH".to_string(), SANDBOX_PATH.to_string());
     if let Ok(term) = std::env::var("TERM") {
         env.insert("TERM".to_string(), term);
     }
@@ -142,25 +176,38 @@ mod tests {
     #[test]
     fn acl_args_readonly() {
         let args = build_acl_args("/tmp/project", "_mino_agent", false);
-        assert_eq!(args[0], "+a");
-        assert!(args[1].contains("_mino_agent"));
-        assert!(args[1].contains("read,execute"));
-        assert!(!args[1].contains("write"));
-        assert_eq!(args[2], "/tmp/project");
+        assert_eq!(args[0], "-RH");
+        assert_eq!(args[1], "+a");
+        assert!(args[2].contains("_mino_agent"));
+        assert!(args[2].contains("read,execute"));
+        assert!(!args[2].contains("write"));
+        assert_eq!(args[3], "/tmp/project");
     }
 
     #[test]
     fn acl_args_writable() {
         let args = build_acl_args("/tmp/project", "_mino_agent", true);
-        assert_eq!(args[0], "+a");
-        assert!(args[1].contains("read,write,execute"));
-        assert_eq!(args[2], "/tmp/project");
+        assert_eq!(args[0], "-RH");
+        assert_eq!(args[1], "+a");
+        assert!(args[2].contains("read,write,execute"));
+        assert_eq!(args[3], "/tmp/project");
     }
 
     #[test]
     fn acl_args_custom_username() {
         let args = build_acl_args("/tmp/p", "custom-user", false);
-        assert!(args[1].starts_with("custom-user "));
+        assert_eq!(args[0], "-RH");
+        assert!(args[2].starts_with("custom-user "));
+    }
+
+    #[test]
+    fn acl_args_no_symlink_follow_during_traversal() {
+        // -RH must appear as a single combined flag, not "-R" alone.
+        // This ensures macOS chmod does not follow symlinks encountered
+        // during recursive directory traversal (only the command-line path).
+        let args = build_acl_args("/tmp/project", "_mino_agent", false);
+        assert_eq!(args[0], "-RH", "must use -RH, not bare -R");
+        assert!(!args.iter().any(|a| a == "-R"), "bare -R must not appear");
     }
 
     // ---- build_remove_acl_args tests ----
@@ -168,16 +215,25 @@ mod tests {
     #[test]
     fn remove_acl_args_readonly() {
         let args = build_remove_acl_args("/tmp/project", "_mino_agent", false);
-        assert_eq!(args[0], "-a");
-        assert!(args[1].contains("read,execute"));
-        assert!(!args[1].contains("write"));
+        assert_eq!(args[0], "-RH");
+        assert_eq!(args[1], "-a");
+        assert!(args[2].contains("read,execute"));
+        assert!(!args[2].contains("write"));
     }
 
     #[test]
     fn remove_acl_args_writable() {
         let args = build_remove_acl_args("/tmp/project", "_mino_agent", true);
-        assert_eq!(args[0], "-a");
-        assert!(args[1].contains("read,write,execute"));
+        assert_eq!(args[0], "-RH");
+        assert_eq!(args[1], "-a");
+        assert!(args[2].contains("read,write,execute"));
+    }
+
+    #[test]
+    fn remove_acl_args_no_symlink_follow_during_traversal() {
+        let args = build_remove_acl_args("/tmp/project", "_mino_agent", true);
+        assert_eq!(args[0], "-RH", "must use -RH, not bare -R");
+        assert!(!args.iter().any(|a| a == "-R"), "bare -R must not appear");
     }
 
     // ---- build_pf_cleanup_args tests ----
@@ -299,7 +355,10 @@ mod tests {
         let env = build_exec_env(&PathBuf::from("/home/agent"), "_mino_agent").unwrap();
         assert_eq!(env.get("HOME").unwrap(), "/home/agent");
         assert_eq!(env.get("USER").unwrap(), "_mino_agent");
+        // /usr/bin is present on all platforms; /opt/homebrew/bin only on macOS.
         assert!(env.get("PATH").unwrap().contains("/usr/bin"));
+        #[cfg(target_os = "macos")]
+        assert!(env.get("PATH").unwrap().contains("/opt/homebrew/bin"));
     }
 
     #[test]

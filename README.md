@@ -140,6 +140,7 @@ mino run [OPTIONS] [-- COMMAND...]
 | `--network <MODE>` | Network mode: `bridge` (default), `host`, `none` |
 | `--network-allow <RULES>` | Allowlisted destinations (`host:port`, comma-separated). Implies bridge + iptables |
 | `--network-preset <PRESET>` | Network preset: `dev`, `registries` (conflicts with `--network-allow`) |
+| `--runtime <MODE>` | Runtime mode: `container` (default), `native` |
 
 **Layer precedence**: `--layers` flag > `--image` flag > `MINO_LAYERS` env var > config `container.layers` > interactive selection > config `container.image`.
 
@@ -298,7 +299,7 @@ Alternatively, add `eval "$(mino completions bash)"` or `eval "$(mino completion
 
 ## Configuration
 
-Configuration is stored at `~/.config/mino/config.toml`:
+Configuration is stored at `~/.config/mino/config.toml` on Linux and `~/Library/Application Support/mino/config.toml` on macOS:
 
 ```toml
 [general]
@@ -306,6 +307,7 @@ verbose = false
 log_format = "text"    # "text" or "json"
 audit_log = true       # Security events written to state dir
 update_check = true    # Check for new versions (once/24h)
+runtime = "container"  # "container", "native", or "auto"
 
 [vm]
 name = "mino"
@@ -362,6 +364,7 @@ general.verbose
 general.log_format
 general.audit_log
 general.update_check
+general.runtime
 vm.name
 vm.distro
 container.image
@@ -381,7 +384,24 @@ credentials.azure.subscription
 credentials.azure.tenant
 session.shell
 session.auto_cleanup_hours
+sandbox.sandbox_user
+sandbox.max_memory_mb
+sandbox.max_processes
+sandbox.max_cpu_seconds
+sandbox.max_file_size_mb
+sandbox.cache_mode
+sandbox.allow_sensitive
+sandbox.allow_sensitive_paths
+sandbox.network
+sandbox.network_allow
+sandbox.network_preset
+sandbox.env_passthrough
+sandbox.auto_passthrough_dirs
+sandbox.auto_copy_dirs
 ```
+
+> **Note**: Most `[sandbox]` fields are managed by `mino setup --native` or edited directly
+> in the config file. `mino config set sandbox.*` is supported for the scalar fields listed above.
 
 ## Dependency Caching
 
@@ -515,6 +535,246 @@ Or via CLI: `mino config set container.network_allow "github.com:443,npmjs.org:4
 - **DNS resolution at rule time**: iptables resolves hostnames to IPs when rules are inserted. CDN hosts with rotating IPs may become unreachable during long sessions.
 - **iptables required**: The container image must include iptables. Fedora 43 and mino-base include it by default.
 - **capsh required**: `--network-allow` and `--network-preset` modes require `capsh` (from `libcap`) in the container image to drop `CAP_NET_ADMIN` after iptables setup. The mino-base image includes it.
+
+## Sandbox Modes
+
+Mino supports two isolation strategies. Choose based on your platform and how much startup
+overhead you can accept.
+
+### Overview
+
+| | Container | Native |
+|---|---|---|
+| **Mechanism** | Rootless Podman container | macOS: dedicated system user + pf firewall |
+| **Startup time** | 2–4 s (image pull cached) | < 0.5 s |
+| **Platform** | macOS (via OrbStack), Linux | macOS only (Linux coming) |
+| **Root required** | No | No (sudoers grants one command) |
+| **Filesystem isolation** | Container image | ACLs on project + dotfile dirs |
+| **Network isolation** | iptables in container | pf + SOCKS5 proxy |
+| **Language toolchains** | Layer system (`--layers rust`) | Host tools (auto-detected) |
+
+### When to Use Native vs Container
+
+**Use native when:**
+- You want near-instant sandbox startup (< 0.5 s vs 2–4 s)
+- You use macOS and already have your toolchain installed on the host
+- You are running Claude Code interactively and tolerate less filesystem isolation
+
+**Use container when:**
+- You need strict filesystem isolation (read-only root, immutable image)
+- You need reproducible toolchain versions across machines
+- You are on Linux or prefer Podman-based isolation
+
+### Platform Support
+
+| Platform | Container | Native |
+|---|---|---|
+| macOS (Apple Silicon, x86) | via OrbStack | supported |
+| Linux | direct Podman | experimental |
+
+### Setup (macOS Native)
+
+```bash
+# One-time setup: creates _mino_agent system user, installs helper binary,
+# configures sudoers and pf anchor
+mino setup --native
+
+# Verify setup is complete
+mino setup --native --check
+```
+
+The setup creates:
+- System user `_mino_agent` (UID in system range, no login shell)
+- `/usr/local/bin/mino-sandbox-helper` (root-owned, sudoers-controlled)
+- `/etc/sudoers.d/mino` (grants your user passwordless sudo for the helper only)
+- `/etc/pf.anchors/mino` (packet filter anchor for network isolation)
+
+### Running (Native Mode)
+
+When no command is specified, the native sandbox defaults to `/bin/zsh` on macOS and
+`/bin/bash` on Linux. The `session.shell` config key applies only to container mode and
+is ignored by the native sandbox.
+
+```bash
+# Select native mode via CLI flag
+mino run --runtime native -- claude
+```
+
+```toml
+# Or set as default in config (avoids repeating the flag)
+# ~/.config/mino/config.toml
+[general]
+runtime = "native"  # "container" (default), "native", or "auto"
+```
+
+```bash
+# With network allow (pf-based, not iptables)
+mino run --runtime native --network-allow github.com:443 -- claude
+
+# Fully offline
+mino run --runtime native --network none -- claude
+```
+
+### Configuration
+
+All native sandbox settings live under `[sandbox]` in the mino config file
+(`~/.config/mino/config.toml` on Linux, `~/Library/Application Support/mino/config.toml` on macOS).
+Network and env fields fall back to `[container]` values when not set in `[sandbox]`.
+
+```toml
+[sandbox]
+# Dedicated macOS system user for process isolation
+sandbox_user = "_mino_agent"          # default
+
+# Resource limits
+max_memory_mb = 4096                  # 0 = no limit
+max_processes = 256
+max_cpu_seconds = 0                   # 0 = no limit
+max_file_size_mb = 0                  # max size of a single file, 0 = no limit
+
+# Cache access mode for build caches mounted from the host
+# "read-only" (default), "read-write", or "none"
+cache_mode = "read-only"
+
+# Allow mounting paths from the built-in sensitive blocklist
+# (e.g. ~/.ssh, ~/.aws). Leave false unless you have a specific reason.
+allow_sensitive = false
+
+# Network isolation (falls back to [container] values if not set)
+network = "bridge"                    # host | none | bridge
+network_allow = ["github.com:443"]    # implies bridge + pf filter
+# network_preset = "dev"              # preset allowlist
+
+# Environment passthrough: which host env vars the sandbox inherits
+# Default: ["ANTHROPIC_API_KEY", "LANG", "LC_ALL", "TZ", "TERM"]
+# Add other AI provider keys here:
+# env_passthrough = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LANG", "LC_ALL", "TZ", "TERM"]
+
+# Explicit env vars injected into every sandbox session
+# (falls back to [container].env if not set)
+[sandbox.env]
+# MY_VAR = "my_value"
+
+# Additional read-only paths (absolute paths only, not in sensitive list)
+# passthrough_paths = ["/usr/local/share/my-data"]
+
+# Additional writable paths
+# writable_paths = ["/tmp/my-workspace"]
+
+# Dotfiles to copy from your host $HOME into the sandbox home
+# (sanitized: .gitconfig has credential sections stripped)
+# dotfiles = [".vimrc", ".bashrc"]
+
+# Directories to mount read-only as symlinks (opt-in, empty by default)
+# Detected and populated by `mino setup --native` (toolchain auto-detection)
+# auto_passthrough_dirs = [".cargo", ".nvm", ".pyenv"]
+
+# Specific sensitive paths to allow despite the blocklist.
+# Narrower than allow_sensitive = true — only the listed paths are permitted.
+# Written by `mino setup --native` when you opt in to .config/gh, .docker, etc.
+# allow_sensitive_paths = [".config/gh", ".docker"]
+
+# Directories to copy (mutable sandbox-local copy, opt-in)
+# .claude uses an allowlist (CLAUDE.md, settings.json, agents, commands, skills)
+# auto_copy_dirs = [".claude"]
+```
+
+### Toolchain Auto-Detection
+
+`mino setup --native` detects installed toolchain directories and offers to add them to
+`auto_passthrough_dirs` so shell init files can source them without errors like:
+
+```
+/bin/zsh: /Users/you/.cargo/env: no such file or directory
+```
+
+**Safe passthrough (auto-accepted in non-interactive / CI):**
+Rust (`.cargo`, `.rustup`), Node.js (`.nvm`, `.npm`, `.yarn`, `.volta`, `.bun`, `.pnpm`),
+Python (`.pyenv`, `.pipx`, `.poetry`, `.uv`), Ruby (`.rbenv`, `.gem`), JVM (`.sdkman`, `.gradle`, `.m2`),
+Go (`.go`), Haskell (`.ghcup`, `.cabal`, `.stack`), shell plugins (`.oh-my-zsh`, `.fzf`, `.starship`), and more.
+
+**Credential directories (interactive-only, opt-in with warning):**
+`.config/gh` (GitHub CLI token), `.docker` (registry auth), `.kube` (Kubernetes config).
+These are added to both `auto_passthrough_dirs` AND `allow_sensitive_paths` so
+`SandboxConfig` validation allows them. `--yes` / non-interactive mode **never**
+auto-accepts these — you must run setup interactively to opt in.
+
+**Strictly blocked directories (never offered by detection):**
+`.ssh`, `.aws`, `.azure`, `.gnupg`, `.config/gcloud`, `.netrc` — these are pure
+credential stores and remain on the `SENSITIVE_PATHS` blocklist. They can only
+be unblocked by setting the nuclear `allow_sensitive = true` flag, which
+bypasses the entire blocklist (power-user escape hatch, not recommended).
+
+**`.claude` auto-copy (interactive confirm):**
+If `~/.claude` exists, setup offers to add it to `auto_copy_dirs`. Only the allowlisted
+subset is copied (CLAUDE.md, settings.json, agents, commands, skills, current project memory).
+
+**Opting out per-directory:** in the interactive multiselect you can deselect any
+detected entry with the space bar before confirming. Declined entries are not
+written to the config. After installing a new toolchain, simply re-run:
+
+```bash
+mino setup --native
+```
+
+Setup always runs detection and merges any newly-detected entries into the
+existing `auto_passthrough_dirs` list — already-present entries are left
+untouched. To permanently remove an entry you previously accepted, edit the
+config file directly. The `.claude` auto-copy step is skipped outright if
+`auto_copy_dirs` is already non-empty.
+
+### Security Model
+
+**What the native sandbox does:**
+- Runs the agent process as `_mino_agent` (unprivileged system user, no home, no login)
+- ACLs on the project directory allow `_mino_agent` read-write access
+- ACLs on passthrough paths allow read-only access
+- pf anchor blocks all outbound traffic except the allowlist
+- SOCKS5 proxy for `--network-allow` rules (no iptables required on host)
+- Home directory created fresh in `/tmp/mino-home-<session-id>` on each run, removed after exit
+
+**What it does NOT do:**
+- Syscall filtering (no seccomp / sandbox-exec)
+- Filesystem root isolation (host filesystem is visible via path traversal)
+- Memory isolation beyond OS-level user boundaries
+- Network namespace isolation (pf rules only)
+
+**Threat model:** The sandbox assumes the agent is non-malicious but potentially buggy or
+prompt-injected. It limits the blast radius to the project directory and the agent's session
+home. It does NOT defend against a fully adversarial process with local exploit capabilities.
+
+### Troubleshooting
+
+**`mino: helper binary not found`**
+Run `mino setup --native` to install the helper binary.
+
+**`Operation not permitted` on startup**
+The helper binary may have wrong ownership. Re-run `mino setup --native`.
+
+**`ACL setup failed on home dir`**
+Check that `_mino_agent` user exists: `dscl . -read /Users/_mino_agent`.
+Re-run `mino setup --native` if the user is missing.
+
+**`pf anchor not loaded`**
+The pf anchor is loaded on each run. If pf is not enabled on your system:
+`sudo pfctl -e` to enable, then re-run.
+
+**Sandbox process can access host files**
+Native mode uses ACLs, not filesystem namespaces. The agent runs as `_mino_agent`
+which cannot write to your home directory, but can read world-readable files.
+Use container mode for strict read-only filesystem isolation.
+
+**`mino setup --check` reports issues but setup completed**
+Re-run `mino setup --native` to repair. Some steps are idempotent.
+
+### Uninstall
+
+```bash
+# Remove all mino native sandbox components
+mino setup --native --uninstall
+
+# Removes: _mino_agent user, helper binary, sudoers entry, pf anchor
+```
 
 ## Container Images
 
@@ -673,7 +933,9 @@ Credentials are cached with TTL awareness - Mino automatically refreshes expired
 ## State Storage
 
 ```
-~/.config/mino/config.toml           # User configuration
+# User configuration (platform-specific):
+#   Linux:  ~/.config/mino/config.toml
+#   macOS:  ~/Library/Application Support/mino/config.toml
 
 # State directory (platform-specific):
 #   Linux:  ~/.local/state/mino/

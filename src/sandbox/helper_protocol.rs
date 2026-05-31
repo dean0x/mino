@@ -1,7 +1,12 @@
 //! Helper protocol types shared between mino CLI and mino-sandbox-helper
 //!
 //! Communication: mino writes a JSON request to a temp file, passes the path
-//! as a CLI arg. Helper writes JSON response to stdout.
+//! as a CLI arg.
+//!
+//! Response protocol by action:
+//! - `spawn`: helper exits 0 on success, non-zero on failure. No JSON emitted.
+//! - `cleanup`: helper exits 0 on success, non-zero on failure. No JSON emitted.
+//! - `health-check`: helper writes a JSON `HelperResponse::Healthy` to stdout.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -45,6 +50,12 @@ fn default_sandbox_user() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AclEntry {
     pub path: PathBuf,
+    /// Whether the ACL grants write access (true) or read-only access (false).
+    ///
+    /// This flag is recorded at `set_acl` time and must be passed unchanged to
+    /// `remove_acl`. Each path receives either a read-write OR a read-only ACL,
+    /// never both. Passing the wrong variant to `remove_acl` would issue a
+    /// `chmod -a` with the wrong rule string, leaving the ACL in place.
     pub writable: bool,
 }
 
@@ -71,14 +82,13 @@ impl From<&crate::sandbox::resource_limits::ResourceLimits> for ResourceLimitsDt
 }
 
 /// Response from the helper
+///
+/// Only emitted as JSON on stdout for the `health-check` action.
+/// Spawn and cleanup communicate success/failure via exit code only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub enum HelperResponse {
-    /// Process spawned successfully
-    Spawned { pid: u32 },
-    /// Cleanup completed
-    Cleaned,
-    /// Health check passed
+    /// Health check passed — the only variant emitted as JSON to stdout
     Healthy { version: String },
     /// Error occurred
     Error { message: String },
@@ -192,25 +202,6 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         let parsed: HelperRequest = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, HelperRequest::HealthCheck));
-    }
-
-    #[test]
-    fn spawned_response_roundtrip() {
-        let response = HelperResponse::Spawned { pid: 12345 };
-        let json = serde_json::to_string(&response).unwrap();
-        let parsed: HelperResponse = serde_json::from_str(&json).unwrap();
-        match parsed {
-            HelperResponse::Spawned { pid } => assert_eq!(pid, 12345),
-            _ => panic!("expected Spawned variant"),
-        }
-    }
-
-    #[test]
-    fn cleaned_response_roundtrip() {
-        let response = HelperResponse::Cleaned;
-        let json = serde_json::to_string(&response).unwrap();
-        let parsed: HelperResponse = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, HelperResponse::Cleaned));
     }
 
     #[test]

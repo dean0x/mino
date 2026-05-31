@@ -9,8 +9,12 @@ use crate::cli::args::RunArgs;
 use crate::config::Config;
 use crate::error::{MinoError, MinoResult};
 use crate::network::{resolve_network_mode, NetworkMode, NetworkResolutionInput};
-use crate::sandbox::config::validate_sandbox_paths;
+use crate::sandbox::config::{
+    resolve_sandbox_network, validate_path_not_sensitive, validate_sandbox_paths,
+    SandboxConfig, DEFAULT_ENV_PASSTHROUGH,
+};
 use crate::sandbox::dotfiles;
+use crate::sandbox::fs_copy;
 use crate::sandbox::native::{create_sandbox_platform, SandboxPlatform, SandboxSpawnConfig};
 use crate::sandbox::process::SandboxProcess;
 use crate::session::{Session, SessionManager, SessionStatus};
@@ -44,7 +48,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
 
     // Phase 1: Validate prerequisites and resolve configuration
     let platform = create_sandbox_platform()?;
-    let (project_dir, network_mode) =
+    let (project_dir, network_mode, home_dir) =
         validate_and_resolve(&args, config, &*platform, &mut spinner).await?;
 
     // Phase 2: Gather credentials and build environment
@@ -55,9 +59,14 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     let mut env = cred_result.env;
     let (_proxy_handle, _denial_task) =
         start_proxy_if_needed(&network_mode, &mut env, config, &mut spinner).await?;
-    let dotfile_dir = prepare_dotfiles(config).await?;
+    let dotfile_dir = prepare_dotfiles(config, &project_dir).await?;
     let command = if args.command.is_empty() {
-        vec!["/bin/bash".to_string()]
+        let shell = if cfg!(target_os = "macos") {
+            "/bin/zsh"
+        } else {
+            "/bin/bash"
+        };
+        vec![shell.to_string()]
     } else {
         args.command.clone()
     };
@@ -71,6 +80,10 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     )
     .await?;
 
+    // Auto-mount user-configured host directories (read-only) when present.
+    // Runs after validate_and_resolve so only newly-added entries are re-validated.
+    let sandbox_config = apply_auto_mounts(config, &home_dir)?;
+
     // Phase 4: Spawn sandbox and monitor
     let spawn_config = SandboxSpawnConfig {
         session_id: session_ctx.session_name.clone(),
@@ -78,7 +91,7 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
         command,
         env,
         network_mode,
-        sandbox_config: config.sandbox.clone(),
+        sandbox_config,
         dotfile_dir: dotfile_dir.clone(),
         interactive: !args.detach,
     };
@@ -98,13 +111,13 @@ pub async fn execute_native(args: RunArgs, config: &Config) -> MinoResult<()> {
     .await
 }
 
-/// Validate native sandbox prerequisites and resolve project dir + network mode.
+/// Validate native sandbox prerequisites and resolve project dir, network mode, and home dir.
 async fn validate_and_resolve(
     args: &RunArgs,
     config: &Config,
     platform: &dyn SandboxPlatform,
     _spinner: &mut TaskSpinner,
-) -> MinoResult<(PathBuf, NetworkMode)> {
+) -> MinoResult<(PathBuf, NetworkMode, PathBuf)> {
     platform.validate_setup().await?;
     validate_native_flags(args)?;
 
@@ -112,7 +125,7 @@ async fn validate_and_resolve(
     debug!("Project directory: {}", project_dir.display());
 
     let (cfg_network, cfg_allow, cfg_preset) =
-        crate::sandbox::config::resolve_sandbox_network(&config.sandbox, &config.container);
+        resolve_sandbox_network(&config.sandbox, &config.container);
     let network_mode = resolve_network_mode(&NetworkResolutionInput {
         cli_network: args.network.as_deref(),
         cli_allow_rules: &args.network_allow,
@@ -123,10 +136,40 @@ async fn validate_and_resolve(
     })?;
     debug!("Network mode: {:?}", network_mode);
 
-    let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| MinoError::User("Cannot determine home directory".to_string()))?;
     validate_sandbox_paths(&config.sandbox, &home_dir)?;
 
-    Ok((project_dir, network_mode))
+    Ok((project_dir, network_mode, home_dir))
+}
+
+/// Augment the sandbox config with auto-passthrough directories that exist on disk.
+///
+/// Iterates `config.sandbox.auto_passthrough_dirs`, resolves each to an absolute path
+/// under the user's home directory, and appends it to `passthrough_paths` when the
+/// directory is present. Each new path is validated for sensitive-path constraints so
+/// auto-mounted dirs are subject to the same security checks as user-specified paths.
+///
+/// Only the newly-added paths are validated — the base `passthrough_paths` were already
+/// checked by `validate_and_resolve`, so revalidating the full list would trigger
+/// redundant `canonicalize` syscalls per path per `SENSITIVE_PATHS` entry.
+fn apply_auto_mounts(config: &Config, home_dir: &Path) -> MinoResult<SandboxConfig> {
+    let mut sandbox_config = config.sandbox.clone();
+    for dir_name in &config.sandbox.auto_passthrough_dirs {
+        let dir = home_dir.join(dir_name);
+        if dir.is_dir() {
+            tracing::info!(dir = %dir.display(), "auto-mounting passthrough directory");
+            let dir_str = dir.to_string_lossy().to_string();
+            validate_path_not_sensitive(
+                &dir,
+                home_dir,
+                sandbox_config.allow_sensitive,
+                &sandbox_config.allow_sensitive_paths,
+            )?;
+            sandbox_config.passthrough_paths.push(dir_str);
+        }
+    }
+    Ok(sandbox_config)
 }
 
 /// Gather cloud credentials and build the sandbox environment variables.
@@ -311,25 +354,12 @@ async fn spawn_and_monitor(
         audit,
     } = session_ctx;
 
-    spinner.message("Starting native sandbox...");
+    spinner.message("Starting native sandbox (setting permissions)...");
 
     let mut process = match platform.spawn(spawn_config).await {
         Ok(p) => p,
         Err(e) => {
-            cleanup_dotfile_dir(&dotfile_dir).await;
-            manager
-                .update_status(&session_name, SessionStatus::Failed)
-                .await?;
-            audit
-                .log(
-                    "session.failed",
-                    &serde_json::json!({
-                        "name": session_name,
-                        "error": e.to_string(),
-                    }),
-                )
-                .await;
-            return Err(e);
+            return handle_spawn_failure(e, &dotfile_dir, &session_name, &manager, &audit).await;
         }
     };
 
@@ -352,14 +382,50 @@ async fn spawn_and_monitor(
     ));
 
     let exit_code = wait_with_signal_forwarding(&mut process).await?;
-    cleanup_dotfile_dir(&dotfile_dir).await;
+    finalize_session(exit_code, &dotfile_dir, &session_name, &manager, &audit, config).await
+}
+
+/// Clean up and record failure when the sandbox fails to spawn.
+async fn handle_spawn_failure(
+    error: MinoError,
+    dotfile_dir: &Option<PathBuf>,
+    session_name: &str,
+    manager: &SessionManager,
+    audit: &AuditLog,
+) -> MinoResult<()> {
+    cleanup_dotfile_dir(dotfile_dir).await;
+    manager
+        .update_status(session_name, SessionStatus::Failed)
+        .await?;
+    audit
+        .log(
+            "session.failed",
+            &serde_json::json!({
+                "name": session_name,
+                "error": error.to_string(),
+            }),
+        )
+        .await;
+    Err(error)
+}
+
+/// Clean up dotfiles, update session status, write audit log, and show any update notification.
+async fn finalize_session(
+    exit_code: i32,
+    dotfile_dir: &Option<PathBuf>,
+    session_name: &str,
+    manager: &SessionManager,
+    audit: &AuditLog,
+    config: &Config,
+) -> MinoResult<()> {
+    cleanup_dotfile_dir(dotfile_dir).await;
 
     let final_status = if exit_code == 0 {
         SessionStatus::Stopped
     } else {
         SessionStatus::Failed
     };
-    manager.update_status(&session_name, final_status).await?;
+    manager.update_status(session_name, final_status).await?;
 
     audit
         .log(
@@ -456,7 +522,14 @@ fn validate_native_flags(args: &RunArgs) -> MinoResult<()> {
     Ok(())
 }
 
-/// Build sandbox environment variables
+/// Build sandbox environment variables.
+///
+/// Resolution order (last writer wins):
+/// 1. Fixed sandbox identity vars (`HOME`, `USER`, `MINO_SANDBOX`, `PATH`)
+/// 2. Host env passthrough: keys from `sandbox.env_passthrough`
+///    (falls back to [`crate::sandbox::config::DEFAULT_ENV_PASSTHROUGH`] when unset)
+/// 3. Credential env vars (from credential providers)
+/// 4. Explicit env vars: `sandbox.env` if set, else `container.env`
 fn build_sandbox_env(
     config: &Config,
     credentials: &HashMap<String, String>,
@@ -470,17 +543,32 @@ fn build_sandbox_env(
     env.insert("USER".to_string(), config.sandbox.sandbox_user.clone());
     env.insert("MINO_SANDBOX".to_string(), "native".to_string());
 
-    // Inherit locale/terminal from host
-    for key in &["LANG", "LC_ALL", "TZ", "TERM"] {
-        if let Ok(val) = std::env::var(key) {
-            env.insert(key.to_string(), val);
+    // Inherit keys from the host environment. Uses the configured list when set,
+    // or the default list (locale vars + ANTHROPIC_API_KEY).
+    // Users can add other provider keys (OPENAI_API_KEY, GROQ_API_KEY, etc.) via
+    // `sandbox.env_passthrough` in config without requiring a code change.
+    let passthrough_keys: Vec<&str> = config
+        .sandbox
+        .env_passthrough
+        .as_deref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_else(|| DEFAULT_ENV_PASSTHROUGH.to_vec());
+
+    for key in &passthrough_keys {
+        match std::env::var(key) {
+            Ok(val) => {
+                env.insert((*key).to_string(), val);
+            }
+            Err(_) => {
+                debug!(key = *key, "passthrough env key not set in host — skipping");
+            }
         }
     }
 
-    // PATH: system paths (toolchain paths added later based on passthrough mounts)
+    // PATH: Homebrew + system paths (toolchain paths added later based on passthrough mounts)
     env.insert(
         "PATH".to_string(),
-        "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+        crate::sandbox::helper::SANDBOX_PATH.to_string(),
     );
 
     // Credential env vars
@@ -528,9 +616,7 @@ async fn cleanup_dotfile_dir(dir: &Option<PathBuf>) {
 /// Signal handling is integration-tested; the individual components
 /// (`terminate`, `wait`) are unit-tested independently in the process module.
 #[cfg(unix)]
-async fn wait_with_signal_forwarding(
-    process: &mut crate::sandbox::process::SandboxProcess,
-) -> MinoResult<i32> {
+async fn wait_with_signal_forwarding(process: &mut SandboxProcess) -> MinoResult<i32> {
     use tokio::signal::unix::{signal, SignalKind};
 
     let mut sigint = signal(SignalKind::interrupt())
@@ -558,9 +644,7 @@ async fn wait_with_signal_forwarding(
 
 /// Non-Unix fallback: just wait for the process.
 #[cfg(not(unix))]
-async fn wait_with_signal_forwarding(
-    process: &mut crate::sandbox::process::SandboxProcess,
-) -> MinoResult<i32> {
+async fn wait_with_signal_forwarding(process: &mut SandboxProcess) -> MinoResult<i32> {
     process.wait().await
 }
 
@@ -568,7 +652,7 @@ async fn wait_with_signal_forwarding(
 fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
-    for name in crate::sandbox::dotfiles::DEFAULT_DOTFILES
+    for name in dotfiles::DEFAULT_DOTFILES
         .iter()
         .map(|s| s.to_string())
         .chain(config_dotfiles.iter().cloned())
@@ -580,29 +664,17 @@ fn collect_dotfile_names(config_dotfiles: &[String]) -> Vec<String> {
     result
 }
 
-/// Prepare dotfiles for the sandbox by copying and sanitizing them into a temp dir
-async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
-    let home_dir = match dirs::home_dir() {
-        Some(h) => h,
-        None => return Ok(None),
-    };
-
-    let tmp_dir = std::env::temp_dir().join(format!("mino-dotfiles-{}", std::process::id()));
-    tokio::fs::create_dir_all(&tmp_dir)
-        .await
-        .map_err(|e| MinoError::io("creating dotfile temp dir", e))?;
-
-    // Restrict permissions so other users cannot replace files with symlinks
-    // between creation and the helper binary's copy (TOCTOU hardening).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o700);
-        std::fs::set_permissions(&tmp_dir, perms)
-            .map_err(|e| MinoError::io("setting dotfile temp dir permissions", e))?;
-    }
-
-    for dotfile in collect_dotfile_names(&config.sandbox.dotfiles) {
+/// Stage sanitized dotfiles from `home_dir` into `staging`.
+///
+/// Reads each dotfile, strips secrets via [`dotfiles::prepare_dotfile_content`],
+/// and writes the cleaned content. Warns on known-risky files. Skips files that
+/// do not exist on the host.
+async fn write_sanitized_dotfiles(
+    staging: PathBuf,
+    home_dir: PathBuf,
+    dotfile_names: Vec<String>,
+) -> MinoResult<()> {
+    for dotfile in dotfile_names {
         if dotfiles::is_risky_dotfile(&dotfile) {
             tracing::warn!(
                 "{} may contain auth tokens. Secrets will be accessible to the agent.",
@@ -619,7 +691,7 @@ async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
             .map_err(|e| MinoError::io(format!("reading {}", dotfile), e))?;
         let cleaned = dotfiles::prepare_dotfile_content(&dotfile, &content);
 
-        let dest = tmp_dir.join(&dotfile);
+        let dest = staging.join(&dotfile);
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -629,6 +701,141 @@ async fn prepare_dotfiles(config: &Config) -> MinoResult<Option<PathBuf>> {
             .await
             .map_err(|e| MinoError::io(format!("writing {}", dotfile), e))?;
     }
+    Ok(())
+}
+
+/// Create passthrough symlinks in `staging` pointing to host directories.
+///
+/// For each directory in `passthrough_dirs` that exists on the host, a symlink
+/// is created in the staging directory. The helper binary recreates these links
+/// inside the sandbox home so shell configs (`.oh-my-zsh`, `.nvm`, etc.) resolve.
+///
+/// Multi-segment entries (e.g., `.config/gh`) are supported: the parent directory
+/// is created in the staging area via `create_dir_all` before the symlink is placed.
+#[cfg(unix)]
+async fn create_passthrough_symlinks(
+    staging: PathBuf,
+    home_dir: PathBuf,
+    passthrough_dirs: Vec<String>,
+) -> MinoResult<()> {
+    for dir_name in passthrough_dirs {
+        let host_dir = home_dir.join(&dir_name);
+        if host_dir.is_dir() {
+            let link_path = staging.join(&dir_name);
+            // Ensure parent directories exist in the staging tree for multi-segment
+            // entries (e.g., staging/.config/ must exist before placing staging/.config/gh).
+            if let Some(parent) = link_path.parent() {
+                if parent != staging {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                        MinoError::io("creating staging parent dir for passthrough", e)
+                    })?;
+                }
+            }
+            if let Err(e) = tokio::fs::symlink(&host_dir, &link_path).await {
+                tracing::debug!("Failed to create symlink for {}: {}", dir_name, e);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn create_passthrough_symlinks(
+    _staging: PathBuf,
+    _home_dir: PathBuf,
+    _passthrough_dirs: Vec<String>,
+) -> MinoResult<()> {
+    Ok(())
+}
+
+/// Copy user-configured directories into the sandbox staging area.
+///
+/// For `.claude`, uses the allowlist-based [`crate::sandbox::dotfiles::copy_claude_config_dir`]
+/// to avoid multi-GB state directories. All other entries use generic
+/// [`crate::sandbox::fs_copy::copy_dir_recursive`].
+async fn copy_auto_dirs(
+    staging: PathBuf,
+    home_dir: PathBuf,
+    copy_dirs: Vec<String>,
+    project_dir: PathBuf,
+) -> MinoResult<()> {
+    for dir_name in copy_dirs {
+        let host_dir = home_dir.join(&dir_name);
+        if host_dir.is_dir() {
+            let dest_dir = staging.join(&dir_name);
+            tracing::info!(dir = %dir_name, "auto-copying directory into sandbox");
+            if dir_name == ".claude" {
+                dotfiles::copy_claude_config_dir(&host_dir, &dest_dir, &project_dir).await?;
+            } else {
+                fs_copy::copy_dir_recursive(host_dir, dest_dir).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prepare dotfiles for the native sandbox by building a staging directory containing:
+///
+/// 1. **Sanitized dotfiles** — files listed in `config.sandbox.dotfiles` are read from the
+///    host home directory, stripped of sensitive content (tokens, credentials) via
+///    [`dotfiles::prepare_dotfile_content`], and written into a process-scoped temp dir.
+///    The temp dir is created with mode `0o700` to prevent TOCTOU symlink attacks.
+///
+/// 2. **Passthrough symlinks** — for each directory in `config.sandbox.auto_passthrough_dirs`
+///    that exists on the host, a symlink pointing to the host path is created inside the
+///    staging dir. The helper binary re-creates these links inside the sandbox home so shell
+///    configs resolve correctly. Empty by default (opt-in via config).
+///
+/// 3. **Copied directories** — directories in `config.sandbox.auto_copy_dirs` are copied
+///    rather than symlinked because the agent needs a writable, sandbox-local version.
+///    `.claude` uses an allowlist-based copy to avoid pulling in large state directories
+///    such as `sessions/` or `file-history/`. Empty by default (opt-in).
+///
+/// All three stages run concurrently via [`tokio::try_join!`]. The three helper functions
+/// take ownership of their inputs (cloned from `config`) so there are no shared references.
+/// The stages are safe to run in parallel because `config.sandbox.validate()` (called during
+/// config load) ensures no overlap between the sets.
+///
+/// # Partial failure
+/// If one stage fails after another has already written files, the staging directory will be
+/// in a partial state. The caller is responsible for cleanup via [`cleanup_dotfile_dir`].
+///
+/// Returns `None` if the host home directory cannot be determined.
+async fn prepare_dotfiles(config: &Config, project_dir: &Path) -> MinoResult<Option<PathBuf>> {
+    let home_dir = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Ok(None),
+    };
+
+    let tmp_dir = std::env::temp_dir().join(format!("mino-dotfiles-{}", std::process::id()));
+    tokio::fs::create_dir_all(&tmp_dir)
+        .await
+        .map_err(|e| MinoError::io("creating dotfile temp dir", e))?;
+
+    // Restrict permissions so other users cannot replace files with symlinks
+    // between creation and the helper binary's copy (TOCTOU hardening).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o700);
+        tokio::fs::set_permissions(&tmp_dir, perms)
+            .await
+            .map_err(|e| MinoError::io("setting dotfile temp dir permissions", e))?;
+    }
+
+    // Clone inputs once so each stage owns its data (required by tokio::try_join!)
+    let dotfile_names = collect_dotfile_names(&config.sandbox.dotfiles);
+    let passthrough_dirs = config.sandbox.auto_passthrough_dirs.clone();
+    let copy_dirs = config.sandbox.auto_copy_dirs.clone();
+    let project_dir_owned = project_dir.to_path_buf();
+
+    // Run the three independent stages concurrently.
+    // Disjointness of staging entries is guaranteed by SandboxConfig::validate().
+    tokio::try_join!(
+        write_sanitized_dotfiles(tmp_dir.clone(), home_dir.clone(), dotfile_names),
+        create_passthrough_symlinks(tmp_dir.clone(), home_dir.clone(), passthrough_dirs),
+        copy_auto_dirs(tmp_dir.clone(), home_dir, copy_dirs, project_dir_owned),
+    )?;
 
     Ok(Some(tmp_dir))
 }
@@ -638,6 +845,43 @@ mod tests {
     use super::*;
     use crate::cli::args::RunArgs;
     use serial_test::serial;
+
+    /// Guard that restores environment variables on drop, even on panic.
+    ///
+    /// Used by `#[serial]` tests that modify process environment: the Drop impl
+    /// ensures cleanup runs on any exit path so subsequent tests see a clean env.
+    struct EnvGuard {
+        vars: Vec<(String, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        /// Capture the current values of the given keys, then set each to the provided value.
+        ///
+        /// The Drop impl restores every captured key to its original value (or removes it
+        /// if it was absent), so cleanup runs even if a test assertion panics.
+        fn set(pairs: &[(&str, &str)]) -> Self {
+            let vars = pairs
+                .iter()
+                .map(|(k, v)| {
+                    let prev = std::env::var(k).ok();
+                    unsafe { std::env::set_var(k, v) };
+                    (k.to_string(), prev)
+                })
+                .collect();
+            Self { vars }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, prev) in &self.vars {
+                match prev {
+                    Some(v) => unsafe { std::env::set_var(k, v) },
+                    None => unsafe { std::env::remove_var(k) },
+                }
+            }
+        }
+    }
 
     fn test_run_args() -> RunArgs {
         RunArgs {
@@ -718,6 +962,8 @@ mod tests {
         assert_eq!(env.get("USER").unwrap(), "_mino_agent");
         assert_eq!(env.get("MINO_SANDBOX").unwrap(), "native");
         let path = env.get("PATH").unwrap();
+        #[cfg(target_os = "macos")]
+        assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/bin"));
         assert!(path.contains("/bin"));
     }
@@ -812,6 +1058,10 @@ mod tests {
         let names = collect_dotfile_names(&[]);
         assert!(names.contains(&".gitconfig".to_string()));
         assert!(names.contains(&".config/git/ignore".to_string()));
+        assert!(names.contains(&".zshrc".to_string()));
+        assert!(names.contains(&".zshenv".to_string()));
+        assert!(names.contains(&".zprofile".to_string()));
+        assert!(names.contains(&".tmux.conf".to_string()));
     }
 
     #[test]
@@ -858,5 +1108,418 @@ mod tests {
         // sandbox.env is None (default)
         let env = build_sandbox_env(&config, &HashMap::new());
         assert_eq!(env.get("FROM_CONTAINER").unwrap(), "hello");
+    }
+
+    #[test]
+    #[serial]
+    fn build_sandbox_env_default_passthrough_includes_anthropic_and_locale() {
+        // Ensure the defaults are in place when env_passthrough is not configured.
+        // EnvGuard restores the variable on drop, even if an assertion panics.
+        let _guard = EnvGuard::set(&[("ANTHROPIC_API_KEY", "test-key-123")]);
+        let config = Config::default();
+        assert!(config.sandbox.env_passthrough.is_none());
+        let env = build_sandbox_env(&config, &HashMap::new());
+        assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "test-key-123");
+    }
+
+    #[test]
+    #[serial]
+    fn build_sandbox_env_custom_passthrough_replaces_defaults() {
+        // Custom list should NOT inherit ANTHROPIC_API_KEY unless explicitly listed.
+        // EnvGuard restores both variables on drop, even if an assertion panics.
+        let _guard = EnvGuard::set(&[
+            ("ANTHROPIC_API_KEY", "should-not-appear"),
+            ("MY_CUSTOM_KEY", "custom-value"),
+        ]);
+
+        let mut config = Config::default();
+        config.sandbox.env_passthrough = Some(vec!["MY_CUSTOM_KEY".to_string()]);
+
+        let env = build_sandbox_env(&config, &HashMap::new());
+        assert_eq!(env.get("MY_CUSTOM_KEY").unwrap(), "custom-value");
+        assert!(
+            !env.contains_key("ANTHROPIC_API_KEY"),
+            "ANTHROPIC_API_KEY should not appear when not in custom passthrough list"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn build_sandbox_env_empty_passthrough_disables_all_inheritance() {
+        // EnvGuard restores both variables on drop, even if an assertion panics.
+        let _guard = EnvGuard::set(&[("ANTHROPIC_API_KEY", "key"), ("LANG", "en_US.UTF-8")]);
+
+        let mut config = Config::default();
+        config.sandbox.env_passthrough = Some(vec![]);
+
+        let env = build_sandbox_env(&config, &HashMap::new());
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!env.contains_key("LANG"));
+    }
+
+    // ---- create_passthrough_symlinks multi-segment tests ----
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_passthrough_symlinks_handles_multi_segment_entry() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        // Create .config/gh on the host
+        let config_gh = home.path().join(".config").join("gh");
+        tokio::fs::create_dir_all(&config_gh).await.unwrap();
+
+        create_passthrough_symlinks(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".config/gh".to_string()],
+        )
+        .await
+        .unwrap();
+
+        // staging/.config/ must be a real directory
+        let staging_config = staging.path().join(".config");
+        assert!(staging_config.is_dir(), "staging/.config should be a dir");
+
+        // staging/.config/gh must be a symlink
+        let staging_gh = staging_config.join("gh");
+        let meta = tokio::fs::symlink_metadata(&staging_gh).await.unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "staging/.config/gh should be a symlink"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_passthrough_symlinks_idempotent_parent_creation() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        // Create two dirs under .config on the host
+        tokio::fs::create_dir_all(home.path().join(".config").join("gh"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(home.path().join(".config").join("other"))
+            .await
+            .unwrap();
+
+        create_passthrough_symlinks(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".config/gh".to_string(), ".config/other".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let staging_config = staging.path().join(".config");
+        assert!(staging_config.is_dir(), "staging/.config should be a dir");
+
+        let meta_gh = tokio::fs::symlink_metadata(staging_config.join("gh"))
+            .await
+            .unwrap();
+        assert!(meta_gh.file_type().is_symlink());
+
+        let meta_other = tokio::fs::symlink_metadata(staging_config.join("other"))
+            .await
+            .unwrap();
+        assert!(meta_other.file_type().is_symlink());
+    }
+
+    // ---- write_sanitized_dotfiles integration tests ----
+
+    #[tokio::test]
+    async fn write_sanitized_dotfiles_strips_gitconfig_credentials() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        let gitconfig_content = "[user]\n    name = Test User\n    email = test@example.com\n\n[credential]\n    helper = osxkeychain\n\n[core]\n    autocrlf = input\n";
+        tokio::fs::write(home.path().join(".gitconfig"), gitconfig_content)
+            .await
+            .unwrap();
+
+        write_sanitized_dotfiles(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".gitconfig".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let output = tokio::fs::read_to_string(staging.path().join(".gitconfig"))
+            .await
+            .unwrap();
+
+        assert!(
+            !output.contains("[credential]"),
+            "credential section should be stripped from .gitconfig"
+        );
+        assert!(
+            output.contains("[user]"),
+            "[user] section should be preserved"
+        );
+        assert!(
+            output.contains("Test User"),
+            "user name should be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_sanitized_dotfiles_skips_missing_files() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        // home dir is empty — .gitconfig does not exist
+        let result = write_sanitized_dotfiles(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".gitconfig".to_string()],
+        )
+        .await;
+
+        assert!(result.is_ok(), "should not error on missing dotfile");
+
+        let mut entries = tokio::fs::read_dir(staging.path()).await.unwrap();
+        assert!(
+            entries.next_entry().await.unwrap().is_none(),
+            "staging dir should be empty when dotfile does not exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_sanitized_dotfiles_creates_parent_dirs_for_nested() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+
+        // Create nested dotfile in home
+        tokio::fs::create_dir_all(home.path().join(".config").join("git"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            home.path().join(".config").join("git").join("ignore"),
+            b"*.log\n*.tmp\n",
+        )
+        .await
+        .unwrap();
+
+        write_sanitized_dotfiles(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".config/git/ignore".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let dest = staging.path().join(".config").join("git").join("ignore");
+        assert!(dest.exists(), "staging should have .config/git/ignore");
+
+        let content = tokio::fs::read_to_string(&dest).await.unwrap();
+        assert_eq!(content, "*.log\n*.tmp\n");
+    }
+
+    // ---- copy_auto_dirs integration tests ----
+
+    #[tokio::test]
+    async fn copy_auto_dirs_copies_claude_with_allowlist() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+
+        // Build a fake ~/.claude with allowlisted and excluded entries
+        let claude_src = home.path().join(".claude");
+        tokio::fs::create_dir_all(&claude_src).await.unwrap();
+        tokio::fs::write(claude_src.join("CLAUDE.md"), b"# Claude config\n")
+            .await
+            .unwrap();
+        tokio::fs::write(claude_src.join("settings.json"), b"{}\n")
+            .await
+            .unwrap();
+        // sessions/ is in KNOWN_SKIP_ENTRIES and not in CLAUDE_ALLOW_ENTRIES — must be excluded
+        tokio::fs::create_dir_all(claude_src.join("sessions"))
+            .await
+            .unwrap();
+        tokio::fs::write(claude_src.join("sessions").join("some-session.json"), b"[]")
+            .await
+            .unwrap();
+
+        copy_auto_dirs(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".claude".to_string()],
+            project_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            staging.path().join(".claude").join("CLAUDE.md").exists(),
+            "CLAUDE.md should be copied"
+        );
+        assert!(
+            staging
+                .path()
+                .join(".claude")
+                .join("settings.json")
+                .exists(),
+            "settings.json should be copied"
+        );
+        assert!(
+            !staging.path().join(".claude").join("sessions").exists(),
+            "sessions/ should be excluded by allowlist"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_auto_dirs_generic_dir_copies_recursively() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+
+        // Build a fake ~/.custom with nested content
+        tokio::fs::create_dir_all(home.path().join(".custom").join("subdir"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            home.path().join(".custom").join("subdir").join("file.txt"),
+            b"hello world\n",
+        )
+        .await
+        .unwrap();
+
+        copy_auto_dirs(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".custom".to_string()],
+            project_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+        let dest = staging
+            .path()
+            .join(".custom")
+            .join("subdir")
+            .join("file.txt");
+        assert!(dest.exists(), "nested file should be copied recursively");
+
+        let content = tokio::fs::read_to_string(&dest).await.unwrap();
+        assert_eq!(content, "hello world\n");
+    }
+
+    #[tokio::test]
+    async fn copy_auto_dirs_skips_missing_host_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+
+        // home dir has no .nonexistent directory
+        let result = copy_auto_dirs(
+            staging.path().to_path_buf(),
+            home.path().to_path_buf(),
+            vec![".nonexistent".to_string()],
+            project_dir.path().to_path_buf(),
+        )
+        .await;
+
+        assert!(result.is_ok(), "should not error when host dir is missing");
+
+        let mut entries = tokio::fs::read_dir(staging.path()).await.unwrap();
+        assert!(
+            entries.next_entry().await.unwrap().is_none(),
+            "staging dir should be empty when host dir does not exist"
+        );
+    }
+
+    // ---- full pipeline concurrent staging integration test ----
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn full_pipeline_concurrent_staging() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+
+        // Dotfile: .gitconfig with a credential section to strip
+        tokio::fs::write(
+            home.path().join(".gitconfig"),
+            b"[user]\n    name = Agent\n\n[credential]\n    helper = store\n",
+        )
+        .await
+        .unwrap();
+
+        // Passthrough dir: .nvm
+        tokio::fs::create_dir_all(home.path().join(".nvm"))
+            .await
+            .unwrap();
+
+        // Copy dir: .custom with a file
+        tokio::fs::create_dir_all(home.path().join(".custom"))
+            .await
+            .unwrap();
+        tokio::fs::write(home.path().join(".custom").join("file.txt"), b"data\n")
+            .await
+            .unwrap();
+
+        // Build staging dir with 0o700 permissions (as prepare_dotfiles does)
+        let staging = tempfile::tempdir().unwrap();
+        let staging_path = staging.path().to_path_buf();
+        tokio::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+
+        // Run all three stages concurrently exactly as prepare_dotfiles does
+        tokio::try_join!(
+            write_sanitized_dotfiles(
+                staging_path.clone(),
+                home.path().to_path_buf(),
+                vec![".gitconfig".to_string()],
+            ),
+            create_passthrough_symlinks(
+                staging_path.clone(),
+                home.path().to_path_buf(),
+                vec![".nvm".to_string()],
+            ),
+            copy_auto_dirs(
+                staging_path.clone(),
+                home.path().to_path_buf(),
+                vec![".custom".to_string()],
+                project_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+
+        // Verify sanitized .gitconfig
+        let gitconfig = tokio::fs::read_to_string(staging_path.join(".gitconfig"))
+            .await
+            .unwrap();
+        assert!(
+            !gitconfig.contains("[credential]"),
+            ".gitconfig should have credential section stripped"
+        );
+        assert!(gitconfig.contains("[user]"), "[user] section should remain");
+
+        // Verify passthrough symlink for .nvm
+        let nvm_meta = tokio::fs::symlink_metadata(staging_path.join(".nvm"))
+            .await
+            .unwrap();
+        assert!(
+            nvm_meta.file_type().is_symlink(),
+            ".nvm should be a symlink to the host dir"
+        );
+
+        // Verify copied .custom/file.txt
+        assert!(
+            staging_path.join(".custom").join("file.txt").exists(),
+            ".custom/file.txt should be copied into staging"
+        );
+
+        // Verify staging dir has 0o700 permissions
+        let meta = tokio::fs::metadata(&staging_path).await.unwrap();
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o700,
+            "staging dir should have 0o700 permissions"
+        );
     }
 }

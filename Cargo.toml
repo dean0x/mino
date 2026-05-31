@@ -64,4 +64,4 @@ path = "src/main.rs"
 
 [[bin]]
 name = "mino-sandbox-helper"
-path = "src/bin/mino-sandbox-helper.rs"
+path = "src/bin/mino-sandbox-helper/main.rs"

@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-Mino is a secure sandbox wrapper for AI coding agents. It runs commands in rootless Podman containers with temporary cloud credentials, SSH agent forwarding, and persistent dependency caching.
+Mino is a secure sandbox wrapper for AI coding agents. It runs commands in rootless Podman
+containers with temporary cloud credentials, SSH agent forwarding, and persistent dependency
+caching. It also supports a native sandbox mode for macOS that skips containers entirely.
 
 ## Architecture
 
@@ -18,7 +20,7 @@ src/
 │   ├── args.rs                # Clap argument definitions
 │   └── commands/              # Command implementations
 ├── config/
-│   ├── mod.rs                 # ConfigManager
+│   ├── mod.rs                 # ConfigManager (validates SandboxConfig on load)
 │   └── schema.rs              # TOML config structs
 ├── orchestration/
 │   ├── runtime.rs             # ContainerRuntime trait
@@ -26,10 +28,25 @@ src/
 │   ├── orbstack_runtime.rs    # macOS implementation
 │   ├── orbstack.rs            # OrbStack VM management
 │   └── factory.rs             # Platform detection
+├── sandbox/                   # Native sandbox subsystem
+│   ├── mod.rs                 # RuntimeMode enum + resolve_runtime_mode()
+│   ├── config.rs              # SandboxConfig, validate(), DEFAULT_ENV_PASSTHROUGH
+│   ├── dotfiles.rs            # Dotfile sanitization + copy_claude_config_dir()
+│   ├── fs_copy.rs             # Iterative copy_dir_recursive (BFS, no Box::pin)
+│   ├── helper.rs              # ACL helpers, SANDBOX_PATH constant
+│   ├── helper_protocol.rs     # HelperRequest/HelperResponse serde types
+│   ├── macos.rs               # macOS-specific sandbox launch
+│   ├── linux.rs               # Linux user-namespace sandbox
+│   ├── native.rs              # SandboxPlatform trait + platform factory
+│   ├── process.rs             # SandboxProcess (wait + signal forwarding)
+│   ├── proxy.rs               # SOCKS5/HTTP-CONNECT filtering proxy
+│   └── resource_limits.rs     # ResourceLimitsDto
 ├── session/                   # Session state (JSON files)
 ├── network.rs                 # Network isolation modes + iptables
 └── creds/                     # Cloud credential providers
 ```
+
+Binary: `src/bin/mino-sandbox-helper.rs` — privileged macOS helper (runs as root via sudoers).
 
 ## Key Patterns
 
@@ -49,8 +66,83 @@ src/
 - `OrbStackRuntime` for macOS (via OrbStack VM)
 - Factory pattern selects runtime based on `Platform::detect()`
 
+### Native Sandbox
+
+`RuntimeMode` enum dispatches between container and native paths early in `execute()`:
+
+```rust
+match resolve_runtime_mode(cli_runtime, &config.runtime)? {
+    RuntimeMode::Container => execute_container(args, config).await,
+    RuntimeMode::Native => execute_native(args, config).await,
+}
+```
+
+**Config precedence** (`[sandbox]` > `[container]` > default):
+- Network fields (`network`, `network_allow`, `network_preset`): `resolve_sandbox_network()` in
+  `src/sandbox/config.rs` returns the effective value, falling back to `[container]` when the
+  `[sandbox]` field is `None`.
+- Env passthrough: `SandboxConfig.env_passthrough` (default: `DEFAULT_ENV_PASSTHROUGH`).
+- Explicit env vars: `SandboxConfig.env` (falls back to `ContainerConfig.env`).
+
+**Helper binary protocol** (`src/bin/mino-sandbox-helper.rs`):
+- Runs as root via `sudoers.d/mino` (one binary, one path, no args)
+- Request serialized to a temp JSON file, path passed via `--request-file`
+- File is deleted immediately after load to minimize credential exposure on disk
+- Responses are printed as JSON to stdout, errors to stderr
+
+**SpawnGuard RAII pattern**:
+- Constructed after home dir is created; Drop removes home dir + ACLs on error
+- `std::mem::forget(guard)` on the success path transfers cleanup to the parent process
+- The guard is installed before ACLs are set (in `InstallGuard` stage) so file_inherit
+  applies to any dotfiles copied in the `CopyDotfiles` stage
+
+**SPAWN_STAGES dispatch ordering**:
+- `SpawnStage` enum + `SPAWN_STAGES: &[SpawnStage]` const define canonical pipeline order
+- Tests assert `InstallGuard < CopyDotfiles`, `ResolveIds < ChownHome`, `ExecChild` is last
+- To reorder steps, update `SPAWN_STAGES` — the test suite will catch missing entries
+
+**Dotfile preparation** (`prepare_dotfiles` in `src/cli/commands/run/native.rs`):
+- Splits into three independent helpers: `write_sanitized_dotfiles`, `create_passthrough_symlinks`,
+  `copy_auto_dirs`
+- All three run concurrently via `tokio::try_join!`
+- Safe because `SandboxConfig::validate()` (called at config load time) rejects overlapping
+  entries in `auto_passthrough_dirs` / `auto_copy_dirs` / `DEFAULT_DOTFILES`
+
+**Multi-segment passthrough paths** (`.config/gh`, `.cargo/bin`, etc.):
+- `create_passthrough_symlinks()` calls `create_dir_all(link_path.parent())` before placing the
+  symlink, so staging parent dirs like `.config/` are created automatically.
+- Validation uses `path_conflicts()` (ancestor-based component matching) instead of top-segment
+  comparison, so siblings like `.config/gh` and `.config/git/ignore` can coexist.
+
+**`allow_sensitive_paths`** (narrow per-path escape hatch):
+- `SENSITIVE_PATHS` is the blocklist (`.ssh`, `.aws`, `.docker`, `.config/gh`, etc.).
+- `allow_sensitive = true` bypasses the entire blocklist (nuclear option).
+- `allow_sensitive_paths = [".config/gh"]` allows only the listed paths (surgical opt-in).
+- `validate()` permits a sensitive entry iff `allow_sensitive` is true OR the entry is in
+  `allow_sensitive_paths`.
+
+**Setup toolchain detection** (`src/cli/commands/setup/helpers.rs`):
+- `configure_toolchain_passthrough`: detects `TOOLCHAIN_PASSTHROUGH_CANDIDATES` (30+ dirs),
+  merges with existing config, writes via `ConfigManager::set_sandbox_passthrough_dirs()`.
+  Non-interactive mode accepts all detected entries (safe — not credential stores).
+- `configure_sensitive_passthrough`: detects `SENSITIVE_BUT_USEFUL_CANDIDATES`
+  (`.config/gh`, `.docker`, `.kube`), writes to BOTH `auto_passthrough_dirs` AND
+  `allow_sensitive_paths` atomically via `ConfigManager::write_toml_keys()`.
+  Always skipped in non-interactive mode (security policy).
+- `configure_claude_auto_copy`: detects `~/.claude`, writes to `auto_copy_dirs`.
+  Skipped in non-interactive mode. Both macOS and Linux share these helpers.
+
+**Atomic TOML edits** (`ConfigManager::write_toml_keys` in `src/config/mod.rs`):
+- Uses `toml_edit::DocumentMut` to preserve comments and formatting in the config file.
+- Writes to `{parent}/.mino-config-tmp-{pid}` then `fs::rename` over target for atomicity.
+
+**Staging dir cleanup** (`mino stop` → helper binary `cleanup` subcommand):
+- `handle_cleanup()` in `src/bin/mino-sandbox-helper.rs` removes `/tmp/mino-home-{session_id}`.
+- Runs as root (via sudoers), so it can remove `_mino_agent`-owned files.
+- Best-effort: warnings printed to stderr on failure, cleanup continues.
+
 ### Network Isolation
-- Three modes: `Host`, `None`, `Bridge`, `Allow(rules)`
+- Four modes: `Host`, `None`, `Bridge`, `Allow(rules)`
 - `--network-allow` implies bridge + `CAP_NET_ADMIN` + iptables wrapper
 - `resolve_network_mode()` handles CLI/config precedence and conflict detection
 - iptables rules: DROP all → ACCEPT loopback → ACCEPT established → ACCEPT DNS → per-rule ACCEPT → exec command
@@ -59,6 +151,9 @@ src/
 - TOML at `~/.config/mino/config.toml`
 - All structs use `#[serde(default)]` for partial configs
 - State stored at `~/.local/share/mino/`
+- `SandboxConfig::validate()` is called by both `ConfigManager::load_from_file` and
+  `ConfigManager::load_merged` (the primary CLI load path) and rejects configs where
+  `auto_passthrough_dirs` and `auto_copy_dirs` overlap each other or `DEFAULT_DOTFILES`
 
 ## Cache System
 
