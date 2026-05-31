@@ -11,7 +11,7 @@ use crate::error::{MinoError, MinoResult};
 use crate::network::{resolve_network_mode, NetworkMode, NetworkResolutionInput};
 use crate::sandbox::config::{
     resolve_sandbox_network, validate_path_not_sensitive, validate_sandbox_paths,
-    DEFAULT_ENV_PASSTHROUGH,
+    SandboxConfig, DEFAULT_ENV_PASSTHROUGH,
 };
 use crate::sandbox::dotfiles;
 use crate::sandbox::fs_copy;
@@ -153,7 +153,7 @@ async fn validate_and_resolve(
 /// Only the newly-added paths are validated — the base `passthrough_paths` were already
 /// checked by `validate_and_resolve`, so revalidating the full list would trigger
 /// redundant `canonicalize` syscalls per path per `SENSITIVE_PATHS` entry.
-fn apply_auto_mounts(config: &Config, home_dir: &Path) -> MinoResult<crate::sandbox::config::SandboxConfig> {
+fn apply_auto_mounts(config: &Config, home_dir: &Path) -> MinoResult<SandboxConfig> {
     let mut sandbox_config = config.sandbox.clone();
     for dir_name in &config.sandbox.auto_passthrough_dirs {
         let dir = home_dir.join(dir_name);
@@ -547,13 +547,12 @@ fn build_sandbox_env(
     // or the default list (locale vars + ANTHROPIC_API_KEY).
     // Users can add other provider keys (OPENAI_API_KEY, GROQ_API_KEY, etc.) via
     // `sandbox.env_passthrough` in config without requiring a code change.
-    let default_passthrough = DEFAULT_ENV_PASSTHROUGH;
     let passthrough_keys: Vec<&str> = config
         .sandbox
         .env_passthrough
         .as_deref()
         .map(|v| v.iter().map(|s| s.as_str()).collect())
-        .unwrap_or_else(|| default_passthrough.to_vec());
+        .unwrap_or_else(|| DEFAULT_ENV_PASSTHROUGH.to_vec());
 
     for key in &passthrough_keys {
         match std::env::var(key) {

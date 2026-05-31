@@ -94,11 +94,11 @@ async fn configure_passthrough(
 
     // Step 2: Check mode
     if args.check {
-        if check_warns_if_missing && existing_passthrough.is_empty() {
-            ui::step_warn_hint(ctx, &format!("{} dirs not configured", label), option_hint);
-            return StepResult::Failed;
-        }
         if check_warns_if_missing {
+            if existing_passthrough.is_empty() {
+                ui::step_warn_hint(ctx, &format!("{} dirs not configured", label), option_hint);
+                return StepResult::Failed;
+            }
             ui::step_ok_detail(
                 ctx,
                 &format!("{} passthrough configured", label),
@@ -110,14 +110,10 @@ async fn configure_passthrough(
         return StepResult::AlreadyOk;
     }
 
-    // Step 3: Non-interactive mode
-    if !ctx.is_interactive() || ctx.auto_yes() {
-        if auto_accept_non_interactive {
-            // Fall through: `to_add` will be set to `detected` below.
-        } else {
-            ui::step_ok(ctx, &format!("{} dirs: skipped (non-interactive)", label));
-            return StepResult::AlreadyOk;
-        }
+    // Step 3: Non-interactive mode — skip unless this flow accepts all detected entries.
+    if (!ctx.is_interactive() || ctx.auto_yes()) && !auto_accept_non_interactive {
+        ui::step_ok(ctx, &format!("{} dirs: skipped (non-interactive)", label));
+        return StepResult::AlreadyOk;
     }
 
     // Filter candidates to those not yet in `auto_passthrough_dirs`.

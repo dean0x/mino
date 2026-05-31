@@ -16,7 +16,6 @@ pub const DEFAULT_DOTFILES: &[&str] = &[
     ".tmux.conf",
 ];
 
-
 /// Known-risky dotfiles that trigger warnings
 const RISKY_DOTFILES: &[&str] = &[
     ".npmrc",

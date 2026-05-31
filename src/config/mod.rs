@@ -289,9 +289,9 @@ impl ConfigManager {
     /// Write `[sandbox].auto_passthrough_dirs` and `[sandbox].allow_sensitive_paths`
     /// atomically in a single file operation.
     ///
-    /// Use this instead of `write_toml_keys` when the sensitive-path setup step
-    /// needs to update both keys simultaneously (e.g. when the user opts in to a
-    /// credential directory that must appear in both lists).
+    /// Use this when the sensitive-path setup step needs to update both keys
+    /// simultaneously (e.g. when the user opts in to a credential directory that
+    /// must appear in both lists).
     pub async fn set_sandbox_passthrough_and_sensitive_paths(
         &self,
         passthrough: &[String],
@@ -303,20 +303,6 @@ impl ConfigManager {
                 ("allow_sensitive_paths", sensitive),
             ])
             .await
-    }
-
-    /// Apply one or more `[sandbox].<key> = [...]` mutations atomically.
-    ///
-    /// Reads the current config (or starts from an empty document), applies all
-    /// mutations, then writes to a tempfile in the same directory and renames
-    /// over the target. This guarantees no partial writes are visible to readers.
-    ///
-    /// Sharing this helper across `set_sandbox_passthrough_dirs` and
-    /// `set_sandbox_allow_sensitive_paths` ensures that writing both keys
-    /// simultaneously (as the sensitive-path setup step requires) is a single
-    /// atomic file operation.
-    pub(crate) async fn write_toml_keys(&self, mutations: &[(&str, &[String])]) -> MinoResult<()> {
-        self.editor.write_toml_keys(mutations).await
     }
 
     /// Ensure all state directories exist
